@@ -736,7 +736,7 @@
 
 "use client";
 
-import { useEffect, useState, use } from "react";
+import { Suspense, useEffect, useState, use } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { createClient } from "@supabase/supabase-js";
@@ -844,7 +844,7 @@ const formatRegionName = (name: string) => {
   return (clean.charAt(0).toUpperCase() + clean.slice(1)).trim() + " Zone";
 };
 
-export default function ResultsPage({
+function ResultsContent({
   params,
 }: {
   params: Promise<{ sessionId: string }>;
@@ -1558,5 +1558,17 @@ export default function ResultsPage({
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+export default function ResultsPage({
+  params,
+}: {
+  params: Promise<{ sessionId: string }>;
+}) {
+  return (
+    <Suspense fallback={null}>
+      <ResultsContent params={params} />
+    </Suspense>
   );
 }

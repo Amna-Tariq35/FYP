@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Copy, Check, Search, Package } from "lucide-react";
 import ReceiptSummary from "@/src/components/checkout/ReceiptSummary";
@@ -42,7 +42,7 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-export default function TrackOrderPage() {
+function TrackOrderContent() {
   const router = useRouter();
   const params = useSearchParams();
   const initialToken = params.get("guest_token") || "";
@@ -264,5 +264,13 @@ export default function TrackOrderPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function TrackOrderPage() {
+  return (
+    <Suspense fallback={null}>
+      <TrackOrderContent />
+    </Suspense>
   );
 }

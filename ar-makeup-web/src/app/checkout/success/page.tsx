@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import CheckoutShell from "@/src/components/checkout/CheckoutShell";
 import { clearCart } from "@/src/store/cart";
@@ -15,7 +15,7 @@ function shortRef(id?: string | null) {
   return id.length > 12 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
 }
 
-export default function CheckoutSuccessPage() {
+function CheckoutSuccessContent() {
   const router = useRouter();
   const params = useSearchParams();
 
@@ -409,5 +409,13 @@ useEffect(() => {
         </div>
       )}
     </>
+  );
+}
+
+export default function CheckoutSuccessPage() {
+  return (
+    <Suspense fallback={null}>
+      <CheckoutSuccessContent />
+    </Suspense>
   );
 }

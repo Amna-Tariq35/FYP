@@ -2,11 +2,11 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import AuthShell from "@/src/components/layout/AuthShell";
 import { supabase } from "@/src/lib/supabase/client";
 
-export default function SignUpPage() {
+function SignUpForm() {
   const router = useRouter();
   const sp = useSearchParams();
   const next = sp.get("next") || "/";
@@ -143,5 +143,13 @@ export default function SignUpPage() {
         </div>
       )}
     </AuthShell>
+  );
+}
+
+export default function SignUpPage() {
+  return (
+    <Suspense fallback={null}>
+      <SignUpForm />
+    </Suspense>
   );
 }

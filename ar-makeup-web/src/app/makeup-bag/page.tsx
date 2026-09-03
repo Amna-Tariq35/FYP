@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Check, Loader2, Plus, Search, ShoppingBag, Trash2, X } from "lucide-react";
@@ -45,7 +45,7 @@ function sourceLabel(source?: string) {
   return "Added by you";
 }
 
-export default function MakeupBagPage() {
+function MakeupBagContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { status } = useSession();
@@ -430,5 +430,13 @@ export default function MakeupBagPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function MakeupBagPage() {
+  return (
+    <Suspense fallback={null}>
+      <MakeupBagContent />
+    </Suspense>
   );
 }
