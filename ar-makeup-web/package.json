@@ -1,0 +1,52 @@
+{
+  "name": "ar-makeup-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "verify:phase0": "ts-node --project scripts/tsconfig.json scripts/verify-phase0.ts",
+    "verify:foundation": "ts-node --project scripts/tsconfig.json scripts/verify-foundation.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/google": "^3.0.64",
+    "@ai-sdk/groq": "^3.0.35",
+    "@ai-sdk/react": "^3.0.170",
+    "@google/genai": "^2.13.0",
+    "@mediapipe/tasks-vision": "^1.0.1",
+    "@stripe/stripe-js": "^8.9.0",
+    "@supabase/ssr": "^0.8.0",
+    "@supabase/supabase-js": "^2.93.3",
+    "ai": "^6.0.168",
+    "clsx": "^2.1.1",
+    "deepar": "^5.6.21",
+    "framer-motion": "^12.43.0",
+    "groq-sdk": "^1.5.0",
+    "lucide-react": "^0.577.0",
+    "next": "16.1.4",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-webcam": "^7.2.0",
+    "resend": "^6.14.0",
+    "stripe": "^20.4.1",
+    "swr": "^2.4.1",
+    "tailwind-merge": "^3.5.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "csv-parser": "^3.2.1",
+    "dotenv": "^17.4.2",
+    "eslint": "^9",
+    "eslint-config-next": "16.1.4",
+    "tailwindcss": "^4",
+    "ts-node": "^10.9.2",
+    "typescript": "^5"
+  }
+}

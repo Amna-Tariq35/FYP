@@ -1,0 +1,17 @@
+{
+  // The root tsconfig targets the Next.js bundler (`module: esnext`,
+  // `moduleResolution: bundler`, `noEmit`), which ts-node cannot execute
+  // directly. These overrides exist purely so the one-off scripts in this
+  // folder can be run from the command line.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "target": "ES2020",
+    "noEmit": false,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "types": ["node"]
+  },
+  "include": ["**/*.ts"]
+}

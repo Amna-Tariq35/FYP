@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Perfect Highlighter Mask</title>
+    <style>
+      body {
+        background-color: #121212;
+        color: white;
+        font-family: Arial, sans-serif;
+        text-align: center;
+        padding: 50px;
+      }
+      /* Preview canvas ko chota kar ke dikhaya hai, asal size 1024 hi hoga */
+      canvas {
+        background-color: #000;
+        border: 2px solid #333;
+        border-radius: 10px;
+        width: 512px;
+        height: 512px;
+        margin-top: 20px;
+      }
+      button {
+        background-color: #f1c40f;
+        color: black;
+        border: none;
+        padding: 15px 30px;
+        font-size: 18px;
+        font-weight: bold;
+        border-radius: 8px;
+        cursor: pointer;
+        margin-top: 20px;
+      }
+      button:hover {
+        background-color: #f39c12;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>✨ Natural Glow Highlighter Mask</h2>
+    <p>Cheeks, Nose Bridge, Brow Bone, aur Cupid's Bow par settled glow.</p>
+
+    <button id="downloadBtn">⬇️ Download Highlighter Mask</button><br />
+
+    <!-- Canvas jahan mask draw hoga -->
+    <canvas id="maskCanvas" width="1024" height="1024"></canvas>
+
+    <script>
+      const canvas = document.getElementById("maskCanvas");
+      const ctx = canvas.getContext("2d");
+
+      // 🖌️ Glow draw karne ka function (Heavy Blur ke sath)
+      function drawGlow(x, y, radiusX, radiusY, angle, maxOpacity) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate((angle * Math.PI) / 180); // Angle set karna (Cheekbones ke liye)
+
+        // Radial Gradient: Center mein glow zyada, edges par bilkul 0
+        const grad = ctx.createRadialGradient(
+          0,
+          0,
+          0,
+          0,
+          0,
+          Math.max(radiusX, radiusY),
+        );
+        grad.addColorStop(0, `rgba(255, 255, 255, ${maxOpacity})`);
+        grad.addColorStop(0.4, `rgba(255, 255, 255, ${maxOpacity * 0.5})`);
+        grad.addColorStop(1, "rgba(255, 255, 255, 0)");
+
+        ctx.fillStyle = grad;
+
+        // 🌫️ HEAVY BLUR: Yehi wo cheez hai jo isko "Fake" lagne se bachayegi
+        ctx.filter = "blur(20px)";
+
+        ctx.beginPath();
+        ctx.ellipse(0, 0, radiusX, radiusY, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // 📍 REFINED COORDINATES (EYES REMOVED & SHIFTED UPWARDS)
+
+      /// 📍 THE "PERFECT FIT" COORDINATES
+      // 📍 THE "CHEEKBONE LIFT" COORDINATES
+    drawGlow(250, 480, 130, 35, -15, 0.7);  // Left Cheekbone
+      // Right cheekbone: x zyada (right side), mirror position
+      drawGlow(774, 480, 130, 35, 15, 0.7);   // Right Cheekbone
+      // 2. Nose, Cupid's Bow, aur Chin ke coordinates:
+      // 2. Nose - Isko patla (radiusX kam) aur thora upar kiya hai
+      drawGlow(512, 450, 8, 80, 0, 0.5); // Nose Bridge (Patli line)
+      drawGlow(512, 580, 18, 18, 0, 0.8); // Nose Tip (Chota aur settled dot)
+
+      // 3. Cupid's Bow - Isko aur upar kiya taake hont ke upar "v" par ho
+      drawGlow(512, 700, 30, 8, 0, 0.6); // Cupid's Bow
+
+      // 4. Chin - Isko mazeed upar shift kiya hai
+      drawGlow(512, 780, 35, 15, 0, 0.5); // Chin (Centered)
+      document
+        .getElementById("downloadBtn")
+        .addEventListener("click", function () {
+          const link = document.createElement("a");
+          link.download = "Natural_Highlighter_Mask.png";
+          link.href = canvas.toDataURL("image/png");
+          link.click();
+        });
+    </script>
+  </body>
+</html>

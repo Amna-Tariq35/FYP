@@ -1,0 +1,200 @@
+@import "tailwindcss";
+
+/* =========================
+   FYP Rose Theme (Global)
+   ========================= */
+:root{
+  --rose-primary:#C06C84;        /* buttons, active links */
+  --rose-soft:#F4C2C2;           /* soft highlights */
+  --bg-base:#FAF7F5;             /* page background */
+  --bg-section:#FFFFFF;          /* cards/sections */
+  --text-main:#1F1F1F;
+  --text-secondary:#2A2A2A;
+  --text-muted:#8A8A8A;
+  --border-soft:rgba(0,0,0,0.05);
+}
+
+/* Keep Tailwind v4 theme mapping (optional)
+   This is only for Tailwind tokens; we map them to our rose system */
+@theme inline {
+  --color-background: var(--bg-base);
+  --color-foreground: var(--text-main);
+  --font-sans: var(--font-geist-sans, ui-sans-serif, system-ui, sans-serif);
+  --font-mono: var(--font-geist-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+
+/* No dark theme in this project (as per your constraint)
+   so we intentionally remove prefers-color-scheme overrides */
+
+/* =========================
+   Base
+   ========================= */
+html, body {
+  height: 100%;
+}
+
+body {
+  background: var(--bg-base);
+  color: var(--text-main);
+  font-family: var(--font-sans, Arial, Helvetica, sans-serif);
+}
+
+/* Smooth rendering */
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Keyboard focus ring */
+:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--rose-primary) 45%, white);
+  outline-offset: 2px;
+}
+
+/* =========================
+   Reusable UI classes
+   ========================= */
+@layer components {
+  .ui-container {
+    @apply mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8;
+  }
+
+  .ui-section {
+    background: var(--bg-section);
+    border: 1px solid var(--border-soft);
+    border-radius: 16px;
+  }
+
+  .ui-card {
+    background: var(--bg-section);
+    border: 1px solid var(--border-soft);
+    border-radius: 16px;
+    @apply shadow-sm;
+  }
+
+  .ui-card-header { @apply px-5 pt-5; }
+  .ui-card-body { @apply px-5 pb-5; }
+
+  .ui-h1 {
+    color: var(--text-main);
+    @apply text-2xl sm:text-3xl font-semibold tracking-tight;
+  }
+
+  .ui-h2 {
+    color: var(--text-main);
+    @apply text-lg sm:text-xl font-semibold;
+  }
+
+  .ui-muted {
+    color: var(--text-muted);
+    @apply text-sm;
+  }
+
+  .ui-divider {
+    border-top: 1px solid var(--border-soft);
+    @apply my-4;
+  }
+
+  .ui-btn {
+    background: var(--rose-primary);
+    color: white;
+    border: 1px solid color-mix(in srgb, var(--rose-primary) 65%, black);
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold shadow-sm transition;
+  }
+
+  .ui-btn:hover {
+    background: color-mix(in srgb, var(--rose-primary) 92%, black);
+  }
+
+  .ui-btn:disabled { @apply cursor-not-allowed opacity-60; }
+
+  .ui-btn-secondary {
+    background: white;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-soft);
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold shadow-sm transition;
+  }
+
+  .ui-btn-secondary:hover {
+    background: color-mix(in srgb, var(--rose-soft) 18%, white);
+    border-color: color-mix(in srgb, var(--rose-soft) 45%, var(--border-soft));
+  }
+
+  .ui-btn-ghost {
+    color: var(--text-secondary);
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold transition;
+  }
+
+  .ui-btn-ghost:hover {
+    background: color-mix(in srgb, var(--rose-soft) 18%, white);
+  }
+
+  .ui-input {
+    background: white;
+    border: 1px solid var(--border-soft);
+    color: var(--text-main);
+    @apply w-full rounded-xl px-3 py-2 text-sm transition;
+  }
+
+  .ui-input:focus {
+    border-color: color-mix(in srgb, var(--rose-primary) 55%, var(--border-soft));
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--rose-soft) 30%, transparent);
+    outline: none;
+  }
+
+  .ui-input::placeholder {
+    color: color-mix(in srgb, var(--text-muted) 90%, white);
+  }
+
+  .ui-label {
+    color: var(--text-secondary);
+    @apply text-sm font-medium;
+  }
+
+  .ui-helper {
+    color: var(--text-muted);
+    @apply text-xs mt-1;
+  }
+
+  .ui-error {
+    @apply text-xs mt-1;
+    color: #B42318;
+  }
+
+  .ui-input-error {
+    border-color: #FDA29B;
+    box-shadow: 0 0 0 4px color-mix(in srgb, #FDA29B 30%, transparent);
+  }
+
+  .ui-chip {
+    border: 1px solid var(--border-soft);
+    background: white;
+    color: var(--text-secondary);
+    @apply rounded-full px-3 py-1 text-xs font-semibold transition;
+  }
+
+  .ui-chip:hover {
+    background: color-mix(in srgb, var(--rose-soft) 18%, white);
+  }
+
+  .ui-chip-active {
+    background: color-mix(in srgb, var(--rose-soft) 25%, white);
+    border-color: color-mix(in srgb, var(--rose-primary) 30%, var(--border-soft));
+    color: var(--text-main);
+  }
+
+  .ui-badge {
+    background: color-mix(in srgb, var(--rose-primary) 18%, white);
+    color: var(--text-main);
+    border: 1px solid var(--border-soft);
+    @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold;
+  }
+
+  .ui-glass {
+    background: color-mix(in srgb, white 75%, transparent);
+    border: 1px solid var(--border-soft);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    @apply shadow-sm;
+  }
+}
