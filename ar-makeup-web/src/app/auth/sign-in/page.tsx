@@ -2,14 +2,14 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import AuthShell from "@/src/components/layout/AuthShell";
 import { supabase } from "@/src/lib/supabase/client";
 
 // ─── Admin email (FYP: hardcoded for demo; replace with role-based check in production) ───
 const ADMIN_EMAIL = "admin@makeup.com";
 
-export default function SignInPage() {
+function SignInForm() {
   const router = useRouter();
   const sp = useSearchParams();
   const next = sp.get("next") || "/";
@@ -117,5 +117,13 @@ export default function SignInPage() {
         </div>
       </form>
     </AuthShell>
+  );
+}
+
+export default function SignInPage() {
+  return (
+    <Suspense fallback={null}>
+      <SignInForm />
+    </Suspense>
   );
 }
