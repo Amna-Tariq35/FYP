@@ -40,7 +40,7 @@ class AppConfig {
 
   static const String _webBaseUrlRaw = String.fromEnvironment(
     'WEB_BASE_URL',
-    defaultValue: 'https://suitor-diabetic-jeeringly.ngrok-free.dev',
+    defaultValue: 'https://ar-makeup-web.vercel.app',
   );
 
   /// Root of the Next.js site, guaranteed without a trailing slash.

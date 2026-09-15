@@ -30,7 +30,6 @@
 
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -156,6 +155,8 @@ const int _maxPatchRadiusPx = 30;
 const int _specularCeiling = 250;
 
 /// Pixels below this L* are in deep shadow and carry almost no chroma.
+/// Keep this low enough for the deepest real complexions; the regional median
+/// and spread checks handle residual shadow without erasing valid dark skin.
 const double _shadowFloorLStar = 8.0;
 
 /// Rejection width, in standard deviations of patch luminance.
@@ -294,8 +295,18 @@ class SkinSampler {
     }
 
     // ── Plan where to sample ─────────────────────────────────────────────────
-    final plan = _planPatches(face, frame.scale, frame.width, frame.height);
-    if (plan.length < 3) {
+    // Prefer a full face mask. ML Kit can occasionally omit contours, so the
+    // original landmark-disc sampler remains the safety net.
+    final contourPlan = _planContourRegions(
+      face,
+      frame.scale,
+      frame.width,
+      frame.height,
+    );
+    final plan = contourPlan == null
+        ? _planPatches(face, frame.scale, frame.width, frame.height)
+        : const <_PatchPlan>[];
+    if (contourPlan == null && plan.length < 3) {
       throw const SkinSampleException(
         'Not enough of your face is visible to measure.',
         hint: 'Move hair off your forehead and keep your whole face in frame.',
@@ -308,6 +319,7 @@ class SkinSampler {
       width: frame.width,
       height: frame.height,
       patches: plan,
+      contourPlan: contourPlan,
       illuminantStride: _strideFor(frame.width, frame.height),
     );
 
@@ -517,6 +529,187 @@ List<_PatchPlan> _planPatches(Face face, double scale, int width, int height) {
   return plans;
 }
 
+class _RegionBands {
+  const _RegionBands({
+    required this.foreheadBottom,
+    required this.noseBridgeBottom,
+    required this.cheekBottom,
+    required this.jawBottom,
+    required this.faceCenterX,
+    required this.centerHalfWidth,
+  });
+
+  final double foreheadBottom;
+  final double noseBridgeBottom;
+  final double cheekBottom;
+  final double jawBottom;
+  final double faceCenterX;
+  final double centerHalfWidth;
+}
+
+class _ContourRegionPlan {
+  const _ContourRegionPlan({
+    required this.faceOval,
+    required this.leftEyeHole,
+    required this.rightEyeHole,
+    required this.mouthHole,
+    required this.bands,
+    required this.faceBox,
+  });
+
+  final List<ui.Offset> faceOval;
+  final List<ui.Offset> leftEyeHole;
+  final List<ui.Offset> rightEyeHole;
+  final List<ui.Offset> mouthHole;
+  final _RegionBands bands;
+  final ui.Rect faceBox;
+}
+
+List<ui.Offset> _contourPoints(Face face, FaceContourType type) {
+  final contour = face.contours[type];
+  if (contour == null || contour.points.isEmpty) return const [];
+  return contour.points
+      .map((p) => ui.Offset(p.x.toDouble(), p.y.toDouble()))
+      .toList();
+}
+
+bool _pointInPolygon(ui.Offset point, List<ui.Offset> polygon) {
+  if (polygon.length < 3) return false;
+  var inside = false;
+  for (var i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    final xi = polygon[i].dx;
+    final yi = polygon[i].dy;
+    final xj = polygon[j].dx;
+    final yj = polygon[j].dy;
+    final intersects = ((yi > point.dy) != (yj > point.dy)) &&
+        (point.dx < (xj - xi) * (point.dy - yi) / (yj - yi) + xi);
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+double _cross(ui.Offset o, ui.Offset a, ui.Offset b) =>
+    (a.dx - o.dx) * (b.dy - o.dy) - (a.dy - o.dy) * (b.dx - o.dx);
+
+/// Makes one conservative mouth hole from the two lip contours.
+List<ui.Offset> _convexHull(List<ui.Offset> points) {
+  if (points.length < 3) return const [];
+  final sorted = [...points]
+    ..sort((a, b) => a.dx == b.dx ? a.dy.compareTo(b.dy) : a.dx.compareTo(b.dx));
+  final lower = <ui.Offset>[];
+  for (final point in sorted) {
+    while (lower.length >= 2 && _cross(lower[lower.length - 2], lower.last, point) <= 0) {
+      lower.removeLast();
+    }
+    lower.add(point);
+  }
+  final upper = <ui.Offset>[];
+  for (final point in sorted.reversed) {
+    while (upper.length >= 2 && _cross(upper[upper.length - 2], upper.last, point) <= 0) {
+      upper.removeLast();
+    }
+    upper.add(point);
+  }
+  return [...lower.take(lower.length - 1), ...upper.take(upper.length - 1)];
+}
+
+List<ui.Offset> _scaledPoints(List<ui.Offset> points, double scale) =>
+    points.map((p) => p * scale).toList();
+
+double _averageY(List<ui.Offset> points, double fallback) {
+  if (points.isEmpty) return fallback;
+  return points.map((p) => p.dy).reduce((a, b) => a + b) / points.length;
+}
+
+_ContourRegionPlan? _planContourRegions(
+  Face face,
+  double scale,
+  int width,
+  int height,
+) {
+  final faceOvalSource = _contourPoints(face, FaceContourType.face);
+  final leftEyeSource = _contourPoints(face, FaceContourType.leftEye);
+  final rightEyeSource = _contourPoints(face, FaceContourType.rightEye);
+
+  // These three are the minimum contours needed to make a useful skin mask.
+  if (faceOvalSource.length < 3 ||
+      leftEyeSource.length < 3 ||
+      rightEyeSource.length < 3) {
+    return null;
+  }
+
+  final upperLip = _contourPoints(face, FaceContourType.upperLipTop);
+  final lowerLip = _contourPoints(face, FaceContourType.lowerLipBottom);
+  final mouthSource = _convexHull([...upperLip, ...lowerLip]);
+
+  final box = face.boundingBox;
+  final faceCenterX = box.center.dx;
+  final eyebrowY = [
+    ..._contourPoints(face, FaceContourType.leftEyebrowBottom),
+    ..._contourPoints(face, FaceContourType.rightEyebrowBottom),
+  ];
+  final noseY = _contourPoints(face, FaceContourType.noseBottom);
+  final mouthY = [...upperLip, ...lowerLip];
+  final foreheadBottom = _averageY(eyebrowY, box.top + box.height * 0.38);
+  final noseBridgeBottom = _averageY(noseY, box.top + box.height * 0.58);
+  final cheekBottom = _averageY(mouthY, box.top + box.height * 0.70);
+  final chinY = faceOvalSource.map((p) => p.dy).reduce(math.max);
+  final jawBottom = cheekBottom + (chinY - cheekBottom) * 0.75;
+
+  final scaledBox = ui.Rect.fromLTRB(
+    box.left * scale,
+    box.top * scale,
+    box.right * scale,
+    box.bottom * scale,
+  );
+  final bands = _RegionBands(
+    foreheadBottom: foreheadBottom * scale,
+    noseBridgeBottom: noseBridgeBottom * scale,
+    cheekBottom: cheekBottom * scale,
+    jawBottom: jawBottom * scale,
+    faceCenterX: faceCenterX * scale,
+    centerHalfWidth: box.width * scale * 0.09,
+  );
+
+  final plan = _ContourRegionPlan(
+    faceOval: _scaledPoints(faceOvalSource, scale),
+    leftEyeHole: _scaledPoints(leftEyeSource, scale),
+    rightEyeHole: _scaledPoints(rightEyeSource, scale),
+    mouthHole: _scaledPoints(mouthSource, scale),
+    bands: bands,
+    faceBox: scaledBox,
+  );
+
+  // Reject obviously unusable geometry before handing it to the isolate.
+  final bounds = plan.faceOval.fold<ui.Rect?>(null, (current, point) {
+    final one = ui.Rect.fromLTWH(point.dx, point.dy, 0, 0);
+    return current == null ? one : current.expandToInclude(one);
+  });
+  if (bounds == null || bounds.width < 8 || bounds.height < 8) {
+    return null;
+  }
+  if (bounds.left >= width || bounds.top >= height ||
+      bounds.right < 0 || bounds.bottom < 0) {
+    return null;
+  }
+  return plan;
+}
+
+String? _regionForPoint(ui.Offset point, _RegionBands bands) {
+  if (point.dy < bands.foreheadBottom) return 'forehead';
+  if (point.dy < bands.noseBridgeBottom) {
+    if ((point.dx - bands.faceCenterX).abs() < bands.centerHalfWidth) {
+      return 'nose_bridge';
+    }
+    return point.dx < bands.faceCenterX ? 'left_cheek' : 'right_cheek';
+  }
+  if (point.dy < bands.cheekBottom) {
+    return point.dx < bands.faceCenterX ? 'left_cheek' : 'right_cheek';
+  }
+  if (point.dy <= bands.jawBottom) return 'jaw';
+  return null;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Pixel work — runs in a background isolate
 // ─────────────────────────────────────────────────────────────────────────────
@@ -527,6 +720,7 @@ class _SampleRequest {
     required this.width,
     required this.height,
     required this.patches,
+    required this.contourPlan,
     required this.illuminantStride,
   });
 
@@ -534,6 +728,7 @@ class _SampleRequest {
   final int width;
   final int height;
   final List<_PatchPlan> patches;
+  final _ContourRegionPlan? contourPlan;
   final int illuminantStride;
 }
 
@@ -545,10 +740,14 @@ class _SampleOutcome {
 }
 
 _SampleOutcome _measureInIsolate(_SampleRequest req) {
-  final patches = <SkinPatchSample>[];
-  for (final plan in req.patches) {
-    final sample = _measurePatch(req.rgba, req.width, plan);
-    if (sample != null) patches.add(sample);
+  var patches = req.contourPlan != null
+      ? _measureContourRegions(req.rgba, req.width, req.height, req.contourPlan!)
+      : <SkinPatchSample>[];
+  if (req.contourPlan == null || patches.length < 3) {
+    patches = req.patches
+        .map((plan) => _measurePatch(req.rgba, req.width, plan))
+        .whereType<SkinPatchSample>()
+        .toList();
   }
   return _SampleOutcome(
     patches,
@@ -601,6 +800,16 @@ SkinPatchSample? _measurePatch(Uint8List rgba, int width, _PatchPlan plan) {
     }
   }
 
+  return _summarizePixels(plan.region, rs, gs, bs, ls);
+}
+
+SkinPatchSample? _summarizePixels(
+  String region,
+  List<int> rs,
+  List<int> gs,
+  List<int> bs,
+  List<double> ls,
+) {
   if (ls.length < 12) return null;
 
   // Mean and σ of L* over the survivors.
@@ -648,13 +857,79 @@ SkinPatchSample? _measurePatch(Uint8List rgba, int width, _PatchPlan plan) {
   }
 
   return SkinPatchSample(
-    region: plan.region,
+    region: region,
     r: _median(keptR),
     g: _median(keptG),
     b: _median(keptB),
     pixels: keptL.length,
     luminanceStdDev: math.sqrt(keptVar / keptL.length),
   );
+}
+
+List<SkinPatchSample> _measureContourRegions(
+  Uint8List rgba,
+  int width,
+  int height,
+  _ContourRegionPlan plan,
+) {
+  final regions = <String, List<List<num>>>{
+    'forehead': [<int>[], <int>[], <int>[], <double>[]],
+    'left_cheek': [<int>[], <int>[], <int>[], <double>[]],
+    'right_cheek': [<int>[], <int>[], <int>[], <double>[]],
+    'jaw': [<int>[], <int>[], <int>[], <double>[]],
+    'nose_bridge': [<int>[], <int>[], <int>[], <double>[]],
+  };
+
+  final minX = plan.faceOval.map((p) => p.dx).reduce(math.min).floor().clamp(0, width - 1);
+  final maxX = plan.faceOval.map((p) => p.dx).reduce(math.max).ceil().clamp(0, width - 1);
+  final minY = plan.faceOval.map((p) => p.dy).reduce(math.min).floor().clamp(0, height - 1);
+  final maxY = plan.faceOval.map((p) => p.dy).reduce(math.max).ceil().clamp(0, height - 1);
+
+  for (var y = minY; y <= maxY; y++) {
+    for (var x = minX; x <= maxX; x++) {
+      final point = ui.Offset(x.toDouble(), y.toDouble());
+      if (!_pointInPolygon(point, plan.faceOval) ||
+          _pointInPolygon(point, plan.leftEyeHole) ||
+          _pointInPolygon(point, plan.rightEyeHole) ||
+          _pointInPolygon(point, plan.mouthHole)) {
+        continue;
+      }
+
+      final region = _regionForPoint(point, plan.bands);
+      if (region == null) continue;
+      final i = (y * width + x) * 4;
+      final r = rgba[i];
+      final g = rgba[i + 1];
+      final b = rgba[i + 2];
+      if (rgba[i + 3] < 250 ||
+          r >= _specularCeiling ||
+          g >= _specularCeiling ||
+          b >= _specularCeiling) {
+        continue;
+      }
+      final l = luminanceLStar(r, g, b);
+      if (l < _shadowFloorLStar) continue;
+      final bucket = regions[region]!;
+      (bucket[0] as List<int>).add(r);
+      (bucket[1] as List<int>).add(g);
+      (bucket[2] as List<int>).add(b);
+      (bucket[3] as List<double>).add(l);
+    }
+  }
+
+  final result = <SkinPatchSample>[];
+  for (final entry in regions.entries) {
+    final bucket = entry.value;
+    final sample = _summarizePixels(
+      entry.key,
+      bucket[0] as List<int>,
+      bucket[1] as List<int>,
+      bucket[2] as List<int>,
+      bucket[3] as List<double>,
+    );
+    if (sample != null) result.add(sample);
+  }
+  return result;
 }
 
 int _median(List<int> values) {

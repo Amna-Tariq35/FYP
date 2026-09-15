@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import BuyAgainButton from "@/src/components/orders/BuyAgainButton";
 
 function formatMoney(amount: number, currency = "USD") {
   return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(
@@ -282,13 +283,16 @@ export default function MyOrdersClient({ initialData }: MyOrdersClientProps) {
                         {formatMoney(o.total, o.currency)}
                       </div>
 
-                      <button
-                        type="button"
-                        className="rounded-full border border-[#C06C84]/30 bg-[#F4C2C2]/20 px-3.5 py-1.5 text-xs font-medium text-[#C06C84] transition-all hover:bg-[#C06C84] hover:text-white hover:border-[#C06C84]"
-                        onClick={() => router.push(`/my-orders/${o.id}`)}
-                      >
-                        View details →
-                      </button>
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        <BuyAgainButton orderId={o.id} />
+                        <button
+                          type="button"
+                          className="rounded-full border border-[#C06C84]/30 bg-[#F4C2C2]/20 px-3.5 py-1.5 text-xs font-medium text-[#C06C84] transition-all hover:bg-[#C06C84] hover:text-white hover:border-[#C06C84]"
+                          onClick={() => router.push(`/my-orders/${o.id}`)}
+                        >
+                          View details →
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>

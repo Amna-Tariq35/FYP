@@ -6,6 +6,7 @@ import {
 } from "@/src/lib/catalog/queries";
 import { getProductImageUrl } from "@/src/lib/catalog/image";
 import AddToCartPanel from "@/src/components/products/AddToCartPanel";
+import ProductReviews from "@/src/components/products/ProductReviews";
 import { Suspense } from "react"; // 🆕 add karo
 
 type PageProps = {
@@ -72,6 +73,9 @@ export default async function ProductDetailPage(props: PageProps) {
             </div>
           </div>
         </div>
+      </div>
+      <div className="mx-auto max-w-6xl px-4 pb-12">
+        <ProductReviews productKey={product.product_key} />
       </div>
     </main>
   );

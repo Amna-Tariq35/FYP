@@ -13,16 +13,6 @@ type ProductCardProps = {
   userFinishPreference?: string | null;
 };
 
-function getRating(key: string): { score: number; count: number } {
-  let hash = 0;
-  for (let i = 0; i < key.length; i++) {
-    hash = (hash * 31 + key.charCodeAt(i)) & 0xffffffff;
-  }
-  const score = 3.5 + Math.abs(hash % 15) / 10;
-  const count = 18 + Math.abs((hash >> 4) % 233);
-  return { score: Math.min(5, parseFloat(score.toFixed(1))), count };
-}
-
 function StarRow({ score }: { score: number }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "2px" }}>
@@ -78,7 +68,8 @@ export default function ProductCard({
     typeof product.price === "number" ? `$${product.price.toFixed(2)}` : "—";
   const brand = product.brand?.trim() || "—";
   const category = product.category?.trim() || "Makeup";
-  const { score, count } = getRating(product.product_key);
+  const score = product.rating_average;
+  const count = product.review_count;
 
   // Check if product finish matches user preference
   const isFinishMatch =
@@ -188,19 +179,15 @@ export default function ProductCard({
 
           {/* Rating */}
           <div className="mb-2.5 flex items-center gap-1.5">
-            <StarRow score={score} />
-            <span
-              className="text-[11px] font-semibold"
-              style={{ color: "var(--text-main)" }}
-            >
-              {score}
-            </span>
-            <span
-              className="text-[10.5px]"
-              style={{ color: "var(--text-muted)" }}
-            >
-              ({count})
-            </span>
+            {score === null || count === 0 ? (
+              <span className="text-[10.5px]" style={{ color: "var(--text-muted)" }}>No reviews yet</span>
+            ) : (
+              <>
+                <StarRow score={score} />
+                <span className="text-[11px] font-semibold" style={{ color: "var(--text-main)" }}>{score}</span>
+                <span className="text-[10.5px]" style={{ color: "var(--text-muted)" }}>({count})</span>
+              </>
+            )}
           </div>
 
           {/* Description */}

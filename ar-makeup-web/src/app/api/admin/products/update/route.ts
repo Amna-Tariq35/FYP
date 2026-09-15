@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { verifyAdmin } from '@/src/lib/adminAuth';
+import { notifyRestockAlerts } from '@/src/lib/inventory/restock';
+import { isValidCategoryCombination, normalizeCategory } from '@/src/lib/catalog/category-taxonomy';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -22,6 +24,30 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Product data is missing" }, { status: 400 });
     }
 
+    const mainCategory = normalizeCategory(product.main_category || "makeup");
+    const category = normalizeCategory(product.category);
+    if (!isValidCategoryCombination(mainCategory, category)) {
+      return NextResponse.json({ error: "Category does not belong to the selected department." }, { status: 400 });
+    }
+
+    const stockQuantity = Number(product.stock_quantity);
+    const lowStockThreshold = Number(product.low_stock_threshold ?? 5);
+    if (!Number.isInteger(stockQuantity) || stockQuantity < 0) {
+      return NextResponse.json({ error: "Stock quantity must be a non-negative integer." }, { status: 400 });
+    }
+    if (!Number.isInteger(lowStockThreshold) || lowStockThreshold < 0) {
+      return NextResponse.json({ error: "Low-stock threshold must be a non-negative integer." }, { status: 400 });
+    }
+
+    const { data: previousProduct, error: previousProductError } = await supabaseAdmin
+      .from('makeup_products')
+      .select('product_key,stock_quantity')
+      .eq('id', product.id)
+      .single();
+    if (previousProductError || !previousProduct) {
+      return NextResponse.json({ error: "Product was not found." }, { status: 404 });
+    }
+
     // 1. Update Product Details
     const { error: productError } = await supabaseAdmin
       .from('makeup_products')
@@ -29,8 +55,11 @@ export async function POST(request: Request) {
         name: product.name,
         brand: product.brand,
         price: product.price,
-        category: product.category,
+        category,
+        main_category: mainCategory,
         description: product.description,
+        stock_quantity: stockQuantity,
+        low_stock_threshold: lowStockThreshold,
       })
       .eq('id', product.id);
 
@@ -49,7 +78,12 @@ export async function POST(request: Request) {
     // 3. Insert New Shades
     if (newShades && newShades.length > 0) {
       // Har naye shade ke sath product_key attach karein
-      const shadesToInsert = newShades.map((shade: any) => ({
+      const shadesToInsert = newShades.map((shade: {
+        shade_key: string;
+        shade_name: string;
+        shade_hex: string;
+        shade_order?: number;
+      }) => ({
         product_key: product.product_key,
         shade_key: shade.shade_key,
         shade_name: shade.shade_name,
@@ -64,9 +98,17 @@ export async function POST(request: Request) {
       if (insertError) throw insertError;
     }
 
-    return NextResponse.json({ success: true });
-  } catch (error: any) {
+    let restockNotifications = null;
+    if (previousProduct.stock_quantity === 0 && stockQuantity > 0) {
+      restockNotifications = await notifyRestockAlerts(
+        supabaseAdmin,
+        previousProduct.product_key,
+      );
+    }
+
+    return NextResponse.json({ success: true, restockNotifications });
+  } catch (error: unknown) {
     console.error("Update Product Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Product update failed." }, { status: 500 });
   }
 }

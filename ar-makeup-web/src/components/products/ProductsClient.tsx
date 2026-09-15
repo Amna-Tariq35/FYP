@@ -18,6 +18,7 @@ import {
 import ProductCard from "./ProductCard";
 import { MakeupProduct } from "@/src/types/catalog";
 import { useWishlist } from "@/src/hooks/useWishlist";
+import { normalizeCategory } from "@/src/lib/catalog/category-taxonomy";
 
 const ITEMS_PER_PAGE = 9;
 const RECENTLY_VIEWED_KEY = "fyp_recently_viewed";
@@ -208,7 +209,7 @@ export default function ProductsClient({
   };
 
   const categories = useMemo(() => {
-    const cats = new Set(initialProducts.map((p) => p.category?.trim() || "Makeup"));
+    const cats = new Set(initialProducts.map((p) => normalizeCategory(p.category) || "makeup"));
     return ["All", ...Array.from(cats)].sort();
   }, [initialProducts]);
 
@@ -237,7 +238,7 @@ export default function ProductsClient({
     }
 
     if (selectedCategory !== "All") {
-      result = result.filter((p) => (p.category?.trim() || "Makeup") === selectedCategory);
+      result = result.filter((p) => (normalizeCategory(p.category) || "makeup") === normalizeCategory(selectedCategory));
     }
 
     if (selectedBrand !== "All") {

@@ -4,12 +4,14 @@ import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Save, Plus, Trash2, Palette, CheckCircle, XCircle } from "lucide-react";
 import { supabase } from "@/src/lib/supabase/client";
+import { CATEGORY_GROUPS, categoryLabel } from "@/src/lib/catalog/category-taxonomy";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface ProductForm {
   name: string;
   brand: string;
+  main_category: "makeup" | "skincare";
   category: string;
   price: number;
   image_url: string;
@@ -22,14 +24,6 @@ interface ShadeForm {
 }
 
 type NotificationType = { message: string; type: "success" | "error" } | null;
-
-const CATEGORIES = [
-  "lipstick",
-  "foundation",
-  "blush",
-  "eyeshadow",
-  "eyeliner",
-] as const;
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
 
@@ -63,10 +57,13 @@ export default function AddProductPage() {
   const [product, setProduct] = useState<ProductForm>({
     name: "",
     brand: "",
-    category: "lipstick",
+    main_category: "makeup",
+    category: CATEGORY_GROUPS.makeup[0],
     price: 0,
     image_url: "",
   });
+
+  const availableCategories = CATEGORY_GROUPS[product.main_category];
 
   const [shades, setShades] = useState<ShadeForm[]>([]);
 
@@ -259,6 +256,27 @@ export default function AddProductPage() {
           {/* Category */}
           <div>
             <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
+              Product Department
+            </label>
+            <select
+              value={product.main_category}
+              onChange={(e) => {
+                const main_category = e.target.value as ProductForm["main_category"];
+                setProduct({
+                  ...product,
+                  main_category,
+                  category: CATEGORY_GROUPS[main_category][0],
+                });
+              }}
+              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#F4C2C2] bg-white capitalize transition-shadow"
+            >
+              <option value="makeup">Makeup</option>
+              <option value="skincare">Skincare</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
               Category
             </label>
             <select
@@ -268,9 +286,9 @@ export default function AddProductPage() {
               }
               className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#F4C2C2] bg-white capitalize transition-shadow"
             >
-              {CATEGORIES.map((c) => (
+              {availableCategories.map((c) => (
                 <option key={c} value={c}>
-                  {c.charAt(0).toUpperCase() + c.slice(1)}
+                  {categoryLabel(c)}
                 </option>
               ))}
             </select>

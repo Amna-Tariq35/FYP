@@ -8,6 +8,32 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: "2026-02-25.clover",
 });
 
+async function releaseOrderStock(orderId: string) {
+  const supabase = createSupabaseAdminClient();
+  const { data: order } = await supabase
+    .from("orders")
+    .select("status")
+    .eq("id", orderId)
+    .maybeSingle();
+  if (!order || order.status !== "placed") return;
+
+  const { data: items, error } = await supabase
+    .from("order_items")
+    .select("product_key,quantity")
+    .eq("order_id", orderId);
+  if (error) throw error;
+
+  for (const item of items ?? []) {
+    const { error: releaseError } = await supabase.rpc("release_product_stock", {
+      p_product_key: item.product_key,
+      p_quantity: item.quantity,
+    });
+    if (releaseError) throw releaseError;
+  }
+
+  await supabase.from("orders").update({ status: "cancelled" }).eq("id", orderId).eq("status", "placed");
+}
+
 export async function POST(request: Request) {
   const payload = await request.text();
   const sig = request.headers.get("stripe-signature") || "";
@@ -19,9 +45,10 @@ export async function POST(request: Request) {
       sig,
       process.env.STRIPE_WEBHOOK_SECRET!,
     );
-  } catch (err: any) {
-    console.error("Stripe webhook signature verification failed:", err.message);
-    return new Response(`Webhook error: ${err.message}`, { status: 400 });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Invalid webhook signature";
+    console.error("Stripe webhook signature verification failed:", message);
+    return new Response(`Webhook error: ${message}`, { status: 400 });
   }
 
   switch (event.type) {
@@ -36,7 +63,8 @@ export async function POST(request: Request) {
           await supabase
             .from("orders")
             .update({ status: "paid" })
-            .eq("id", orderId);
+            .eq("id", orderId)
+            .eq("status", "placed");
           console.log(`Order ${orderId} marked paid via webhook`);
 
           if (addToBag) {
@@ -50,6 +78,18 @@ export async function POST(request: Request) {
         }
       } else {
         console.warn("checkout.session.completed event missing orderId metadata");
+      }
+      break;
+    }
+    case "checkout.session.expired": {
+      const session = event.data.object as Stripe.Checkout.Session;
+      const orderId = session.metadata?.orderId;
+      if (orderId) {
+        try {
+          await releaseOrderStock(orderId);
+        } catch (error) {
+          console.error("Failed to release expired checkout stock:", error);
+        }
       }
       break;
     }

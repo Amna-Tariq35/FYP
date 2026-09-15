@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { ArrowLeft, Save, Plus, Trash2, Palette, CheckCircle, XCircle } from "lucide-react";
 import { supabase } from "@/src/lib/supabase/client";
+import { CATEGORY_GROUPS, categoryLabel, normalizeCategory } from "@/src/lib/catalog/category-taxonomy";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -12,9 +13,12 @@ interface Product {
   product_key: string;
   name: string;
   brand: string;
+  main_category: "makeup" | "skincare";
   category: string;
   price: number;
   image_url?: string;
+  stock_quantity: number;
+  low_stock_threshold: number;
 }
 
 interface ExistingShade {
@@ -35,14 +39,6 @@ interface NewShade {
 }
 
 type NotificationType = { message: string; type: "success" | "error" } | null;
-
-const CATEGORIES = [
-  "lipstick",
-  "foundation",
-  "blush",
-  "eyeshadow",
-  "eyeliner",
-] as const;
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
 
@@ -81,6 +77,9 @@ export default function EditProductPage() {
   const [existingShades, setExistingShades] = useState<ExistingShade[]>([]);
   const [newShades, setNewShades] = useState<NewShade[]>([]);
   const [deletedShadeIds, setDeletedShadeIds] = useState<string[]>([]);
+
+  const mainCategory = product?.main_category === "skincare" ? "skincare" : "makeup";
+  const availableCategories: readonly string[] = CATEGORY_GROUPS[mainCategory];
 
   const showNotification = (message: string, type: "success" | "error") => {
     setNotification({ message, type });
@@ -191,8 +190,12 @@ export default function EditProductPage() {
 
       const result = await res.json();
       if (result.success) {
-        showNotification("Product updated successfully!", "success");
-        setTimeout(() => router.push("/admin/products"), 1200);
+        const notifications = result.restockNotifications;
+        const notificationSummary = notifications
+          ? ` Restock: ${notifications.notified} sent, ${notifications.failed} failed, ${notifications.skipped} skipped${notifications.sent?.[0]?.recipientEmail ? ` to ${notifications.sent[0].recipientEmail}` : ""}.`
+          : "";
+        showNotification(`Product updated successfully!${notificationSummary}`, "success");
+        setTimeout(() => router.push("/admin/products"), notifications ? 5000 : 1200);
       } else {
         showNotification(result.error || "Failed to update product.", "error");
       }
@@ -327,21 +330,86 @@ export default function EditProductPage() {
           {/* Category */}
           <div>
             <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
+              Product Department
+            </label>
+            <select
+              value={mainCategory}
+              onChange={(e) => {
+                const nextMainCategory = e.target.value as "makeup" | "skincare";
+                setProduct({
+                  ...product,
+                  main_category: nextMainCategory,
+                  category: CATEGORY_GROUPS[nextMainCategory][0],
+                });
+              }}
+              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#F4C2C2] bg-white capitalize transition-shadow"
+            >
+              <option value="makeup">Makeup</option>
+              <option value="skincare">Skincare</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
               Category
             </label>
             <select
-              value={product.category}
+              value={normalizeCategory(product.category)}
               onChange={(e) =>
                 setProduct({ ...product, category: e.target.value })
               }
               className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#F4C2C2] bg-white capitalize transition-shadow"
             >
-              {CATEGORIES.map((c) => (
+              {availableCategories.map((c) => (
                 <option key={c} value={c}>
-                  {c.charAt(0).toUpperCase() + c.slice(1)}
+                  {categoryLabel(c)}
                 </option>
               ))}
             </select>
+            {!availableCategories.includes(normalizeCategory(product.category)) && (
+              <p className="mt-1.5 text-xs text-amber-700">
+                Existing category needs review. Select a valid category for this department.
+              </p>
+            )}
+          </div>
+
+          {/* Inventory */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
+              Stock Quantity
+            </label>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={product.stock_quantity ?? 0}
+              onChange={(e) =>
+                setProduct({
+                  ...product,
+                  stock_quantity: Math.max(0, parseInt(e.target.value, 10) || 0),
+                })
+              }
+              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#F4C2C2] transition-shadow"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
+              Low-stock Threshold
+            </label>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={product.low_stock_threshold ?? 5}
+              onChange={(e) =>
+                setProduct({
+                  ...product,
+                  low_stock_threshold: Math.max(0, parseInt(e.target.value, 10) || 0),
+                })
+              }
+              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#F4C2C2] transition-shadow"
+            />
           </div>
 
           {/* Image URL */}
@@ -386,7 +454,7 @@ export default function EditProductPage() {
                 Shades & Colors
               </h2>
               <p className="text-xs text-gray-400">
-                Used by the AR engine to render makeup on the user's face.
+                Used by the AR engine to render makeup on the user&apos;s face.
               </p>
             </div>
           </div>

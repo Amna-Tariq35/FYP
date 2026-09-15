@@ -1,6 +1,12 @@
-import { Resend } from 'resend';
+import { sendEmail } from '@/src/lib/email/brevo';
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+type OrderEmailItem = {
+  name?: string;
+  product_name?: string;
+  shade_name?: string;
+  quantity?: number;
+  price?: number;
+};
 
 export async function POST(req: Request) {
   try {
@@ -13,11 +19,10 @@ export async function POST(req: Request) {
     const isCOD = orderDetails.payment_method === 'cash_on_delivery';
     const shortId = orderDetails.order_id?.slice(0, 8) || 'N/A';
 
-    await resend.emails.send({
-      from: 'AR Makeup <onboarding@resend.dev>', // free tier default
+    await sendEmail({
       to: userEmail,
       subject: `${isCOD ? 'Order Placed' : 'Payment Confirmed'} — #${shortId}`,
-      html: `
+      htmlContent: `
         <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:24px;">
           
           <div style="background:linear-gradient(135deg,#C06C84,#e07a90);padding:24px;border-radius:12px;text-align:center;margin-bottom:24px;">
@@ -50,7 +55,7 @@ export async function POST(req: Request) {
               </tr>
             </thead>
             <tbody>
-              ${orderDetails.items?.map((item: any) => `
+              ${orderDetails.items?.map((item: OrderEmailItem) => `
                 <tr style="border-bottom:1px solid #f5eaed;">
                   <td style="padding:10px 4px;font-size:13px;color:#333;">
                     ${item.name || item.product_name || 'Product'}
@@ -88,8 +93,11 @@ export async function POST(req: Request) {
 
     return Response.json({ success: true });
 
-  } catch (err) {
+  } catch (err: unknown) {
     console.error('[send-order-email] Error:', err);
-    return Response.json({ error: 'Failed to send email' }, { status: 500 });
+    return Response.json(
+      { error: err instanceof Error ? err.message : 'Failed to send email' },
+      { status: 500 },
+    );
   }
 }

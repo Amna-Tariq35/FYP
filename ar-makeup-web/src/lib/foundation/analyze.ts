@@ -231,11 +231,32 @@ const MAX_ILLUMINANT_CAST = 1.75;
 /** Illuminant cast above which the reading is still offered but flagged. */
 const WARN_ILLUMINANT_CAST = 1.3;
 
-/** Cross-patch ΔE above which the regions disagree too much to average. */
-const MAX_PATCH_DISAGREEMENT = 12;
+/**
+ * Cross-region disagreement is split into two numbers, because the two halves
+ * mean opposite things and a single ΔE conflates them.
+ *
+ * A forehead is a few L\* lighter than a jaw on everybody. That is anatomy, plus
+ * the fact that a face is a curved surface under a light that is never perfectly
+ * diffuse — it is present in every good photograph ever taken and it is *not*
+ * evidence that the measurement is bad. ΔE2000 counts it in full, so a full-face
+ * sampler that reads a genuine 8–10 L\* gradient gets marked down for measuring
+ * the face correctly. That is what drove a well-lit photo to 18% confidence.
+ *
+ * Regions disagreeing in **chroma** is a different matter entirely. Skin hue is
+ * near-constant across one person's face, so if the left cheek is measurably
+ * yellower than the right, two differently-coloured lights are hitting the face
+ * — a window on one side, a warm bulb on the other — and no single correction can
+ * fix both halves. That one really does invalidate the reading.
+ *
+ * So chroma is gated tightly and lightness loosely, and the confidence factor
+ * weights chroma the heavier of the two.
+ */
+const MAX_CHROMA_DISAGREEMENT = 7;
+const WARN_CHROMA_DISAGREEMENT = 3.5;
 
-/** Cross-patch ΔE above which the reading is offered but flagged. */
-const WARN_PATCH_DISAGREEMENT = 6;
+/** Worst |ΔL*| from the group colour that is still just facial gradient. */
+const MAX_LIGHTNESS_DISAGREEMENT = 20;
+const WARN_LIGHTNESS_DISAGREEMENT = 11;
 
 /**
  * ΔE from the group's median colour beyond which a single patch is treated as an
@@ -252,13 +273,24 @@ const PATCH_OUTLIER_DELTA_E = 8;
 /** Within-patch L* spread above which a patch is textured, shadowed or hairy. */
 const MAX_PATCH_STDDEV = 14;
 
+/** Within-patch L* spread that is ordinary skin texture and costs nothing. */
+const WARN_PATCH_STDDEV = 7;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // White balance
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Von Kries channel scaling: divide each channel by the illuminant's estimate of
- * itself so the illuminant becomes neutral grey, preserving overall brightness.
+ * itself so the illuminant becomes neutral grey.
+ *
+ * Gains are normalised to **unit geometric mean**, which makes the correction
+ * purely chromatic: it rotates the colour of the light without changing exposure.
+ * The obvious alternative — `arithmeticMean / channel`, which is what this
+ * function used to do — has a geometric mean of `mean / geomean ≥ 1`, so it
+ * quietly brightens the image by an amount that depends on how coloured the light
+ * was. That leak lands in L\*, and L\* feeds ITA°, which sets the depth label. A
+ * white-balance routine must not be able to move somebody from `tan` to `light`.
  *
  * Gains are clamped. An unclamped gain from a near-zero channel — a photo under a
  * pure red light, say — produces absurd corrections that look like a valid answer.
@@ -267,18 +299,16 @@ const MAX_PATCH_STDDEV = 14;
  * silently rescues a photo that should have been retaken.
  */
 export function whiteBalanceGains(illuminant: Illuminant): {
-  gains: { r: number; g: number; b: number };
+  gains: Gains;
   cast: number;
 } {
-  const { r, g, b } = illuminant;
   const safe = (v: number) => Math.max(1, v);
-  const grey = (safe(r) + safe(g) + safe(b)) / 3;
+  const R = safe(illuminant.r);
+  const G = safe(illuminant.g);
+  const B = safe(illuminant.b);
 
-  const raw = {
-    r: grey / safe(r),
-    g: grey / safe(g),
-    b: grey / safe(b),
-  };
+  const geo = Math.cbrt(R * G * B);
+  const raw = { r: geo / R, g: geo / G, b: geo / B };
 
   // How far from neutral the light was, before any clamping.
   const values = [raw.r, raw.g, raw.b];
@@ -288,11 +318,229 @@ export function whiteBalanceGains(illuminant: Illuminant): {
   return { gains: { r: clamp(raw.r), g: clamp(raw.g), b: clamp(raw.b) }, cast };
 }
 
-function applyGains(rgb: Rgb, gains: { r: number; g: number; b: number }): Rgb {
+export type Gains = { r: number; g: number; b: number };
+
+const IDENTITY_GAINS: Gains = { r: 1, g: 1, b: 1 };
+
+/**
+ * The same correction applied at partial strength, `gains^α`.
+ *
+ * Geometric rather than linear interpolation toward identity, because a von Kries
+ * correction is multiplicative: `gains^α` stays on the same adaptation ray, so α
+ * slides smoothly from "no correction" to "full correction" without ever pointing
+ * somewhere neither endpoint pointed. And because {@link whiteBalanceGains}
+ * returns gains of unit geometric mean, `gains^α` has unit geometric mean too —
+ * so α is a pure chroma dial that cannot move L\*.
+ */
+function gainsAtStrength(gains: Gains, alpha: number): Gains {
+  if (alpha >= 1) return gains;
+  if (alpha <= 0) return IDENTITY_GAINS;
+  return {
+    r: Math.pow(gains.r, alpha),
+    g: Math.pow(gains.g, alpha),
+    b: Math.pow(gains.b, alpha),
+  };
+}
+
+function applyGains(rgb: Rgb, gains: Gains): Rgb {
   return {
     r: Math.min(255, Math.max(0, rgb.r * gains.r)),
     g: Math.min(255, Math.max(0, rgb.g * gains.g)),
     b: Math.min(255, Math.max(0, rgb.b * gains.b)),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The skin locus — the constraint that keeps white balance honest
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Human skin occupies a compact, well-mapped region of colour space, and that
+ * fact is the only reliable defence against the failure mode that broke this
+ * feature in the field.
+ *
+ * ## The failure it exists to catch
+ *
+ * Every whole-scene colour-constancy estimator — gray-world, max-RGB,
+ * shades-of-grey — rests on the grey-world assumption: that the average of the
+ * scene is achromatic, so whatever colour the average has must be the colour of
+ * the light. In a **selfie the face is the scene.** The estimator therefore
+ * converges on skin colour, and dividing skin by skin returns grey. Measured on
+ * real frames it returned C\* 6.6 where the complexion was C\* ≈ 22 — roughly
+ * two-thirds of the skin's chroma deleted and handed back as a confident answer.
+ *
+ * Three separate symptoms, one cause:
+ *
+ *  - every catalog shade reads as "too orange", because the *skin* went grey;
+ *  - `ITA° = arctan((L*−50)/b*)` inflates without limit as b\* → 0, so depth
+ *    misclassifies — a tan complexion is reported `fair`;
+ *  - the illuminant-cast gate cannot see it. Skin's own R:B ratio is the same
+ *    magnitude as a mild cast, so the ratio lands around 1.2–1.6 and sails past a
+ *    threshold set at 1.75.
+ *
+ * That last point is why a threshold on the *input* cannot fix this and a check on
+ * the **output** can. Sampling the illuminant away from the face (which
+ * `skin_sampler.dart` now does) removes most of the bias; this removes the rest,
+ * including the cases the device cannot detect — a coloured wall, a tinted mirror,
+ * an OEM camera that has already white-balanced destructively.
+ *
+ * ## The rule
+ *
+ * The illuminant estimate **proposes**; the skin locus **vetoes**. The strength of
+ * the correction is reduced until the corrected colour is a colour a person could
+ * actually be, and never below that. Crucially the locus can only ever *reduce* a
+ * correction — it never adds chroma, never nudges hue, and is never a hard gate.
+ *
+ * The distinction matters, and it is the whole reason this is a measurement rather
+ * than a lookup: forcing the reading onto a reference complexion would make the
+ * output a function of the reference instead of the face, and the shade
+ * recommendation would be the same for everybody. Inside the locus the answer is
+ * whatever the pixels say. The locus only refuses to believe impossibilities.
+ *
+ * ## Where the boundary comes from
+ *
+ * The chroma envelope is a piecewise-linear ramp over L\*, drawn *generously* —
+ * the floor sits below anything the skin-colorimetry literature reports for
+ * facial skin (Chardon et al. 1991; Xiao et al., *Color Research & Application*
+ * 2017), so a real complexion is never vetoed. It has to be generous in both
+ * directions: chroma genuinely falls at the deep end, and a floor tuned for
+ * mid-tone skin would veto deep complexions — the same class of mistake as
+ * rejecting a deep complexion as an underexposed photo. The deepest Monk swatch
+ * measures C\* 3.5, and it passes.
+ *
+ * Conceptually this is gamut-constrained colour constancy (Forsyth, *IJCV* 1990),
+ * with the constraint set being the skin locus (Störring et al. 1999; Gomez &
+ * Morales 2002) rather than the full reflectance gamut.
+ */
+const SKIN_CHROMA_FLOOR: readonly (readonly [number, number])[] = [
+  [0, 2.0],
+  [20, 2.2],
+  [35, 6.0],
+  [50, 9.0],
+  [70, 9.0],
+  [85, 7.0],
+  [100, 4.0],
+];
+
+/** Upper envelope. Catches a correction that *over*-saturates, e.g. under cyan light. */
+const SKIN_CHROMA_CEILING: readonly (readonly [number, number])[] = [
+  [0, 22],
+  [25, 28],
+  [45, 42],
+  [65, 48],
+  [85, 42],
+  [100, 32],
+];
+
+/**
+ * Hue window for facial skin, degrees. Haemoglobin puts a floor under a\* and
+ * melanin/carotene put b\* above it, so skin is always in the yellow-red quadrant;
+ * nothing human is green, magenta or blue. Widened past the ~35–75° the literature
+ * reports so that a genuinely unusual complexion is never vetoed.
+ */
+const SKIN_HUE_MIN = 18;
+const SKIN_HUE_MAX = 88;
+
+/** Piecewise-linear interpolation over an ascending table of [L*, value] pairs. */
+function rampAt(table: readonly (readonly [number, number])[], L: number): number {
+  if (L <= table[0][0]) return table[0][1];
+  const last = table[table.length - 1];
+  if (L >= last[0]) return last[1];
+  for (let i = 1; i < table.length; i++) {
+    const [x1, y1] = table[i];
+    if (L <= x1) {
+      const [x0, y0] = table[i - 1];
+      return y0 + ((L - x0) / (x1 - x0)) * (y1 - y0);
+    }
+  }
+  return last[1];
+}
+
+export function skinChromaFloor(L: number): number {
+  return rampAt(SKIN_CHROMA_FLOOR, L);
+}
+
+export function skinChromaCeiling(L: number): number {
+  return rampAt(SKIN_CHROMA_CEILING, L);
+}
+
+export type LocusVerdict = {
+  inside: boolean;
+  /** Which bound was violated, phrased for a log rather than for a user. */
+  reason: "chroma-too-low" | "chroma-too-high" | "hue-outside" | null;
+  chroma: number;
+  hue: number;
+  floor: number;
+  ceiling: number;
+};
+
+/** Whether a measured colour is one a human face could have had. */
+export function skinLocusCheck(lab: Lab): LocusVerdict {
+  const c = chroma(lab);
+  const h = hueAngle(lab);
+  const floor = skinChromaFloor(lab.L);
+  const ceiling = skinChromaCeiling(lab.L);
+
+  let reason: LocusVerdict["reason"] = null;
+  if (c < floor) reason = "chroma-too-low";
+  else if (c > ceiling) reason = "chroma-too-high";
+  // Hue is meaningless at near-zero chroma, and "chroma too low" already says it.
+  else if (c >= floor && (h < SKIN_HUE_MIN || h > SKIN_HUE_MAX)) reason = "hue-outside";
+
+  return { inside: reason === null, reason, chroma: c, hue: h, floor, ceiling };
+}
+
+/** Steps of α tried when backing a correction off. 0.05 is finer than ΔE 1. */
+const STRENGTH_STEP = 0.05;
+
+export type ConstrainedWhiteBalance = {
+  gains: Gains;
+  /** α actually used, 0–1. Below 1 means the light estimate was overruled. */
+  strength: number;
+  /** The locus verdict for the colour these gains produce. */
+  verdict: LocusVerdict;
+  /** The verdict at full strength, i.e. what was rejected. Null when α = 1. */
+  rejected: LocusVerdict | null;
+};
+
+/**
+ * Finds the strongest correction that still lands inside the skin locus.
+ *
+ * Scanned rather than solved. Chroma-after-correction is monotone in α over the
+ * range that matters in practice, so a bisection would normally do — but "in
+ * practice" is doing a lot of work in that sentence, and a scan of 21 evaluations
+ * of a function this cheap is immune to being wrong about it. Taking the *largest*
+ * passing α also means a non-monotone case degrades into "correct less", which is
+ * the safe direction.
+ *
+ * When even α = 0 is outside the locus the raw pixels are themselves implausible.
+ * That is not something a correction can repair, so the reading is returned
+ * uncorrected and flagged — never refused. Refusing here would reject the deepest
+ * complexions, whose chroma really is low, which is exactly the bug this file
+ * already carries a regression test for at the lightness end.
+ */
+export function constrainWhiteBalance(
+  gains: Gains,
+  measureAt: (gains: Gains) => Lab
+): ConstrainedWhiteBalance {
+  const full = skinLocusCheck(measureAt(gains));
+  if (full.inside) {
+    return { gains, strength: 1, verdict: full, rejected: null };
+  }
+
+  for (let alpha = 1 - STRENGTH_STEP; alpha > 0; alpha -= STRENGTH_STEP) {
+    const trial = gainsAtStrength(gains, alpha);
+    const verdict = skinLocusCheck(measureAt(trial));
+    if (verdict.inside) {
+      return { gains: trial, strength: alpha, verdict, rejected: full };
+    }
+  }
+
+  return {
+    gains: IDENTITY_GAINS,
+    strength: 0,
+    verdict: skinLocusCheck(measureAt(IDENTITY_GAINS)),
+    rejected: full,
   };
 }
 
@@ -307,19 +555,83 @@ function median(values: number[]): number {
 }
 
 /**
- * Combines patches by taking the median of each channel across regions.
+ * Pixel count past which extra pixels stop earning extra weight.
  *
- * Median again, not mean: one patch landing on a shadow, a stray hair, or the
- * edge of blush should not move the answer, and with five regions the median
- * tolerates one bad patch outright. Averaging would let a single bad region drag
- * the result by more than the gap between two foundation shades.
+ * The device samples polygons now, not fixed discs, so a forehead can return
+ * fifty times the pixels of a glabella strip. Weighting by raw pixel count in
+ * that situation is not "more robust", it is the opposite: the cumulative weight
+ * crosses the halfway mark *inside* the forehead, the forehead's value is returned
+ * verbatim, and a five-region measurement collapses into a one-region one.
+ *
+ * So weight is `sqrt(pixels)` — the standard error of a mean falls as 1/√n, so √n
+ * is the weight that actually corresponds to how much more a bigger sample knows
+ * — and the count is capped first. Past a few thousand pixels a patch's median is
+ * already far more stable than the between-region variation the median exists to
+ * absorb, so the extra pixels buy nothing worth surrendering robustness for.
+ */
+const MAX_WEIGHT_PIXELS = 4000;
+
+function patchWeight(p: SkinPatch): number {
+  return Math.sqrt(Math.min(Math.max(p.pixels, 1), MAX_WEIGHT_PIXELS));
+}
+
+/**
+ * Median where each value carries a weight: the value at which cumulative weight
+ * crosses half the total.
+ *
+ * Reduces **exactly** to {@link median} when the weights are equal, including the
+ * average-the-two-middle-values behaviour for an even count — the `acc === half`
+ * branch is what preserves that. Worth stating because the existing regression
+ * tests pin plain-median behaviour, and a weighted median that quietly disagreed
+ * with them at equal weights would be a different estimator wearing the same name.
+ */
+function weightedMedian(values: number[], weights: number[]): number {
+  const pairs = values
+    .map((value, i) => ({ value, weight: weights[i] }))
+    .sort((x, y) => x.value - y.value);
+
+  const total = pairs.reduce((t, p) => t + p.weight, 0);
+  if (!(total > 0)) return median(values);
+
+  const half = total / 2;
+  let acc = 0;
+  for (let i = 0; i < pairs.length; i++) {
+    acc += pairs[i].weight;
+    if (acc > half) return pairs[i].value;
+    if (acc === half) {
+      // Exactly on the boundary — straddle it, which is what a plain median does
+      // for an even count.
+      return (pairs[i].value + pairs[Math.min(i + 1, pairs.length - 1)].value) / 2;
+    }
+  }
+  return pairs[pairs.length - 1].value;
+}
+
+/**
+ * Combines patches by taking the weighted median of each channel across regions.
+ *
+ * Median, not mean: one patch landing on a shadow, a stray hair, or the edge of
+ * blush should not move the answer, and with five regions the median tolerates one
+ * bad patch outright. Averaging would let a single bad region drag the result by
+ * more than the gap between two foundation shades.
  */
 function aggregatePatches(patches: SkinPatch[]): Rgb {
+  const w = patches.map(patchWeight);
   return {
-    r: median(patches.map((p) => p.r)),
-    g: median(patches.map((p) => p.g)),
-    b: median(patches.map((p) => p.b)),
+    r: weightedMedian(patches.map((p) => p.r), w),
+    g: weightedMedian(patches.map((p) => p.g), w),
+    b: weightedMedian(patches.map((p) => p.b), w),
   };
+}
+
+/** Aggregate the patches after applying a candidate white balance. */
+function aggregateAt(patches: SkinPatch[], gains: Gains): Rgb {
+  return aggregatePatches(
+    patches.map((p) => {
+      const c = applyGains({ r: p.r, g: p.g, b: p.b }, gains);
+      return { ...p, r: c.r, g: c.g, b: c.b };
+    })
+  );
 }
 
 /**
@@ -340,8 +652,8 @@ function rejectOutliers(patches: SkinPatch[]): {
   kept: SkinPatch[];
   dropped: SkinPatch[];
   colour: Rgb;
-  /** Worst ΔE from the final colour among the kept patches. */
-  disagreement: number;
+  /** How far the kept patches spread from the final colour, split by axis. */
+  spread: Spread;
 } {
   const provisional = aggregatePatches(patches);
   const provisionalLab = rgbToLab(provisional);
@@ -361,7 +673,7 @@ function rejectOutliers(patches: SkinPatch[]): {
       kept: patches,
       dropped: [],
       colour: provisional,
-      disagreement: worstDeviation(patches, provisionalLab),
+      spread: spreadOf(patches, provisionalLab),
     };
   }
 
@@ -370,18 +682,39 @@ function rejectOutliers(patches: SkinPatch[]): {
     kept,
     dropped,
     colour,
-    disagreement: worstDeviation(kept, rgbToLab(colour)),
+    spread: spreadOf(kept, rgbToLab(colour)),
   };
 }
 
-/** Worst ΔE2000 between any patch and a given colour. */
-function worstDeviation(patches: SkinPatch[], lab: Lab): number {
-  let worst = 0;
+/** How far patches deviate from the group colour, per axis. */
+export type Spread = {
+  /** Worst ΔE2000. Kept for outlier reporting and for the warning text. */
+  deltaE: number;
+  /**
+   * Worst Euclidean distance in the (a\*, b\*) plane.
+   *
+   * The chromatic half of the disagreement, and the half that matters. Measured
+   * across the plane rather than as |ΔC\*| so that a *hue* split counts: two
+   * lights of different colour temperature typically leave one cheek yellower and
+   * the other pinker at nearly the same chroma, which |ΔC\*| would score as
+   * perfect agreement.
+   */
+  chroma: number;
+  /** Worst |ΔL*|. Mostly anatomy and surface curvature, so judged loosely. */
+  lightness: number;
+};
+
+function spreadOf(patches: SkinPatch[], lab: Lab): Spread {
+  let deltaE = 0;
+  let chromatic = 0;
+  let lightness = 0;
   for (const p of patches) {
-    const d = deltaE2000(rgbToLab({ r: p.r, g: p.g, b: p.b }), lab);
-    if (d > worst) worst = d;
+    const pl = rgbToLab({ r: p.r, g: p.g, b: p.b });
+    deltaE = Math.max(deltaE, deltaE2000(pl, lab));
+    chromatic = Math.max(chromatic, Math.hypot(pl.a - lab.a, pl.b - lab.b));
+    lightness = Math.max(lightness, Math.abs(pl.L - lab.L));
   }
-  return worst;
+  return { deltaE, chroma: chromatic, lightness };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

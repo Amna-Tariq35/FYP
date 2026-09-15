@@ -3,7 +3,7 @@
 import { useMemo, useState, useEffect } from "react";
 import { MakeupProduct, ProductShade } from "@/src/types/catalog";
 import { addToCart } from "@/src/store/cart";
-import { Check, Heart } from "lucide-react";
+import { Check, Heart, Mail } from "lucide-react";
 import { useWishlist } from "@/src/hooks/useWishlist"; // 🆕 Import Hook
 import { useSearchParams } from "next/navigation"; // 🆕 add karo
 
@@ -26,6 +26,8 @@ export default function AddToCartPanel({ product, shades }: Props) {
   const [selectedShadeKey, setSelectedShadeKey] = useState<string | null>(null);
   const [quantity, setQuantity] = useState(1);
   const [added, setAdded] = useState(false);
+  const [notifyEmail, setNotifyEmail] = useState("");
+  const [notifyState, setNotifyState] = useState<"idle" | "sending" | "done" | "error">("idle");
 
   const hasShades = shades.length > 0;
   const selectedShade = useMemo(
@@ -52,7 +54,8 @@ export default function AddToCartPanel({ product, shades }: Props) {
       }
     }
   }, [searchParams, wishlist, product.product_key, shades]);
-  const canAdd = !hasShades || !!selectedShade;
+  const inStock = product.stock_quantity > 0;
+  const canAdd = inStock && quantity <= product.stock_quantity && (!hasShades || !!selectedShade);
   const isCurrentlyWished = isWished(product.product_key, selectedShadeKey); // 🆕 Check status
 
   function handleAdd() {
@@ -69,6 +72,24 @@ export default function AddToCartPanel({ product, shades }: Props) {
     });
     setAdded(true);
     setTimeout(() => setAdded(false), 1800);
+  }
+
+  async function handleNotify() {
+    setNotifyState("sending");
+    try {
+      const response = await fetch("/api/product-restock-alerts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          product_key: product.product_key,
+          shade_key: selectedShade?.shade_key ?? null,
+          email: notifyEmail,
+        }),
+      });
+      setNotifyState(response.ok ? "done" : "error");
+    } catch {
+      setNotifyState("error");
+    }
   }
 
   return (
@@ -143,13 +164,48 @@ export default function AddToCartPanel({ product, shades }: Props) {
           </span>
           <button
             type="button"
-            onClick={() => setQuantity((q) => q + 1)}
+            onClick={() => setQuantity((q) => Math.min(product.stock_quantity, q + 1))}
+            disabled={quantity >= product.stock_quantity}
             className="h-8 w-8 rounded-lg border border-[var(--border-soft)] hover:border-[var(--rose-primary)] hover:text-[var(--rose-primary)] text-[var(--text-main)] transition flex items-center justify-center select-none text-base font-medium"
           >
             +
           </button>
         </div>
       </div>
+
+      {!inStock && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 space-y-3">
+          <div className="flex items-center gap-2 text-sm font-semibold text-amber-900">
+            <Mail size={16} />
+            Notify me when back in stock
+          </div>
+          {notifyState === "done" ? (
+            <p className="text-sm text-emerald-700">You&apos;ll be notified when this product returns.</p>
+          ) : (
+            <>
+              <input
+                type="email"
+                value={notifyEmail}
+                onChange={(event) => setNotifyEmail(event.target.value)}
+                placeholder="Email address"
+                className="w-full rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400"
+                aria-label="Email address for restock notification"
+              />
+              <button
+                type="button"
+                onClick={handleNotify}
+                disabled={notifyState === "sending"}
+                className="w-full rounded-lg bg-amber-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+              >
+                {notifyState === "sending" ? "Saving…" : "Notify me"}
+              </button>
+              {notifyState === "error" && (
+                <p className="text-xs text-red-700">Enter a valid email or try again.</p>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {/* ── Action Buttons ── */}
       <div className="flex items-center gap-3">
@@ -192,6 +248,8 @@ export default function AddToCartPanel({ product, shades }: Props) {
               <Check size={15} strokeWidth={2.5} />
               Added to cart
             </>
+          ) : !inStock ? (
+            "Out of stock"
           ) : canAdd ? (
             "Add to cart"
           ) : (

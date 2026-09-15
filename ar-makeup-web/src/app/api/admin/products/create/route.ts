@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { verifyAdmin } from '@/src/lib/adminAuth';
+import { isValidCategoryCombination, normalizeCategory } from '@/src/lib/catalog/category-taxonomy';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -22,6 +23,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Missing required product fields" }, { status: 400 });
     }
 
+    const mainCategory = normalizeCategory(product.main_category || "makeup");
+    const category = normalizeCategory(product.category);
+    if (!isValidCategoryCombination(mainCategory, category)) {
+      return NextResponse.json({ error: "Category does not belong to the selected department." }, { status: 400 });
+    }
+
     // 1. Insert Product into makeup_products
     const { data: newProduct, error: productError } = await supabaseAdmin
       .from('makeup_products')
@@ -29,7 +36,8 @@ export async function POST(request: Request) {
         product_key: product.product_key,
         name: product.name,
         brand: product.brand,
-        category: product.category,
+        main_category: mainCategory,
+        category,
         price: product.price,
         image_url: product.image_url || null,
         description: product.description || "",
@@ -42,7 +50,11 @@ export async function POST(request: Request) {
 
     // 2. Insert Initial Shades (if any)
     if (initialShades && initialShades.length > 0) {
-      const shadesToInsert = initialShades.map((shade: any, index: number) => ({
+      const shadesToInsert = initialShades.map((shade: {
+        shade_key: string;
+        shade_name: string;
+        shade_hex: string;
+      }, index: number) => ({
         product_key: product.product_key,
         shade_key: shade.shade_key,
         shade_name: shade.shade_name,
@@ -58,8 +70,8 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json({ success: true, product: newProduct });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Create Product Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Product creation failed." }, { status: 500 });
   }
 }

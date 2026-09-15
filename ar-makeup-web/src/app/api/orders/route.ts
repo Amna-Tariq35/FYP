@@ -4,6 +4,7 @@ import { createSupabaseServerClient } from "@/src/lib/supabase/server";
 import type { CreateOrderPayload } from "@/src/types/order";
 import { randomUUID } from "crypto";
 import { createClient } from "@supabase/supabase-js";
+import { createSupabaseAdminClient } from "@/src/lib/supabase/admin";
 
 function jsonError(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status });
@@ -31,6 +32,21 @@ type NormalizedItem = {
   shade_name: string | null;
   image_url: string | null;
   unit_price: number;
+};
+
+type CatalogProduct = {
+  product_key: string;
+  name: string;
+  brand: string | null;
+  image_url: string | null;
+  price: number | null;
+  is_active: boolean | null;
+};
+
+type CatalogShade = {
+  product_key: string;
+  shade_key: string;
+  shade_name: string;
 };
 
 // ✅ anon client with guest header (for RLS checks using request.headers)
@@ -79,33 +95,71 @@ export async function POST(req: Request) {
   // -----------------------------
   // Validate + normalize items
   // -----------------------------
-  const normalizedItems: NormalizedItem[] = body.items
+  const requestedItems = body.items
     .map((it) => {
       const product_key = safeString(it.product_key);
       const shade_key = it.shade_key ? safeString(it.shade_key) : null;
 
       const quantity = Math.floor(safeNumber(it.quantity));
-      const unit_price = safeNumber(it.price);
-
-      const name = safeString(it.name) || product_key;
-      const brand = it.brand ? safeString(it.brand) : null;
-      const shade_name = it.shade_name ? safeString(it.shade_name) : null;
-      const image_url = it.image_url ? safeString(it.image_url) : null;
+      const clientPrice = safeNumber(it.price);
 
       return {
         product_key,
         shade_key,
         quantity,
-        name,
-        brand,
-        shade_name,
-        image_url,
-        unit_price,
+        clientPrice,
       };
     })
     .filter((it) => it.product_key && it.quantity > 0);
 
-  if (normalizedItems.length === 0) return jsonError("No valid cart items.");
+  if (requestedItems.length === 0) return jsonError("No valid cart items.");
+
+  const supabaseAdmin = createSupabaseAdminClient();
+  const productKeys = [...new Set(requestedItems.map((item) => item.product_key))];
+  const { data: products, error: productsError } = await supabaseAdmin
+    .from("makeup_products")
+    .select("product_key,name,brand,image_url,price,is_active")
+    .in("product_key", productKeys);
+  if (productsError) return jsonError("Could not validate products.", 500);
+
+  const productMap = new Map((products as CatalogProduct[] | null ?? []).map((product) => [product.product_key, product]));
+  const { data: shades, error: shadesError } = await supabaseAdmin
+    .from("product_shades")
+    .select("product_key,shade_key,shade_name")
+    .in("product_key", productKeys);
+  if (shadesError) return jsonError("Could not validate shades.", 500);
+  const shadeMap = new Map(
+    (shades as CatalogShade[] | null ?? []).map((shade) => [`${shade.product_key}:${shade.shade_key}`, shade]),
+  );
+
+  const normalizedItems: NormalizedItem[] = [];
+  for (const item of requestedItems) {
+    const product = productMap.get(item.product_key);
+    if (!product || product.is_active === false || product.price === null) {
+      return jsonError(`Product ${item.product_key} is unavailable.`, 409);
+    }
+    if (Math.abs(product.price - item.clientPrice) > 0.01) {
+      return jsonError(`The price for ${product.name} has changed. Refresh your cart.`, 409);
+    }
+
+    const shade = item.shade_key && item.shade_key !== "no-shade"
+      ? shadeMap.get(`${item.product_key}:${item.shade_key}`)
+      : null;
+    if (item.shade_key && item.shade_key !== "no-shade" && !shade) {
+      return jsonError(`Selected shade for ${product.name} is unavailable.`, 409);
+    }
+
+    normalizedItems.push({
+      product_key: product.product_key,
+      shade_key: shade?.shade_key ?? null,
+      quantity: item.quantity,
+      name: product.name,
+      brand: product.brand,
+      shade_name: shade?.shade_name ?? null,
+      image_url: product.image_url,
+      unit_price: product.price,
+    });
+  }
 
   // -----------------------------
   // Totals
@@ -133,6 +187,28 @@ export async function POST(req: Request) {
   const user_email = user_id ? (user?.email ?? null) : null;
   if (!user_id && !guest_email) {
     return jsonError("Email is required for guest checkout.");
+  }
+
+  const reservedItems: NormalizedItem[] = [];
+  try {
+    for (const item of normalizedItems) {
+      const { error: reserveError } = await supabaseAdmin.rpc("reserve_product_stock", {
+        p_product_key: item.product_key,
+        p_quantity: item.quantity,
+      });
+      if (reserveError) throw reserveError;
+      reservedItems.push(item);
+    }
+  } catch (error) {
+    await Promise.all(
+      reservedItems.map((item) =>
+        supabaseAdmin.rpc("release_product_stock", {
+          p_product_key: item.product_key,
+          p_quantity: item.quantity,
+        }),
+      ),
+    );
+    return jsonError("Some items are out of stock. Please refresh your cart.", 409);
   }
 
   // -----------------------------
@@ -164,6 +240,12 @@ export async function POST(req: Request) {
       .single();
 
     if (error || !data?.id) {
+      await Promise.all(
+        reservedItems.map((item) => supabaseAdmin.rpc("release_product_stock", {
+          p_product_key: item.product_key,
+          p_quantity: item.quantity,
+        })),
+      );
       console.error("ORDER INSERT ERROR (auth):", error);
       return NextResponse.json(
         { error: "Failed to create order.", details: error?.message ?? null },
@@ -193,6 +275,12 @@ export async function POST(req: Request) {
     });
 
     if (insertErr) {
+      await Promise.all(
+        reservedItems.map((item) => supabaseAdmin.rpc("release_product_stock", {
+          p_product_key: item.product_key,
+          p_quantity: item.quantity,
+        })),
+      );
       console.error("ORDER INSERT ERROR (guest):", insertErr);
       return NextResponse.json(
         { error: "Failed to create order.", details: insertErr.message },
@@ -252,6 +340,13 @@ export async function POST(req: Request) {
     } catch (e) {
       console.warn("Rollback delete failed (RLS may block):", e);
     }
+
+    await Promise.all(
+      reservedItems.map((item) => supabaseAdmin.rpc("release_product_stock", {
+        p_product_key: item.product_key,
+        p_quantity: item.quantity,
+      })),
+    );
 
     return NextResponse.json(
       { error: "Failed to create order items.", details: itemsErr.message },

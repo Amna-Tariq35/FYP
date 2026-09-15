@@ -1,11 +1,13 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { DollarSign, ShoppingBag, Clock, ArrowRight } from "lucide-react";
+import { DollarSign, ShoppingBag, Clock, ArrowRight, AlertTriangle } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/src/lib/supabase/client";
 
 type StatusStyle = { bg: string; text: string };
+type DashboardOrder = { id: string; shipping_name: string | null; total: number; status: string };
+type LowStockProduct = { id: string; name: string; stock_quantity: number; low_stock_threshold: number };
 
 function orderStatusStyle(status: string): StatusStyle {
   const s = (status || "").toLowerCase();
@@ -24,7 +26,8 @@ type DashboardStats = {
   totalRevenue: number;
   totalOrders: number;
   pendingOrdersCount: number;
-  recentOrders: any[];
+  recentOrders: DashboardOrder[];
+  lowStockProducts: LowStockProduct[];
 };
 
 export default function AdminDashboard() {
@@ -35,6 +38,7 @@ export default function AdminDashboard() {
     totalOrders: 0,
     pendingOrdersCount: 0,
     recentOrders: [],
+    lowStockProducts: [],
   });
   const [loading, setLoading] = useState(true);
 
@@ -55,6 +59,7 @@ export default function AdminDashboard() {
             totalOrders: data.totalOrders || 0,
             pendingOrdersCount: data.pendingOrdersCount || 0,
             recentOrders: data.recentOrders || [],
+            lowStockProducts: data.lowStockProducts || [],
           });
         }
       } catch (err) {
@@ -138,6 +143,43 @@ export default function AdminDashboard() {
             </div>
           </div>
         ))}
+      </div>
+
+      <div
+        className="overflow-hidden rounded-2xl border"
+        style={{ borderColor: "var(--border-soft)", background: "var(--bg-section)" }}
+      >
+        <div className="flex items-center justify-between border-b px-6 py-4" style={{ borderColor: "var(--border-soft)" }}>
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={16} className="text-amber-600" />
+            <p className="text-[14px] font-semibold text-[var(--text-main)]">Low stock</p>
+          </div>
+          <button
+            onClick={() => router.push("/admin/products")}
+            className="flex items-center gap-1.5 text-[12.5px] font-medium hover:underline"
+            style={{ color: "var(--rose-primary)" }}
+          >
+            Manage <ArrowRight size={13} />
+          </button>
+        </div>
+        {stats.lowStockProducts.length === 0 ? (
+          <p className="px-6 py-6 text-[13px] text-[var(--text-muted)]">All active products have healthy stock.</p>
+        ) : (
+          <div className="divide-y" style={{ borderColor: "var(--border-soft)" }}>
+            {stats.lowStockProducts.map((product) => (
+              <button
+                key={product.id}
+                onClick={() => router.push(`/admin/products/${product.id}`)}
+                className="flex w-full items-center justify-between px-6 py-3 text-left hover:bg-[var(--bg-base)]"
+              >
+                <span className="text-[13px] font-medium text-[var(--text-main)]">{product.name}</span>
+                <span className={`text-[12px] font-semibold ${product.stock_quantity === 0 ? "text-red-600" : "text-amber-700"}`}>
+                  {product.stock_quantity} left / alert at {product.low_stock_threshold}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Recent orders */}

@@ -6,7 +6,7 @@ import '../cache/makeup_bag_cache.dart';
 import '../cache/products_cache.dart';
 
 /// Base URL of the web app. Swap for the production domain when deployed.
-const String kWebBaseUrl = 'https://tommie-mushy-noumenally.ngrok-free.dev';
+const String kWebBaseUrl = 'https://ar-makeup-web.vercel.app/';
 
 class MakeupBagScreen extends StatefulWidget {
   const MakeupBagScreen({super.key});

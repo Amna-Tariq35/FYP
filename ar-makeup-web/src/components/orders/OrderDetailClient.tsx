@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import ReceiptSummary from "@/src/components/checkout/ReceiptSummary";
+import BuyAgainButton from "@/src/components/orders/BuyAgainButton";
 
 function formatDate(iso: string) {
   try {
@@ -306,6 +307,19 @@ export default function OrderDetailClient({ orderId }: { orderId: string }) {
               <div className="lg:col-span-7">
                 <div className="ui-section p-6">
                   <ReceiptSummary order={receipt.order} items={receipt.items || []} />
+                  <div className="ui-divider mt-5" />
+                  <div className="mt-4 space-y-3">
+                    <h2 className="text-sm font-semibold text-[var(--text-main)]">Buy again</h2>
+                    {(receipt.items || []).map((item) => (
+                      <div key={item.id} className="flex items-center justify-between gap-3 rounded-xl border border-black/5 bg-black/[0.02] px-3 py-2.5">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-[var(--text-main)]">{item.name}</p>
+                          <p className="text-xs text-[var(--text-muted)]">Qty {item.quantity}{item.shade_name ? ` · ${item.shade_name}` : ""}</p>
+                        </div>
+                        <BuyAgainButton orderId={orderId} itemId={item.id} label="Buy again" />
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>

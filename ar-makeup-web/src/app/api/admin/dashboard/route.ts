@@ -28,7 +28,7 @@ export async function GET(request:Request) {
 
     let totalRevenue = 0;
     let pendingOrdersCount = 0;
-    let totalOrders = orders.length;
+    const totalOrders = orders.length;
 
     orders.forEach(order => {
       // Revenue sirf un orders ka count karein jo paid/shipped/delivered hain
@@ -42,6 +42,23 @@ export async function GET(request:Request) {
       }
     });
 
+    const { data: lowStockProducts, error: lowStockError } = await supabaseAdmin
+      .from('makeup_products')
+      .select('id,product_key,name,stock_quantity,low_stock_threshold')
+      .eq('is_active', true)
+      .order('stock_quantity', { ascending: true })
+      .limit(100);
+
+    if (lowStockError) throw lowStockError;
+    const lowStock = (lowStockProducts || [])
+      .map((product) => ({
+        ...product,
+        stock_quantity: Number(product.stock_quantity),
+        low_stock_threshold: Number(product.low_stock_threshold ?? 5),
+      }))
+      .filter((product) => product.stock_quantity <= (product.low_stock_threshold ?? 5))
+      .slice(0, 8);
+
     // Top 5 recent orders dashboard par dikhane ke liye
     const recentOrders = orders.slice(0, 5);
 
@@ -49,11 +66,12 @@ export async function GET(request:Request) {
       totalRevenue,
       totalOrders,
       pendingOrdersCount,
-      recentOrders
+      recentOrders,
+      lowStockProducts: lowStock,
     });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Dashboard Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Dashboard failed." }, { status: 500 });
   }
 }

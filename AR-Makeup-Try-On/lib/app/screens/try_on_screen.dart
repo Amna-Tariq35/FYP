@@ -8,7 +8,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:deepar_flutter/deepar_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:vector_math/vector_math_64.dart' as vector;
-import 'package:url_launcher/url_launcher.dart';
 import '../utils/app_colors.dart';
 import '../utils/color_utils.dart';
 import '../utils/skin_color.dart';
@@ -2064,6 +2063,13 @@ class _TryOnScreenState extends State<TryOnScreen>
     final bool isLoggedIn = Supabase.instance.client.auth.currentUser != null;
     final topPad = MediaQuery.of(context).padding.top;
     final botPad = MediaQuery.of(context).padding.bottom;
+    // 🆕 Bottom sheet is capped to a fraction of the screen so, no matter how
+    // many feature rows it grows (category tabs, bag toggle, find-my-shade,
+    // shade strip, intensity slider), the camera preview above it always
+    // keeps a guaranteed amount of visible space. Content inside scrolls
+    // instead of pushing the sheet — and therefore the camera — smaller.
+    final screenHeight = MediaQuery.of(context).size.height;
+    final maxPanelHeight = screenHeight * 0.46;
 
     return WillPopScope(
       // 🆕 FIX v2: the overlay Navigator (_overlayNavKey) is NOT the app's
@@ -2332,707 +2338,850 @@ class _TryOnScreenState extends State<TryOnScreen>
                     ),
                     child: BackdropFilter(
                       filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: AppColors.surface.withValues(alpha: 0.95),
-                          borderRadius: const BorderRadius.vertical(
-                            top: Radius.circular(36),
-                          ),
-                          border: Border(
-                            top: BorderSide(
-                              color: AppColors.border,
-                              width: 1.2,
+                      child: ConstrainedBox(
+                        // 🆕 Hard cap on the panel's height. Everything below
+                        // the drag handle now lives inside a scroll view, so
+                        // adding more feature rows makes THAT scroll instead
+                        // of growing the panel (and eating the camera).
+                        constraints: BoxConstraints(maxHeight: maxPanelHeight),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: AppColors.surface.withValues(alpha: 0.95),
+                            borderRadius: const BorderRadius.vertical(
+                              top: Radius.circular(36),
                             ),
-                          ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.12),
-                              blurRadius: 30,
-                              offset: const Offset(0, -8),
-                            ),
-                          ],
-                        ),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            // Drag handle
-                            Padding(
-                              padding: const EdgeInsets.only(
-                                top: 12,
-                                bottom: 2,
+                            border: Border(
+                              top: BorderSide(
+                                color: AppColors.border,
+                                width: 1.2,
                               ),
-                              child: Container(
-                                width: 36,
-                                height: 4,
-                                decoration: BoxDecoration(
-                                  color: AppColors.textMuted.withValues(
-                                    alpha: 0.25,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.12),
+                                blurRadius: 30,
+                                offset: const Offset(0, -8),
+                              ),
+                            ],
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              // Drag handle — stays fixed at the top of the
+                              // panel regardless of how much content scrolls
+                              // beneath it.
+                              Padding(
+                                padding: const EdgeInsets.only(
+                                  top: 10,
+                                  bottom: 2,
+                                ),
+                                child: Container(
+                                  width: 36,
+                                  height: 4,
+                                  decoration: BoxDecoration(
+                                    color: AppColors.textMuted.withValues(
+                                      alpha: 0.25,
+                                    ),
+                                    borderRadius: BorderRadius.circular(2),
                                   ),
-                                  borderRadius: BorderRadius.circular(2),
                                 ),
                               ),
-                            ),
 
-                            Padding(
-                              padding: EdgeInsets.fromLTRB(
-                                20,
-                                12,
-                                20,
-                                botPad + 18,
-                              ),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  // ── Header row ───────────────────────
-                                  Row(
+                              // 🆕 Everything else scrolls within the capped
+                              // height instead of forcing the panel taller.
+                              Flexible(
+                                child: SingleChildScrollView(
+                                  physics: const BouncingScrollPhysics(),
+                                  padding: EdgeInsets.fromLTRB(
+                                    20,
+                                    10,
+                                    20,
+                                    botPad + 14,
+                                  ),
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
                                     crossAxisAlignment:
-                                        CrossAxisAlignment.center,
+                                        CrossAxisAlignment.start,
                                     children: [
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              'Virtual Try-On',
-                                              style: TextStyle(
-                                                fontSize: 19,
-                                                fontWeight: FontWeight.w800,
-                                                color: AppColors.textMain,
-                                                letterSpacing: -0.5,
-                                              ),
-                                            ),
-                                            const SizedBox(height: 2),
-                                            Row(
+                                      // ── Header row ───────────────────────
+                                      Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.center,
+                                        children: [
+                                          Expanded(
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
                                               children: [
-                                                Container(
-                                                  width: 6,
-                                                  height: 6,
-                                                  decoration: BoxDecoration(
-                                                    color: AppColors.primary,
-                                                    shape: BoxShape.circle,
+                                                Text(
+                                                  'Virtual Try-On',
+                                                  style: TextStyle(
+                                                    fontSize: 17,
+                                                    fontWeight: FontWeight.w800,
+                                                    color: AppColors.textMain,
+                                                    letterSpacing: -0.5,
                                                   ),
                                                 ),
-                                                const SizedBox(width: 5),
-                                                Text(
-                                                  _getCategoryName(
-                                                    _currentCategory,
-                                                  ),
-                                                  style: TextStyle(
-                                                    fontSize: 12.5,
-                                                    color: AppColors.primary,
-                                                    fontWeight: FontWeight.w600,
-                                                  ),
+                                                const SizedBox(height: 2),
+                                                Row(
+                                                  children: [
+                                                    Container(
+                                                      width: 6,
+                                                      height: 6,
+                                                      decoration: BoxDecoration(
+                                                        color:
+                                                            AppColors.primary,
+                                                        shape: BoxShape.circle,
+                                                      ),
+                                                    ),
+                                                    const SizedBox(width: 5),
+                                                    Text(
+                                                      _getCategoryName(
+                                                        _currentCategory,
+                                                      ),
+                                                      style: TextStyle(
+                                                        fontSize: 12.5,
+                                                        color:
+                                                            AppColors.primary,
+                                                        fontWeight:
+                                                            FontWeight.w600,
+                                                      ),
+                                                    ),
+                                                  ],
                                                 ),
                                               ],
+                                            ),
+                                          ),
+
+                                          // Save button
+                                          GestureDetector(
+                                            onTap: isLoggedIn
+                                                ? () => _showSaveLookDialog()
+                                                : () => _showLoginPrompt(
+                                                    'Sign in to save your look!',
+                                                  ),
+                                            child: AnimatedContainer(
+                                              duration: const Duration(
+                                                milliseconds: 200,
+                                              ),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                horizontal: 16,
+                                                vertical: 9,
+                                              ),
+                                              decoration: BoxDecoration(
+                                                color: isLoggedIn
+                                                    ? AppColors.primary
+                                                    : AppColors.border,
+                                                borderRadius:
+                                                    BorderRadius.circular(
+                                                  50,
+                                                ),
+                                                boxShadow: isLoggedIn
+                                                    ? [
+                                                        BoxShadow(
+                                                          color: AppColors
+                                                              .primary
+                                                              .withValues(
+                                                            alpha: 0.35,
+                                                          ),
+                                                          blurRadius: 16,
+                                                          offset:
+                                                              const Offset(
+                                                            0,
+                                                            5,
+                                                          ),
+                                                        ),
+                                                      ]
+                                                    : null,
+                                              ),
+                                              child: Row(
+                                                mainAxisSize:
+                                                    MainAxisSize.min,
+                                                children: [
+                                                  Icon(
+                                                    Icons
+                                                        .bookmark_add_outlined,
+                                                    color: isLoggedIn
+                                                        ? Colors.white
+                                                        : AppColors.textMuted,
+                                                    size: 15,
+                                                  ),
+                                                  const SizedBox(width: 6),
+                                                  Text(
+                                                    'Save',
+                                                    style: TextStyle(
+                                                      color: isLoggedIn
+                                                          ? Colors.white
+                                                          : AppColors
+                                                              .textMuted,
+                                                      fontWeight:
+                                                          FontWeight.w700,
+                                                      fontSize: 13.5,
+                                                      letterSpacing: 0.1,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+
+                                      const SizedBox(height: 12),
+
+                                      // ── Category tabs ────────────────────
+                                      SingleChildScrollView(
+                                        scrollDirection: Axis.horizontal,
+                                        physics:
+                                            const BouncingScrollPhysics(),
+                                        child: Row(
+                                          children: TryOnCategory.values
+                                              .map(_buildCategoryTab)
+                                              .toList(),
+                                        ),
+                                      ),
+
+                                      const SizedBox(height: 10),
+
+                                      // ── All / My Bag Toggle ───────────────
+                                      ListenableBuilder(
+                                        listenable: MakeupBagCache.instance,
+                                        builder: (context, _) {
+                                          final bagHasItems =
+                                              !MakeupBagCache.instance
+                                                  .isEmpty;
+                                          return Row(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.center,
+                                            children: [
+                                              Container(
+                                                height: 30,
+                                                decoration: BoxDecoration(
+                                                  color: AppColors.background,
+                                                  borderRadius:
+                                                      BorderRadius.circular(
+                                                          20),
+                                                  border: Border.all(
+                                                      color:
+                                                          AppColors.border),
+                                                ),
+                                                child: Row(
+                                                  mainAxisSize:
+                                                      MainAxisSize.min,
+                                                  children: [
+                                                    GestureDetector(
+                                                      onTap: () => setState(
+                                                          () =>
+                                                              _showOnlyMyBag =
+                                                                  false),
+                                                      child: Container(
+                                                        padding:
+                                                            const EdgeInsets
+                                                                .symmetric(
+                                                                horizontal:
+                                                                    16),
+                                                        alignment:
+                                                            Alignment.center,
+                                                        decoration:
+                                                            BoxDecoration(
+                                                          color: !_showOnlyMyBag
+                                                              ? AppColors
+                                                                  .textMain
+                                                              : Colors
+                                                                  .transparent,
+                                                          borderRadius:
+                                                              BorderRadius
+                                                                  .circular(
+                                                                      20),
+                                                        ),
+                                                        child: Text(
+                                                          'All Shades',
+                                                          style: TextStyle(
+                                                            fontSize: 11.5,
+                                                            fontWeight:
+                                                                !_showOnlyMyBag
+                                                                    ? FontWeight
+                                                                        .w600
+                                                                    : FontWeight
+                                                                        .w500,
+                                                            color: !_showOnlyMyBag
+                                                                ? AppColors
+                                                                    .background
+                                                                : AppColors
+                                                                    .textMuted,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ),
+                                                    GestureDetector(
+                                                      onTap: () {
+                                                        if (!isLoggedIn) {
+                                                          _showLoginPrompt(
+                                                              'Sign in to view your bag!');
+                                                          return;
+                                                        }
+                                                        setState(() =>
+                                                            _showOnlyMyBag =
+                                                                true);
+                                                      },
+                                                      child: Container(
+                                                        padding:
+                                                            const EdgeInsets
+                                                                .symmetric(
+                                                                horizontal:
+                                                                    16),
+                                                        alignment:
+                                                            Alignment.center,
+                                                        decoration:
+                                                            BoxDecoration(
+                                                          color: _showOnlyMyBag
+                                                              ? AppColors
+                                                                  .primary
+                                                              : Colors
+                                                                  .transparent,
+                                                          borderRadius:
+                                                              BorderRadius
+                                                                  .circular(
+                                                                      20),
+                                                        ),
+                                                        child: Row(
+                                                          children: [
+                                                            Icon(
+                                                              Icons
+                                                                  .shopping_bag,
+                                                              size: 13,
+                                                              color: _showOnlyMyBag
+                                                                  ? Colors
+                                                                      .white
+                                                                  : AppColors
+                                                                      .textMuted,
+                                                            ),
+                                                            const SizedBox(
+                                                                width: 4),
+                                                            Text(
+                                                              'My Bag',
+                                                              style:
+                                                                  TextStyle(
+                                                                fontSize:
+                                                                    11.5,
+                                                                fontWeight: _showOnlyMyBag
+                                                                    ? FontWeight
+                                                                        .w600
+                                                                    : FontWeight
+                                                                        .w500,
+                                                                color: _showOnlyMyBag
+                                                                    ? Colors
+                                                                        .white
+                                                                    : AppColors
+                                                                        .textMuted,
+                                                              ),
+                                                            ),
+                                                            if (bagHasItems &&
+                                                                !_showOnlyMyBag) ...[
+                                                              const SizedBox(
+                                                                  width: 4),
+                                                              Container(
+                                                                width: 6,
+                                                                height: 6,
+                                                                decoration:
+                                                                    const BoxDecoration(
+                                                                  color: Colors
+                                                                      .redAccent,
+                                                                  shape: BoxShape
+                                                                      .circle,
+                                                                ),
+                                                              ),
+                                                            ]
+                                                          ],
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ],
+                                          );
+                                        },
+                                      ),
+
+                                      // ── Find my shade (foundation only) ───
+                                      if (_currentCategory ==
+                                          TryOnCategory.foundation) ...[
+                                        const SizedBox(height: 10),
+                                        _buildFindMyShadeStrip(),
+                                      ],
+
+                                      const SizedBox(height: 12),
+
+                                      // ── Shade label row ──────────────────
+                                      Row(
+                                        children: [
+                                          Container(
+                                            width: 3,
+                                            height: 14,
+                                            margin: const EdgeInsets.only(
+                                                right: 8),
+                                            decoration: BoxDecoration(
+                                              color: currentSelectedShade !=
+                                                      null
+                                                  ? AppColors.primary
+                                                  : AppColors.border,
+                                              borderRadius:
+                                                  BorderRadius.circular(
+                                                2,
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            child: Text(
+                                              currentSelectedShade != null
+                                                  ? currentSelectedShade
+                                                      .shadeName
+                                                  : 'Choose a shade below',
+                                              style: TextStyle(
+                                                fontSize: 12.5,
+                                                color: currentSelectedShade !=
+                                                        null
+                                                    ? AppColors.textMain
+                                                    : AppColors.textMuted,
+                                                fontWeight:
+                                                    currentSelectedShade !=
+                                                            null
+                                                        ? FontWeight.w600
+                                                        : FontWeight.w400,
+                                              ),
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ),
+                                          if (currentSelectedShade != null)
+                                            _MiniColorDot(
+                                              color:
+                                                  currentSelectedShade.color,
+                                            ),
+                                          if (currentSelectedShade !=
+                                              null) ...[
+                                            const SizedBox(width: 8),
+                                            ListenableBuilder(
+                                              listenable:
+                                                  FavouritesCache.instance,
+                                              builder: (context, _) {
+                                                final isFav = FavouritesCache
+                                                    .instance
+                                                    .isFavourite(
+                                                  currentSelectedShade
+                                                      .productKey,
+                                                  currentSelectedShade
+                                                      .shadeKey,
+                                                );
+                                                return GestureDetector(
+                                                  onTap: () {
+                                                    final user = Supabase
+                                                        .instance
+                                                        .client
+                                                        .auth
+                                                        .currentUser;
+                                                    if (user == null) {
+                                                      _showLoginPrompt(
+                                                        'Sign in to save favourites!',
+                                                      );
+                                                      return;
+                                                    }
+                                                    FavouritesCache.instance
+                                                        .toggleFavourite(
+                                                      currentSelectedShade
+                                                          .productKey,
+                                                      currentSelectedShade
+                                                          .shadeKey,
+                                                    );
+                                                  },
+                                                  child: AnimatedContainer(
+                                                    duration: const Duration(
+                                                      milliseconds: 200,
+                                                    ),
+                                                    padding:
+                                                        const EdgeInsets.all(
+                                                      6,
+                                                    ),
+                                                    decoration: BoxDecoration(
+                                                      color: isFav
+                                                          ? AppColors.primary
+                                                              .withOpacity(
+                                                                  0.1)
+                                                          : Colors
+                                                              .transparent,
+                                                      shape: BoxShape.circle,
+                                                    ),
+                                                    child: Icon(
+                                                      isFav
+                                                          ? Icons
+                                                              .favorite_rounded
+                                                          : Icons
+                                                              .favorite_border_rounded,
+                                                      color: isFav
+                                                          ? AppColors.primary
+                                                          : AppColors
+                                                              .textMuted,
+                                                      size: 20,
+                                                    ),
+                                                  ),
+                                                );
+                                              },
+                                            ),
+                                            const SizedBox(width: 4),
+                                            ListenableBuilder(
+                                              listenable:
+                                                  MakeupBagCache.instance,
+                                              builder: (context, _) {
+                                                final inBag = MakeupBagCache
+                                                    .instance
+                                                    .isInBag(
+                                                  currentSelectedShade
+                                                      .productKey,
+                                                  currentSelectedShade
+                                                      .shadeKey,
+                                                );
+                                                return GestureDetector(
+                                                  onTap: () {
+                                                    final user = Supabase
+                                                        .instance
+                                                        .client
+                                                        .auth
+                                                        .currentUser;
+                                                    if (user == null) {
+                                                      _showLoginPrompt(
+                                                        'Sign in to add to your bag!',
+                                                      );
+                                                      return;
+                                                    }
+                                                    MakeupBagCache.instance
+                                                        .toggleInBag(
+                                                      currentSelectedShade
+                                                          .productKey,
+                                                      currentSelectedShade
+                                                          .shadeKey,
+                                                    );
+                                                  },
+                                                  child: AnimatedContainer(
+                                                    duration: const Duration(
+                                                      milliseconds: 200,
+                                                    ),
+                                                    padding:
+                                                        const EdgeInsets.all(
+                                                      6,
+                                                    ),
+                                                    decoration: BoxDecoration(
+                                                      color: inBag
+                                                          ? AppColors.primary
+                                                              .withOpacity(
+                                                                  0.1)
+                                                          : Colors
+                                                              .transparent,
+                                                      shape: BoxShape.circle,
+                                                    ),
+                                                    child: Icon(
+                                                      inBag
+                                                          ? Icons
+                                                              .shopping_bag_rounded
+                                                          : Icons
+                                                              .shopping_bag_outlined,
+                                                      color: inBag
+                                                          ? AppColors.primary
+                                                          : AppColors
+                                                              .textMuted,
+                                                      size: 20,
+                                                    ),
+                                                  ),
+                                                );
+                                              },
+                                            ),
+                                          ],
+                                        ],
+                                      ),
+
+                                      const SizedBox(height: 8),
+
+                                      // ── Shades list ──────────────────────
+                                      SizedBox(
+                                        height: 52,
+                                        child: _currentShades.isEmpty
+                                            ? Center(
+                                                child: Text(
+                                                  'No shades available',
+                                                  style: TextStyle(
+                                                    color:
+                                                        AppColors.textMuted,
+                                                    fontSize: 13,
+                                                  ),
+                                                ),
+                                              )
+                                            : ListView.builder(
+                                                scrollDirection:
+                                                    Axis.horizontal,
+                                                physics:
+                                                    const BouncingScrollPhysics(),
+                                                itemCount:
+                                                    _currentShades.length +
+                                                        1,
+                                                itemBuilder:
+                                                    (context, index) {
+                                                  if (index == 0) {
+                                                    final cleared =
+                                                        currentSelectedShade ==
+                                                            null;
+                                                    return GestureDetector(
+                                                      onTap: () {
+                                                        setState(
+                                                          () => _selectedShades[
+                                                                  _currentCategory] =
+                                                              null,
+                                                        );
+                                                        _applyColorToDeepAR(
+                                                          null,
+                                                          _currentCategory,
+                                                        );
+                                                      },
+                                                      child: _ShadeCircle(
+                                                        isSelected: cleared,
+                                                        child: Icon(
+                                                          Icons.block_rounded,
+                                                          color: AppColors
+                                                              .textMuted,
+                                                          size: 18,
+                                                        ),
+                                                      ),
+                                                    );
+                                                  }
+
+                                                  final shade =
+                                                      _currentShades[
+                                                          index - 1];
+                                                  final isSelected =
+                                                      currentSelectedShade !=
+                                                              null &&
+                                                          shade.productKey ==
+                                                              currentSelectedShade
+                                                                  .productKey;
+
+                                                  Color displayColor =
+                                                      shade.color;
+                                                  if ((_currentCategory ==
+                                                              TryOnCategory
+                                                                  .eyelashes ||
+                                                          _currentCategory ==
+                                                              TryOnCategory
+                                                                  .mascara) &&
+                                                      _lashConfigs.containsKey(
+                                                        shade.productKey,
+                                                      )) {
+                                                    displayColor =
+                                                        _lashConfigs[shade
+                                                                .productKey]!
+                                                            .color;
+                                                  }
+
+                                                  return GestureDetector(
+                                                    onTap: () {
+                                                      setState(
+                                                        () => _selectedShades[
+                                                                _currentCategory] =
+                                                            shade,
+                                                      );
+                                                      _applyColorToDeepAR(
+                                                        shade,
+                                                        _currentCategory,
+                                                      );
+                                                    },
+                                                    child: Stack(
+                                                      children: [
+                                                        _ShadeCircle(
+                                                          color:
+                                                              displayColor,
+                                                          isSelected:
+                                                              isSelected,
+                                                        ),
+                                                        // 💚 Closest-match badge on
+                                                        // the first foundation
+                                                        // swatch. `_currentShades`
+                                                        // has already sorted the list
+                                                        // by ΔE2000, so index 1 (the
+                                                        // first real shade after the
+                                                        // "clear" circle) *is* the
+                                                        // closest one.
+                                                        if (_currentPrefix ==
+                                                                'fnd_' &&
+                                                            index == 1 &&
+                                                            _foundationSkinHex !=
+                                                                null)
+                                                          Positioned(
+                                                            top: -4,
+                                                            right: -4,
+                                                            child: Tooltip(
+                                                              message: _closestFoundationDeltaE ==
+                                                                      null
+                                                                  ? 'Closest match to your skin tone'
+                                                                  : 'Closest match — ΔE '
+                                                                      '${_closestFoundationDeltaE!.toStringAsFixed(1)} · '
+                                                                      '${describeDeltaE(_closestFoundationDeltaE!)}',
+                                                              child:
+                                                                  Container(
+                                                                width: 20,
+                                                                height: 20,
+                                                                decoration:
+                                                                    BoxDecoration(
+                                                                  // Coloured by how
+                                                                  // good the match
+                                                                  // actually is. A
+                                                                  // permanently green
+                                                                  // badge over a ΔE 9
+                                                                  // shade would be a
+                                                                  // lie the user can
+                                                                  // see in the mirror.
+                                                                  color: _deltaEBadgeColour(
+                                                                    _closestFoundationDeltaE,
+                                                                  ),
+                                                                  shape:
+                                                                      BoxShape
+                                                                          .circle,
+                                                                  border: Border
+                                                                      .all(
+                                                                    color: Colors
+                                                                        .white,
+                                                                    width:
+                                                                        1.5,
+                                                                  ),
+                                                                ),
+                                                                child:
+                                                                    const Center(
+                                                                  child: Icon(
+                                                                    Icons
+                                                                        .check_rounded,
+                                                                    size: 12,
+                                                                    color: Colors
+                                                                        .white,
+                                                                  ),
+                                                                ),
+                                                              ),
+                                                            ),
+                                                          ),
+                                                      ],
+                                                    ),
+                                                  );
+                                                },
+                                              ),
+                                      ),
+
+                                      const SizedBox(height: 10),
+
+                                      // ── Intensity slider ─────────────────
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 14,
+                                          vertical: 8,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: AppColors.primary
+                                              .withValues(
+                                            alpha: 0.05,
+                                          ),
+                                          borderRadius:
+                                              BorderRadius.circular(16),
+                                          border: Border.all(
+                                            color: AppColors.primary
+                                                .withValues(
+                                              alpha: 0.10,
+                                            ),
+                                            width: 1,
+                                          ),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Icon(
+                                              Icons.water_drop_outlined,
+                                              color: AppColors.primary
+                                                  .withValues(
+                                                alpha: 0.7,
+                                              ),
+                                              size: 16,
+                                            ),
+                                            const SizedBox(width: 7),
+                                            Text(
+                                              'Intensity',
+                                              style: TextStyle(
+                                                fontSize: 12,
+                                                color: AppColors.textMuted,
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                            Expanded(
+                                              child: SliderTheme(
+                                                data: SliderTheme.of(context)
+                                                    .copyWith(
+                                                  activeTrackColor:
+                                                      AppColors.primary,
+                                                  inactiveTrackColor:
+                                                      AppColors.primary
+                                                          .withValues(
+                                                              alpha: 0.12),
+                                                  thumbColor: Colors.white,
+                                                  overlayColor: AppColors
+                                                      .primary
+                                                      .withValues(
+                                                          alpha: 0.12),
+                                                  thumbShape:
+                                                      const RoundSliderThumbShape(
+                                                    enabledThumbRadius: 8,
+                                                  ),
+                                                  trackHeight: 2.5,
+                                                  overlayShape:
+                                                      const RoundSliderOverlayShape(
+                                                    overlayRadius: 18,
+                                                  ),
+                                                ),
+                                                child: Slider(
+                                                  value: currentIntensity,
+                                                  min: 0.0,
+                                                  max: 1.0,
+                                                  onChanged:
+                                                      currentSelectedShade ==
+                                                              null
+                                                          ? null
+                                                          : (val) {
+                                                              setState(
+                                                                () => _intensities[
+                                                                        _currentCategory] =
+                                                                    val,
+                                                              );
+                                                              _applyColorToDeepAR(
+                                                                currentSelectedShade,
+                                                                _currentCategory,
+                                                              );
+                                                            },
+                                                ),
+                                              ),
+                                            ),
+                                            Container(
+                                              width: 42,
+                                              alignment: Alignment.center,
+                                              child: Text(
+                                                '${(currentIntensity * 100).round()}%',
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  color: AppColors.primary,
+                                                  fontWeight: FontWeight.w800,
+                                                ),
+                                              ),
                                             ),
                                           ],
                                         ),
                                       ),
-
-                                      // Save button
-                                      GestureDetector(
-                                        onTap: isLoggedIn
-                                            ? () => _showSaveLookDialog()
-                                            : () => _showLoginPrompt(
-                                                'Sign in to save your look!',
-                                              ),
-                                        child: AnimatedContainer(
-                                          duration: const Duration(
-                                            milliseconds: 200,
-                                          ),
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 16,
-                                            vertical: 10,
-                                          ),
-                                          decoration: BoxDecoration(
-                                            color: isLoggedIn
-                                                ? AppColors.primary
-                                                : AppColors.border,
-                                            borderRadius: BorderRadius.circular(
-                                              50,
-                                            ),
-                                            boxShadow: isLoggedIn
-                                                ? [
-                                                    BoxShadow(
-                                                      color: AppColors.primary
-                                                          .withValues(
-                                                            alpha: 0.35,
-                                                          ),
-                                                      blurRadius: 16,
-                                                      offset: const Offset(
-                                                        0,
-                                                        5,
-                                                      ),
-                                                    ),
-                                                  ]
-                                                : null,
-                                          ),
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              Icon(
-                                                Icons.bookmark_add_outlined,
-                                                color: isLoggedIn
-                                                    ? Colors.white
-                                                    : AppColors.textMuted,
-                                                size: 15,
-                                              ),
-                                              const SizedBox(width: 6),
-                                              Text(
-                                                'Save',
-                                                style: TextStyle(
-                                                  color: isLoggedIn
-                                                      ? Colors.white
-                                                      : AppColors.textMuted,
-                                                  fontWeight: FontWeight.w700,
-                                                  fontSize: 13.5,
-                                                  letterSpacing: 0.1,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
                                     ],
                                   ),
-
-                                  const SizedBox(height: 16),
-
-                                  // ── Category tabs ────────────────────
-                                  SingleChildScrollView(
-                                    scrollDirection: Axis.horizontal,
-                                    physics: const BouncingScrollPhysics(),
-                                    child: Row(
-                                      children: TryOnCategory.values
-                                          .map(_buildCategoryTab)
-                                          .toList(),
-                                    ),
-                                  ),
-
-                                  const SizedBox(height: 16),
-                                  
-                                  // ── All / My Bag Toggle ───────────────
-                                  ListenableBuilder(
-                                    listenable: MakeupBagCache.instance,
-                                    builder: (context, _) {
-                                      final bagHasItems = !MakeupBagCache.instance.isEmpty;
-                                      return Row(
-                                        mainAxisAlignment: MainAxisAlignment.center,
-                                        children: [
-                                          Container(
-                                            height: 32,
-                                            decoration: BoxDecoration(
-                                              color: AppColors.background,
-                                              borderRadius: BorderRadius.circular(20),
-                                              border: Border.all(color: AppColors.border),
-                                            ),
-                                            child: Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                GestureDetector(
-                                                  onTap: () => setState(() => _showOnlyMyBag = false),
-                                                  child: Container(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                                                    alignment: Alignment.center,
-                                                    decoration: BoxDecoration(
-                                                      color: !_showOnlyMyBag ? AppColors.textMain : Colors.transparent,
-                                                      borderRadius: BorderRadius.circular(20),
-                                                    ),
-                                                    child: Text(
-                                                      'All Shades',
-                                                      style: TextStyle(
-                                                        fontSize: 12,
-                                                        fontWeight: !_showOnlyMyBag ? FontWeight.w600 : FontWeight.w500,
-                                                        color: !_showOnlyMyBag ? AppColors.background : AppColors.textMuted,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ),
-                                                GestureDetector(
-                                                  onTap: () {
-                                                    if (!isLoggedIn) {
-                                                      _showLoginPrompt('Sign in to view your bag!');
-                                                      return;
-                                                    }
-                                                    setState(() => _showOnlyMyBag = true);
-                                                  },
-                                                  child: Container(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                                                    alignment: Alignment.center,
-                                                    decoration: BoxDecoration(
-                                                      color: _showOnlyMyBag ? AppColors.primary : Colors.transparent,
-                                                      borderRadius: BorderRadius.circular(20),
-                                                    ),
-                                                    child: Row(
-                                                      children: [
-                                                        Icon(
-                                                          Icons.shopping_bag, 
-                                                          size: 14, 
-                                                          color: _showOnlyMyBag ? Colors.white : AppColors.textMuted,
-                                                        ),
-                                                        const SizedBox(width: 4),
-                                                        Text(
-                                                          'My Bag',
-                                                          style: TextStyle(
-                                                            fontSize: 12,
-                                                            fontWeight: _showOnlyMyBag ? FontWeight.w600 : FontWeight.w500,
-                                                            color: _showOnlyMyBag ? Colors.white : AppColors.textMuted,
-                                                          ),
-                                                        ),
-                                                        if (bagHasItems && !_showOnlyMyBag) ...[
-                                                          const SizedBox(width: 4),
-                                                          Container(
-                                                            width: 6,
-                                                            height: 6,
-                                                            decoration: const BoxDecoration(
-                                                              color: Colors.redAccent,
-                                                              shape: BoxShape.circle,
-                                                            ),
-                                                          ),
-                                                        ]
-                                                      ],
-                                                    ),
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                        ],
-                                      );
-                                    }
-                                  ),
-
-                                  // ── Find my shade (foundation only) ───
-                                  if (_currentCategory ==
-                                      TryOnCategory.foundation) ...[
-                                    const SizedBox(height: 12),
-                                    _buildFindMyShadeStrip(),
-                                  ],
-
-                                  const SizedBox(height: 16),
-
-                                  // ── Shade label row ──────────────────
-                                  Row(
-                                    children: [
-                                      Container(
-                                        width: 3,
-                                        height: 14,
-                                        margin: const EdgeInsets.only(right: 8),
-                                        decoration: BoxDecoration(
-                                          color: currentSelectedShade != null
-                                              ? AppColors.primary
-                                              : AppColors.border,
-                                          borderRadius: BorderRadius.circular(
-                                            2,
-                                          ),
-                                        ),
-                                      ),
-                                      Expanded(
-                                        child: Text(
-                                          currentSelectedShade != null
-                                              ? currentSelectedShade.shadeName
-                                              : 'Choose a shade below',
-                                          style: TextStyle(
-                                            fontSize: 12.5,
-                                            color: currentSelectedShade != null
-                                                ? AppColors.textMain
-                                                : AppColors.textMuted,
-                                            fontWeight:
-                                                currentSelectedShade != null
-                                                ? FontWeight.w600
-                                                : FontWeight.w400,
-                                          ),
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                      ),
-                                      if (currentSelectedShade != null)
-                                        _MiniColorDot(
-                                          color: currentSelectedShade.color,
-                                        ),
-                                      if (currentSelectedShade != null) ...[
-                                        const SizedBox(width: 8),
-                                        ListenableBuilder(
-                                          listenable: FavouritesCache.instance,
-                                          builder: (context, _) {
-                                            final isFav = FavouritesCache
-                                                .instance
-                                                .isFavourite(
-                                                  currentSelectedShade
-                                                      .productKey,
-                                                  currentSelectedShade.shadeKey,
-                                                );
-                                            return GestureDetector(
-                                              onTap: () {
-                                                final user = Supabase
-                                                    .instance
-                                                    .client
-                                                    .auth
-                                                    .currentUser;
-                                                if (user == null) {
-                                                  _showLoginPrompt(
-                                                    'Sign in to save favourites!',
-                                                  );
-                                                  return;
-                                                }
-                                                FavouritesCache.instance
-                                                    .toggleFavourite(
-                                                      currentSelectedShade
-                                                          .productKey,
-                                                      currentSelectedShade
-                                                          .shadeKey,
-                                                    );
-                                              },
-                                              child: AnimatedContainer(
-                                                duration: const Duration(
-                                                  milliseconds: 200,
-                                                ),
-                                                padding: const EdgeInsets.all(
-                                                  6,
-                                                ),
-                                                decoration: BoxDecoration(
-                                                  color: isFav
-                                                      ? AppColors.primary
-                                                            .withOpacity(0.1)
-                                                      : Colors.transparent,
-                                                  shape: BoxShape.circle,
-                                                ),
-                                                child: Icon(
-                                                  isFav
-                                                      ? Icons.favorite_rounded
-                                                      : Icons
-                                                            .favorite_border_rounded,
-                                                  color: isFav
-                                                      ? AppColors.primary
-                                                      : AppColors.textMuted,
-                                                  size: 20,
-                                                ),
-                                              ),
-                                            );
-                                          },
-                                        ),
-                                        const SizedBox(width: 4),
-                                        ListenableBuilder(
-                                          listenable: MakeupBagCache.instance,
-                                          builder: (context, _) {
-                                            final inBag = MakeupBagCache
-                                                .instance
-                                                .isInBag(
-                                                  currentSelectedShade
-                                                      .productKey,
-                                                  currentSelectedShade.shadeKey,
-                                                );
-                                            return GestureDetector(
-                                              onTap: () {
-                                                final user = Supabase
-                                                    .instance
-                                                    .client
-                                                    .auth
-                                                    .currentUser;
-                                                if (user == null) {
-                                                  _showLoginPrompt(
-                                                    'Sign in to add to your bag!',
-                                                  );
-                                                  return;
-                                                }
-                                                MakeupBagCache.instance
-                                                    .toggleInBag(
-                                                      currentSelectedShade
-                                                          .productKey,
-                                                      currentSelectedShade
-                                                          .shadeKey,
-                                                    );
-                                              },
-                                              child: AnimatedContainer(
-                                                duration: const Duration(
-                                                  milliseconds: 200,
-                                                ),
-                                                padding: const EdgeInsets.all(
-                                                  6,
-                                                ),
-                                                decoration: BoxDecoration(
-                                                  color: inBag
-                                                      ? AppColors.primary
-                                                            .withOpacity(0.1)
-                                                      : Colors.transparent,
-                                                  shape: BoxShape.circle,
-                                                ),
-                                                child: Icon(
-                                                  inBag
-                                                      ? Icons.shopping_bag_rounded
-                                                      : Icons
-                                                            .shopping_bag_outlined,
-                                                  color: inBag
-                                                      ? AppColors.primary
-                                                      : AppColors.textMuted,
-                                                  size: 20,
-                                                ),
-                                              ),
-                                            );
-                                          },
-                                        ),
-                                      ],
-                                    ],
-                                  ),
-
-                                  const SizedBox(height: 10),
-
-                                  // ── Shades list ──────────────────────
-                                  SizedBox(
-                                    height: 52,
-                                    child: _currentShades.isEmpty
-                                        ? Center(
-                                            child: Text(
-                                              'No shades available',
-                                              style: TextStyle(
-                                                color: AppColors.textMuted,
-                                                fontSize: 13,
-                                              ),
-                                            ),
-                                          )
-                                        : ListView.builder(
-                                            scrollDirection: Axis.horizontal,
-                                            physics:
-                                                const BouncingScrollPhysics(),
-                                            itemCount:
-                                                _currentShades.length + 1,
-                                            itemBuilder: (context, index) {
-                                              if (index == 0) {
-                                                final cleared =
-                                                    currentSelectedShade ==
-                                                    null;
-                                                return GestureDetector(
-                                                  onTap: () {
-                                                    setState(
-                                                      () =>
-                                                          _selectedShades[_currentCategory] =
-                                                              null,
-                                                    );
-                                                    _applyColorToDeepAR(
-                                                      null,
-                                                      _currentCategory,
-                                                    );
-                                                  },
-                                                  child: _ShadeCircle(
-                                                    isSelected: cleared,
-                                                    child: Icon(
-                                                      Icons.block_rounded,
-                                                      color:
-                                                          AppColors.textMuted,
-                                                      size: 18,
-                                                    ),
-                                                  ),
-                                                );
-                                              }
-
-                                              final shade =
-                                                  _currentShades[index - 1];
-                                              final isSelected =
-                                                  currentSelectedShade !=
-                                                      null &&
-                                                  shade.productKey ==
-                                                      currentSelectedShade
-                                                          .productKey;
-
-                                              Color displayColor = shade.color;
-                                              if ((_currentCategory ==
-                                                          TryOnCategory
-                                                              .eyelashes ||
-                                                      _currentCategory ==
-                                                          TryOnCategory
-                                                              .mascara) &&
-                                                  _lashConfigs.containsKey(
-                                                    shade.productKey,
-                                                  )) {
-                                                displayColor =
-                                                    _lashConfigs[shade
-                                                            .productKey]!
-                                                        .color;
-                                              }
-
-                                              return GestureDetector(
-                                                onTap: () {
-                                                  setState(
-                                                    () =>
-                                                        _selectedShades[_currentCategory] =
-                                                            shade,
-                                                  );
-                                                  _applyColorToDeepAR(
-                                                    shade,
-                                                    _currentCategory,
-                                                  );
-                                                },
-                                                child: Stack(
-                                                  children: [
-                                                    _ShadeCircle(
-                                                      color: displayColor,
-                                                      isSelected: isSelected,
-                                                    ),
-                                                    // 💚 Closest-match badge on
-                                                    // the first foundation
-                                                    // swatch. `_currentShades`
-                                                    // has already sorted the list
-                                                    // by ΔE2000, so index 1 (the
-                                                    // first real shade after the
-                                                    // "clear" circle) *is* the
-                                                    // closest one.
-                                                    if (_currentPrefix == 'fnd_' &&
-                                                        index == 1 &&
-                                                        _foundationSkinHex != null)
-                                                      Positioned(
-                                                        top: -4,
-                                                        right: -4,
-                                                        child: Tooltip(
-                                                          message: _closestFoundationDeltaE ==
-                                                                  null
-                                                              ? 'Closest match to your skin tone'
-                                                              : 'Closest match — ΔE '
-                                                                  '${_closestFoundationDeltaE!.toStringAsFixed(1)} · '
-                                                                  '${describeDeltaE(_closestFoundationDeltaE!)}',
-                                                          child: Container(
-                                                            width: 20,
-                                                            height: 20,
-                                                            decoration:
-                                                                BoxDecoration(
-                                                              // Coloured by how
-                                                              // good the match
-                                                              // actually is. A
-                                                              // permanently green
-                                                              // badge over a ΔE 9
-                                                              // shade would be a
-                                                              // lie the user can
-                                                              // see in the mirror.
-                                                              color: _deltaEBadgeColour(
-                                                                _closestFoundationDeltaE,
-                                                              ),
-                                                              shape:
-                                                                  BoxShape.circle,
-                                                              border: Border.all(
-                                                                color:
-                                                                    Colors.white,
-                                                                width: 1.5,
-                                                              ),
-                                                            ),
-                                                            child: const Center(
-                                                              child: Icon(
-                                                                Icons
-                                                                    .check_rounded,
-                                                                size: 12,
-                                                                color:
-                                                                    Colors.white,
-                                                              ),
-                                                            ),
-                                                          ),
-                                                        ),
-                                                      ),
-                                                  ],
-                                                ),
-                                              );
-                                            },
-                                          ),
-                                  ),
-
-                                  const SizedBox(height: 12),
-
-                                  // ── Intensity slider ─────────────────
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 14,
-                                      vertical: 10,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: AppColors.primary.withValues(
-                                        alpha: 0.05,
-                                      ),
-                                      borderRadius: BorderRadius.circular(16),
-                                      border: Border.all(
-                                        color: AppColors.primary.withValues(
-                                          alpha: 0.10,
-                                        ),
-                                        width: 1,
-                                      ),
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        Icon(
-                                          Icons.water_drop_outlined,
-                                          color: AppColors.primary.withValues(
-                                            alpha: 0.7,
-                                          ),
-                                          size: 16,
-                                        ),
-                                        const SizedBox(width: 7),
-                                        Text(
-                                          'Intensity',
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color: AppColors.textMuted,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                        Expanded(
-                                          child: SliderTheme(
-                                            data: SliderTheme.of(context).copyWith(
-                                              activeTrackColor:
-                                                  AppColors.primary,
-                                              inactiveTrackColor: AppColors
-                                                  .primary
-                                                  .withValues(alpha: 0.12),
-                                              thumbColor: Colors.white,
-                                              overlayColor: AppColors.primary
-                                                  .withValues(alpha: 0.12),
-                                              thumbShape:
-                                                  const RoundSliderThumbShape(
-                                                    enabledThumbRadius: 8,
-                                                  ),
-                                              trackHeight: 2.5,
-                                              overlayShape:
-                                                  const RoundSliderOverlayShape(
-                                                    overlayRadius: 18,
-                                                  ),
-                                            ),
-                                            child: Slider(
-                                              value: currentIntensity,
-                                              min: 0.0,
-                                              max: 1.0,
-                                              onChanged:
-                                                  currentSelectedShade == null
-                                                  ? null
-                                                  : (val) {
-                                                      setState(
-                                                        () =>
-                                                            _intensities[_currentCategory] =
-                                                                val,
-                                                      );
-                                                      _applyColorToDeepAR(
-                                                        currentSelectedShade,
-                                                        _currentCategory,
-                                                      );
-                                                    },
-                                            ),
-                                          ),
-                                        ),
-                                        Container(
-                                          width: 42,
-                                          alignment: Alignment.center,
-                                          child: Text(
-                                            '${(currentIntensity * 100).round()}%',
-                                            style: TextStyle(
-                                              fontSize: 12,
-                                              color: AppColors.primary,
-                                              fontWeight: FontWeight.w800,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
                     ),

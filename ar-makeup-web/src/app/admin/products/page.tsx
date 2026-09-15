@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Search, Plus, Edit, Eye, EyeOff, Filter } from "lucide-react";
 import {supabase} from "@/src/lib/supabase/client";
+import { categoryLabel, normalizeCategory } from "@/src/lib/catalog/category-taxonomy";
 
 
 
@@ -12,6 +13,7 @@ type Product = {
   product_key: string;
   name: string;
   brand: string;
+  main_category: string;
   category: string;
   price: number;
   image_url: string;
@@ -24,6 +26,7 @@ export default function AdminProductsPage() {
   const [loading, setLoading] = useState(true);
   
   const [searchQuery, setSearchQuery] = useState("");
+  const [selectedDepartment, setSelectedDepartment] = useState("All");
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [togglingId, setTogglingId] = useState<string | null>(null);
 
@@ -33,14 +36,29 @@ export default function AdminProductsPage() {
 
   async function fetchProducts() {
     setLoading(true);
-    const { data, error } = await supabase
-      .from("makeup_products")
-      .select("id, product_key, name, brand, category, price, image_url, is_active")
-      .order("created_at", { ascending: false });
+    const pageSize = 1000;
+    let page = 0;
+    let allProducts: Product[] = [];
+    let hasMore = true;
 
-    if (!error && data) {
-      setProducts(data);
+    while (hasMore) {
+      const { data, error } = await supabase
+        .from("makeup_products")
+        .select("id, product_key, name, brand, main_category, category, price, image_url, is_active")
+        .order("created_at", { ascending: false })
+        .range(page * pageSize, (page + 1) * pageSize - 1);
+
+      if (error) {
+        console.error("Failed to load admin products:", error.message);
+        break;
+      }
+
+      allProducts = [...allProducts, ...(data ?? []) as Product[]];
+      hasMore = (data?.length ?? 0) === pageSize;
+      page += 1;
     }
+
+    setProducts(allProducts);
     setLoading(false);
   }
 
@@ -73,13 +91,18 @@ export default function AdminProductsPage() {
     }
   }
 
-  const categories = ["All", ...Array.from(new Set(products.map(p => p.category)))];
+  const departments = ["All", ...Array.from(new Set(products.map((p) => p.main_category).filter(Boolean)))];
+  const categories = ["All", ...Array.from(new Set(products.map((p) => normalizeCategory(p.category)).filter(Boolean)))];
   
   const filteredProducts = products.filter(p => {
-    const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          p.brand.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesCategory = selectedCategory === "All" || p.category === selectedCategory;
-    return matchesSearch && matchesCategory;
+    const query = searchQuery.toLowerCase();
+    const matchesSearch = p.name.toLowerCase().includes(query) ||
+                p.brand.toLowerCase().includes(query) ||
+                p.product_key.toLowerCase().includes(query) ||
+                categoryLabel(p.category).toLowerCase().includes(query);
+    const matchesCategory = selectedCategory === "All" || normalizeCategory(p.category) === selectedCategory;
+    const matchesDepartment = selectedDepartment === "All" || p.main_category === selectedDepartment;
+    return matchesSearch && matchesCategory && matchesDepartment;
   });
 
   return (
@@ -112,6 +135,17 @@ export default function AdminProductsPage() {
             onChange={(e) => setSearchQuery(e.target.value)}
           />
         </div>
+        <div className="relative min-w-[160px]">
+          <select
+            className="w-full px-4 py-2 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#F4C2C2] appearance-none bg-white capitalize"
+            value={selectedDepartment}
+            onChange={(e) => setSelectedDepartment(e.target.value)}
+          >
+            {departments.map((department) => (
+              <option key={department} value={department}>{department === "All" ? "All departments" : department}</option>
+            ))}
+          </select>
+        </div>
         <div className="relative min-w-[200px]">
           <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <select 
@@ -120,7 +154,7 @@ export default function AdminProductsPage() {
             onChange={(e) => setSelectedCategory(e.target.value)}
           >
             {categories.map(cat => (
-              <option key={cat} value={cat}>{cat}</option>
+              <option key={cat} value={cat}>{cat === "All" ? "All categories" : categoryLabel(cat)}</option>
             ))}
           </select>
         </div>
@@ -164,6 +198,10 @@ export default function AdminProductsPage() {
                       </div>
                     </td>
                     <td className="py-4 px-6 text-sm text-gray-600 capitalize">{product.category.replace('_', ' ')}</td>
+                                        <td className="py-4 px-6 text-sm text-gray-600">
+                                          <span className="block text-xs uppercase tracking-wide text-gray-400">{product.main_category}</span>
+                                          {categoryLabel(product.category)}
+                                        </td>
                     <td className="py-4 px-6 text-sm font-medium text-gray-900">${product.price}</td>
                     <td className="py-4 px-6">
                       <button 
