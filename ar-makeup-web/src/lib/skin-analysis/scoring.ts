@@ -1,73 +1,8 @@
 import { Product, ConcernScores } from "./recommend";
+import { CONCERN_TAG_MAP, canonicalConcern, clampSeverity } from "./contract";
+import { asStringList } from "./product-shape";
 
-// 1. Database Tags ko User Concerns ke sath Map karne ka Complete Dictionary
-export const CONCERN_TAG_MAP: Record<string, string[]> = {
-  acne: [
-    "acne",
-    "Acne Prone",
-    "non_comedogenic",
-    "sebum-control",
-    "oil-free",
-    "Exfoliating / Texture",
-  ],
-  redness: [
-    "redness",
-    "Redness & Soothing",
-    "soothing",
-    "calming",
-    "rosacea",
-    "irritation",
-    "extreme-sensitivity",
-  ],
-  dryness: [
-    "dryness",
-    "hydration",
-    "Hydrating",
-    "plumping",
-    "dehydration",
-    "lightweight-hydration",
-    "water-based",
-  ],
-  dark_spots: [
-    "dark spots",
-    "Dark Spots & Brightening",
-    "brightening",
-    "hyperpigmentation",
-    "dullness",
-    "glow",
-    "sun-damage",
-  ],
-  aging: [
-    "Anti-Aging",
-    "anti-aging",
-    "plumping",
-    "barrier-support",
-    "damaged barrier",
-  ],
-  oiliness: [
-    "oiliness",
-    "sebum-control",
-    "oil-free",
-    "matte finish",
-    "lightweight",
-    "water-based",
-  ],
-  sensitivity: [
-    "sensitive_friendly",
-    "fragrance_free",
-    "allergy_tested",
-    "soothing",
-    "calming",
-    "barrier-support",
-  ],
-  damaged_barrier: [
-    "damaged barrier",
-    "barrier-support",
-    "soothing",
-    "calming",
-    "Daily Care",
-  ],
-};
+export { CONCERN_TAG_MAP };
 
 // Return Result ka Structure
 export interface ScoringResult {
@@ -93,8 +28,8 @@ export function calculateMatchScore(
   const matchedTagsSet = new Set<string>();
 
   // Null-Safety: Database se missing arrays handle karna
-  const rawSkinTypes = Array.isArray(product.skin_type) ? product.skin_type : [];
-  const rawTags = Array.isArray(product.tags) ? product.tags : [];
+  const rawSkinTypes = asStringList(product.skin_type);
+  const rawTags = asStringList(product.tags);
 
   // ----------------------------------------------------
   // Part A: Skin Type Match (Max 35 Points)
@@ -127,26 +62,50 @@ export function calculateMatchScore(
 
   const productTagsLower = rawTags.map((t) => (t || "").toLowerCase());
 
-  // [UPDATED] NORMALIZATION: Convert Array to Object if needed
   const normalizedConcerns: Record<string, number> = {};
-  
+
   if (Array.isArray(concernScores)) {
-    // Agar Photo Analysis se array aaya hai (e.g., ["acne", "oiliness"])
     concernScores.forEach((concern) => {
-      normalizedConcerns[concern] = 1.0; // Default high weight for detected visual concerns
+      const tag = canonicalConcern(concern);
+      if (tag) normalizedConcerns[tag] = Math.max(normalizedConcerns[tag] ?? 0, 0.8);
     });
   } else if (concernScores && typeof concernScores === "object") {
-    // Agar Questionnaire se object aaya hai
-    Object.assign(normalizedConcerns, concernScores);
+    const bag = concernScores as Record<string, unknown> & {
+      concerns?: { tag?: string; severity?: number }[];
+      severity_scores?: Record<string, unknown>;
+    };
+    if (Array.isArray(bag.concerns)) {
+      for (const item of bag.concerns) {
+        const tag = canonicalConcern(item?.tag);
+        if (!tag) continue;
+        normalizedConcerns[tag] = Math.max(
+          normalizedConcerns[tag] ?? 0,
+          clampSeverity(item?.severity, 0.6),
+        );
+      }
+    } else if (bag.severity_scores && typeof bag.severity_scores === "object") {
+      for (const [key, value] of Object.entries(bag.severity_scores)) {
+        const tag = canonicalConcern(key);
+        if (!tag) continue;
+        normalizedConcerns[tag] = clampSeverity(value, 0.5);
+      }
+    } else {
+      for (const [key, value] of Object.entries(bag)) {
+        const tag = canonicalConcern(key);
+        const severity = clampSeverity(value, -1);
+        if (!tag || severity <= 0) continue;
+        normalizedConcerns[tag] = severity;
+      }
+    }
   }
 
   for (const [concern, score] of Object.entries(normalizedConcerns)) {
-    if (score <= 0) continue; // Agar concern ka score 0 hai to skip kar dein
+    if (typeof score !== "number" || !Number.isFinite(score) || score <= 0) continue;
 
     totalConcernWeight += score;
 
     // Is concern ke relevant tags search karein
-    const relevantTags = CONCERN_TAG_MAP[concern.toLowerCase()] || [];
+    const relevantTags = CONCERN_TAG_MAP[concern as keyof typeof CONCERN_TAG_MAP] || [];
     let matchCountForConcern = 0;
 
     for (const tag of relevantTags) {

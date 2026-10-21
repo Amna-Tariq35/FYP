@@ -1,5 +1,8 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import '../config/app_config.dart';
+import '../services/web_bridge.dart';
 import '../utils/app_colors.dart';
 import 'auth_screen.dart';
 import 'camera_permission_screen.dart';
@@ -16,10 +19,16 @@ class _WelcomeScreenState extends State<WelcomeScreen>
   late AnimationController _controller;
   late Animation<double> _fadeIn;
   late Animation<Offset> _slideUp;
+  late final TapGestureRecognizer _termsTap;
+  late final TapGestureRecognizer _privacyTap;
 
   @override
   void initState() {
     super.initState();
+    _termsTap = TapGestureRecognizer()
+      ..onTap = () => WebBridge.openPublic(context, AppConfig.termsPath);
+    _privacyTap = TapGestureRecognizer()
+      ..onTap = () => WebBridge.openPublic(context, AppConfig.privacyPath);
     SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
       statusBarIconBrightness: Brightness.light,
@@ -48,12 +57,15 @@ class _WelcomeScreenState extends State<WelcomeScreen>
 
   @override
   void dispose() {
+    _termsTap.dispose();
+    _privacyTap.dispose();
     _controller.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    AppColors.watch(context);
     final size = MediaQuery.of(context).size;
 
     return Scaffold(
@@ -132,41 +144,6 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      // Badge pill
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: AppColors.primary.withValues(alpha: 0.12),
-                          borderRadius: BorderRadius.circular(50),
-                          border: Border.all(
-                            color: AppColors.primary.withValues(alpha: 0.35),
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              Icons.auto_awesome_rounded,
-                              size: 13,
-                              color: AppColors.primary,
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              'AI-Powered AR Makeup',
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                                color: AppColors.primary,
-                                letterSpacing: 0.4,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-
-                      const SizedBox(height: 18),
-
                       // Headline
                       Text(
                         'Discover Your\nPerfect Look',
@@ -183,7 +160,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
 
                       // Subtext
                       Text(
-                        'Try on thousands of shades in real-time AR —\nfind what truly suits your beautiful skin.',
+                        'Live camera try-on, foundation shade match, saved looks, and the shop on the website.',
                         style: TextStyle(
                           fontSize: 15,
                           color: AppColors.textMuted,
@@ -224,12 +201,36 @@ class _WelcomeScreenState extends State<WelcomeScreen>
 
                       // Legal note
                       Center(
-                        child: Text(
-                          'By continuing you agree to our Terms & Privacy Policy',
-                          style: TextStyle(
-                            fontSize: 11.5,
-                            color: AppColors.textMuted
-                                .withValues(alpha: 0.6),
+                        child: Text.rich(
+                          TextSpan(
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              color: AppColors.textMuted.withValues(alpha: 0.6),
+                            ),
+                            children: [
+                              const TextSpan(
+                                text: 'By continuing you agree to our ',
+                              ),
+                              TextSpan(
+                                text: 'Terms',
+                                style: TextStyle(
+                                  color: AppColors.primary,
+                                  fontWeight: FontWeight.w600,
+                                  decoration: TextDecoration.underline,
+                                ),
+                                recognizer: _termsTap,
+                              ),
+                              const TextSpan(text: ' & '),
+                              TextSpan(
+                                text: 'Privacy Policy',
+                                style: TextStyle(
+                                  color: AppColors.primary,
+                                  fontWeight: FontWeight.w600,
+                                  decoration: TextDecoration.underline,
+                                ),
+                                recognizer: _privacyTap,
+                              ),
+                            ],
                           ),
                           textAlign: TextAlign.center,
                         ),

@@ -59,6 +59,7 @@ export type OrderItem = {
  */
 export type CreateOrderPayload = {
   shipping: ShippingInfo;
+  payment_method?: "card" | "cash_on_delivery";
   items: Array<{
     product_key: string;
     shade_key?: string | null;

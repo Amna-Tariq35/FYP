@@ -49,5 +49,11 @@
 		<true/>
 		<key>UIViewControllerBasedStatusBarAppearance</key>
 		<false/>
+		<key>NSCameraUsageDescription</key>
+		<string>The camera is used for live makeup try-on and to measure a foundation shade on this device. Photos are not uploaded.</string>
+		<key>NSPhotoLibraryUsageDescription</key>
+		<string>A photo you choose can be measured on this device for a foundation shade. It is not uploaded.</string>
+		<key>NSPhotoLibraryAddUsageDescription</key>
+		<string>You can save a try-on still to your photo library when you choose to.</string>
 	</dict>
 </plist>

@@ -1,70 +1,143 @@
-export function mapFaceppResponseToDbSchema(faceppData: any) {
-  if (!faceppData || !faceppData.result) {
-    throw new Error("Invalid Face++ response format");
+import {
+  type AnalysisConcern,
+  type CanonicalConcern,
+  type SkinType,
+} from "./contract";
+
+type FlagField = { value?: string | number; confidence?: number } | undefined;
+
+function isFlagged(field: FlagField, threshold = 0.5) {
+  if (!field) return false;
+  const level =
+    typeof field.value === "number" ? field.value : parseInt(String(field.value ?? "0"), 10);
+  return level === 1 && (field.confidence ?? 0) > threshold;
+}
+
+function add(
+  concerns: AnalysisConcern[],
+  tag: CanonicalConcern,
+  severity: number,
+) {
+  const existing = concerns.find((c) => c.tag === tag);
+  if (!existing) concerns.push({ tag, severity, source: "facepp" });
+  else if (severity > existing.severity) existing.severity = severity;
+}
+
+export type FaceppMapResult = {
+  skinType: SkinType;
+  concerns: AnalysisConcern[];
+  summary: string;
+  needsSkinTypeConfirmation: boolean;
+  confidence: "high" | "medium" | "low";
+};
+
+/**
+ * Maps a Face++ skinanalyze `result` object onto our skin types and
+ * canonical concerns. Redness still comes from the browser heuristic because
+ * Face++ does not return it.
+ */
+export function mapFaceppSkinResult(
+  result: Record<string, unknown> | null | undefined,
+  cvRedness = 0,
+): FaceppMapResult {
+  if (!result) {
+    return {
+      skinType: "Normal",
+      concerns: [],
+      summary: "We could not read a clear skin signal from this photo.",
+      needsSkinTypeConfirmation: true,
+      confidence: "low",
+    };
   }
 
-  const result = faceppData.result;
+  const skinTypeObj = result.skin_type as { skin_type?: number } | number | undefined;
+  const skinTypeIndex =
+    typeof skinTypeObj === "number" ? skinTypeObj : skinTypeObj?.skin_type;
 
-  // 1. Map Skin Type
-  // FIXED — official docs (confirmed): 0 = Oily, 1 = Dry, 2 = Normal, 3 = Mixed/Combination.
-  // (Previous version had 0 and 2 swapped, which would have flipped Oily <-> Normal.)
-  let skinType = "Normal";
-  const faceppSkinType = result.skin_type; // per your JSON sample, this is a direct integer
+  let skinType: SkinType = "Normal";
+  if (skinTypeIndex === 0) skinType = "Oily";
+  else if (skinTypeIndex === 1) skinType = "Dry";
+  else if (skinTypeIndex === 3) skinType = "Combination";
 
-  if (faceppSkinType === 0) skinType = "Oily";
-  else if (faceppSkinType === 1) skinType = "Dry";
-  else if (faceppSkinType === 3) skinType = "Combination";
-  // faceppSkinType === 2 -> stays "Normal" (default above)
+  const concerns: AnalysisConcern[] = [];
+  const labels: string[] = [];
+  let strongSignals = 0;
 
-  // 2. Map Skin Concerns
-  const CONFIDENCE_THRESHOLD = 0.5;
-  const primaryConcerns: string[] = [];
-
-  // FIXED — Face++'s own docs show acne/mole/skin_spot as NUMERIC 0/1
-  // ("value": 0), while dark_circle/blackhead/pores use STRING "0"/"1".
-  // A strict === "1" check silently fails on the numeric fields. This
-  // helper normalizes both shapes so nothing gets missed.
-  const isFlagged = (field: { value?: string | number; confidence?: number } | undefined) => {
-    if (!field) return false;
-    const level = typeof field.value === "number" ? field.value : parseInt(field.value ?? "0", 10);
-    return level === 1 && (field.confidence ?? 0) > CONFIDENCE_THRESHOLD;
-  };
-
-  if (isFlagged(result.acne)) {
-    primaryConcerns.push("Acne");
+  const wrinkleFields = [
+    "forehead_wrinkle",
+    "crows_feet",
+    "eye_finelines",
+    "glabella_wrinkle",
+    "nasolabial_fold",
+  ];
+  const wrinkleCount = wrinkleFields.filter((field) =>
+    isFlagged(result[field] as FlagField),
+  ).length;
+  if (wrinkleCount >= 2) {
+    add(concerns, "anti-aging", Math.min(1, 0.45 + wrinkleCount * 0.1));
+    labels.push("fine lines");
+    strongSignals += 1;
   }
 
-  if (isFlagged(result.dark_circle)) {
-    primaryConcerns.push("Dark Circles");
+  if (isFlagged(result.dark_circle as FlagField)) {
+    add(concerns, "dullness", 0.65);
+    labels.push("dullness");
+    strongSignals += 1;
   }
 
-  // ADDED — this field was missing entirely. skin_spot is Face++'s actual
-  // pigmentation/spot detector, distinct from dark_circle (under-eye shadow).
-  // Without this, hyperpigmentation could never be reported at all.
-  if (isFlagged(result.skin_spot)) {
-    primaryConcerns.push("Dark Spots", "Hyperpigmentation");
+  if (isFlagged(result.skin_spot as FlagField)) {
+    add(concerns, "dark spots", 0.75);
+    labels.push("dark spots");
+    strongSignals += 1;
   }
 
-  if (isFlagged(result.blackhead)) {
-    primaryConcerns.push("Blackheads");
+  const hasAcne = isFlagged(result.acne as FlagField);
+  if (hasAcne) {
+    add(concerns, "acne", 0.8);
+    labels.push("acne");
+    strongSignals += 1;
   }
 
-  // Pores span 4 face regions — flag the concern if any region hits.
-  const poreRegions = ["pores_forehead", "pores_left_cheek", "pores_right_cheek", "pores_jaw"];
-  const hasEnlargedPores = poreRegions.some((region) => isFlagged(result[region]));
-
-  if (hasEnlargedPores) {
-    primaryConcerns.push("Enlarged Pores");
+  const poreRegions = [
+    "pores_forehead",
+    "pores_left_cheek",
+    "pores_right_cheek",
+    "pores_jaw",
+  ];
+  const hasPores = poreRegions.some((region) => isFlagged(result[region] as FlagField));
+  const hasBlackhead = isFlagged(result.blackhead as FlagField);
+  if (hasPores || hasBlackhead) {
+    add(concerns, "uneven texture", 0.6);
+    labels.push("uneven texture");
   }
 
-  // ⚠️ GAP (unchanged from before): Face++ does not return redness or
-  // hydration/dryness signals at all. If your product needs "Redness" or
-  // "Dryness"/"Dehydration" tags, those must come from your own v3 heuristic
-  // run on the same image — merge that result in here before returning.
+  if (cvRedness > 58) {
+    add(concerns, "redness", Math.min(1, cvRedness / 100));
+    labels.push("redness");
+    if (cvRedness > 65) strongSignals += 1;
+  }
+  if (cvRedness > 65) skinType = "Sensitive";
+  else if (hasAcne && (hasPores || hasBlackhead)) {
+    skinType = "Acne-Prone";
+  }
 
-  return {
-    skinType: skinType,
-    primaryConcerns: [...new Set(primaryConcerns)],
-    rawDetails: result,
-  };
+  if (skinType === "Dry") {
+    add(concerns, "dryness", 0.7);
+    add(concerns, "dehydration", 0.55);
+    labels.push("dryness");
+  }
+  if (skinType === "Oily") {
+    add(concerns, "oiliness", 0.7);
+  }
+
+  const needsSkinTypeConfirmation = skinType === "Normal";
+  const confidence: FaceppMapResult["confidence"] =
+    strongSignals >= 2 ? "high" : strongSignals === 1 || !needsSkinTypeConfirmation ? "medium" : "low";
+
+  const focus = labels.slice(0, 3).join(", ");
+  const summary = focus
+    ? `From your photo, your skin reads as ${skinType.toLowerCase()}. The clearest signals were ${focus}. This is a product-matching estimate, not a medical diagnosis.`
+    : `From your photo, your skin reads as ${skinType.toLowerCase()} without a strong single concern. A short questionnaire can make the routine more precise.`;
+
+  return { skinType, concerns, summary, needsSkinTypeConfirmation, confidence };
 }

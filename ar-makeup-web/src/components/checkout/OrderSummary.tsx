@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
-import { loadCart, getCartCount, getCartSubtotal } from "@/src/store/cart";
+import { loadCart, getSelectedSubtotal, selectedCartItems } from "@/src/store/cart";
 import { getProductImageUrl } from "@/src/lib/catalog/image";
 
 type Props = {
@@ -38,8 +38,9 @@ export default function OrderSummary({
   }, []);
 
   const cart = useMemo(() => loadCart(), [version]);
-  const count = useMemo(() => getCartCount(cart), [cart]);
-  const subtotal = useMemo(() => getCartSubtotal(cart), [cart]);
+  const items = useMemo(() => selectedCartItems(cart), [cart]);
+  const count = useMemo(() => items.reduce((sum, item) => sum + (item.quantity || 0), 0), [items]);
+  const subtotal = useMemo(() => getSelectedSubtotal(cart), [cart]);
 
   const shippingFee = 0;
   const total = subtotal + shippingFee;
@@ -85,12 +86,12 @@ export default function OrderSummary({
             </svg>
           </div>
           <p className="text-sm text-[var(--text-muted)]">
-            Your cart is empty. Add products to continue.
+            No items are selected for this order.
           </p>
         </div>
       ) : (
         <ul className="space-y-4">
-          {cart.items.map((item) => {
+          {items.map((item) => {
             const qty = item.quantity ?? 1;
             const unit = Number(item.price ?? 0);
             const line = unit * qty;

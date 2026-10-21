@@ -1,21 +1,24 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle, SystemUiOverlayStyle;
+import 'package:flutter/services.dart' show MethodChannel, rootBundle, SystemUiOverlayStyle;
 import 'package:path_provider/path_provider.dart';
 import 'package:deepar_flutter/deepar_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:vector_math/vector_math_64.dart' as vector;
 import '../utils/app_colors.dart';
 import '../utils/color_utils.dart';
+import '../utils/demo_looks.dart';
 import '../utils/skin_color.dart';
 import '../cache/looks_cache.dart';
 import '../config/app_config.dart';
 import '../cache/pending_looks_queue.dart';
 import '../services/beauty_profile_service.dart';
 import '../services/foundation_match_service.dart';
+import 'foundation_capture_screen.dart';
 import 'foundation_match_screen.dart';
 import 'saved_looks_screen.dart';
 import 'auth_screen.dart';
@@ -172,6 +175,13 @@ class _TryOnScreenState extends State<TryOnScreen>
 
   bool _isInitialized = false;
   bool _initFailed = false;
+  bool _cameraAccessOff = false;
+  /// DeepAR face tracking. False until a face is reported, including an empty room.
+  bool _faceVisible = false;
+
+  /// Android count of `faceDetected` faces. Null until the first callback, and
+  /// always null on iOS, where only [_faceVisible] is used.
+  int? _trackedFaceCount;
   bool _surfaceReady = false;
   // Guards against concurrent init calls (navigation races, resumed events)
   bool _initInProgress = false;
@@ -181,7 +191,11 @@ class _TryOnScreenState extends State<TryOnScreen>
   // the double-teardown/double-init race that was crashing bgfx/GL on
   // resume-after-sign-in (SIGABRT in bgfx::gl::GlContext::resize).
   bool _reinitCycleActive = false;
+  bool _cameraRebindInFlight = false;
   DateTime? _lastReinitAt;
+  Timer? _initWatchdog;
+  bool _shadeLoadSettled = false;
+  String? _shadeLoadError;
 
   // 🆕 FIX v2 (real root cause): AuthScreen/ProfileScreen/SavedLooksScreen
   // are pushed onto THIS nested Navigator instead of the app's root
@@ -205,6 +219,12 @@ class _TryOnScreenState extends State<TryOnScreen>
   /// on init. Kept separate from the Beauty Profile's own hex so the try-on sheet
   /// can sort by a real measurement offline, with no round trip.
   String? _measuredSkinHex;
+
+  /// Saved recommendation from the last match that passed the quality gate.
+  /// The closest badge uses these keys. A plain ΔE sort is only the fallback.
+  String? _savedProductKey;
+  String? _savedShadeKey;
+  double? _savedDeltaE;
 
   /// ΔE2000 of the closest foundation shade, filled in by [_currentShades] while
   /// it sorts. Only used to label the first swatch.
@@ -244,6 +264,30 @@ class _TryOnScreenState extends State<TryOnScreen>
   File? _saveDialogScreenshotFile;
   bool _isProcessingPendingSaves = false;
 
+  /// Press-and-hold bare face. Live clear only; never switchEffect or dispose.
+  bool _bareHoldActive = false;
+  int _bareToken = 0;
+  bool _shadeCaptureBusy = false;
+
+  /// Two-shade still compare. Files are deleted when the overlay closes.
+  bool _comparePicking = false;
+  TryOnCategory _comparePickCategory = TryOnCategory.lipstick;
+  final List<DbShade> _comparePicks = [];
+  bool _compareOpen = false;
+  bool _compareChoosesShade = false;
+  double _compareSplit = 0.5;
+  Uint8List? _compareLeftBytes;
+  Uint8List? _compareRightBytes;
+  File? _compareLeftFile;
+  File? _compareRightFile;
+  String _compareLeftLabel = '';
+  String _compareRightLabel = '';
+  DbShade? _compareShadeA;
+  DbShade? _compareShadeB;
+  TryOnCategory? _compareShadeCategory;
+  DbShade? _shadeBeforeCompare;
+  String? _demoStatus;
+
   late AnimationController _panelController;
   late AnimationController _topBarController;
   late Animation<Offset> _panelSlide;
@@ -259,6 +303,7 @@ class _TryOnScreenState extends State<TryOnScreen>
     WidgetsBinding.instance.addObserver(this);
 
     _deepArController = DeepArController();
+    _bindFaceVisibility(_deepArController);
 
     _panelController = AnimationController(
       vsync: this,
@@ -293,8 +338,11 @@ class _TryOnScreenState extends State<TryOnScreen>
     _processPendingSavedLooks();
     _loadMeasuredSkinTone();
 
-    // 🆕 CHANGE: 300ms ki jagah ab hum surface ready hone ka wait karenge
-    // Pehla frame paint hone ke baad surface ready guard set karo
+    // Claim the reinit cycle before the first frame. A `resumed` event often
+    // arrives during startup; if it starts a second destroy/init while this
+    // one is still waiting for the surface, DeepAR hangs and the spinner
+    // never leaves.
+    _reinitCycleActive = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       // Android SurfaceHolder.surfaceCreated() ko time do
@@ -310,17 +358,33 @@ class _TryOnScreenState extends State<TryOnScreen>
   /// for a disk read, and until it lands the foundation list simply shows in
   /// catalog order. Once it arrives the `setState` re-sorts the sheet.
   Future<void> _loadMeasuredSkinTone() async {
-    final hex = await FoundationMatchService.cachedSkinHex();
-    if (!mounted || hex == null || hex.isEmpty) return;
-    setState(() => _measuredSkinHex = hex);
+    final hex = await FoundationMatchService.cachedTryOnHex();
+    final saved = await FoundationMatchService.cachedSummary();
+    if (!mounted) return;
+    setState(() {
+      if (hex != null && hex.isNotEmpty) _measuredSkinHex = hex;
+      _savedProductKey = saved?.productKey;
+      _savedShadeKey = saved?.shadeKey;
+      _savedDeltaE = saved?.deltaE;
+    });
   }
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this);    // Always destroy — this is the only place we tear down the controller.
+    WidgetsBinding.instance.removeObserver(this);
+    final left = _compareLeftFile;
+    final right = _compareRightFile;
+    _compareLeftFile = null;
+    _compareRightFile = null;
+    _compareLeftBytes = null;
+    _compareRightBytes = null;
+    _deleteShot(left);
+    _deleteShot(right);
+    // Always destroy — this is the only place we tear down the controller.
     try {
       _deepArController.destroy();
     } catch (_) {}
+    _initWatchdog?.cancel();
     _panelController.dispose();
     _topBarController.dispose();
     super.dispose();
@@ -368,7 +432,10 @@ class _TryOnScreenState extends State<TryOnScreen>
       // this handler or by an explicit post-navigation call) and skip if we
       // just did a reinit a moment ago (debounce), since Android can fire
       // `resumed` more than once in quick succession around navigation.
-      if (mounted && !_initInProgress && !_reinitCycleActive) {
+      // The match flow sits on the nested overlay, so this route stays
+      // "current" while the camera plugin owns the device. A resume reinit
+      // here would start a second DeepAR session on top of that.
+      if (mounted && !_initInProgress && !_reinitCycleActive && !_overlayActive) {
         final isCurrent = ModalRoute.of(context)?.isCurrent ?? false;
 
         final now = DateTime.now();
@@ -423,6 +490,7 @@ class _TryOnScreenState extends State<TryOnScreen>
     await Future.delayed(const Duration(milliseconds: 150));
 
     _deepArController = DeepArController();
+    _bindFaceVisibility(_deepArController);
     // 🔧 IMPORTANT: Do NOT change _deepArKey!
     // Changing the key forces SurfaceView widget to rebuild, which can cause
     // the old surface to linger while new one is being created, causing
@@ -432,6 +500,9 @@ class _TryOnScreenState extends State<TryOnScreen>
       setState(() {
         _isInitialized = false;
         _initFailed = false;
+        _faceVisible = false;
+        _trackedFaceCount = null;
+        _cameraAccessOff = false;
       });
     }
   }
@@ -620,6 +691,26 @@ class _TryOnScreenState extends State<TryOnScreen>
   // didChangeAppLifecycleState) and always clears it on every exit path so a
   // future resume/navigation can trigger a fresh cycle.
   //
+  void _giveUpOnCamera(String reason) {
+    debugPrint('DeepAR: $reason');
+    _initWatchdog?.cancel();
+    _initInProgress = false;
+    _reinitCycleActive = false;
+    if (!mounted) return;
+    setState(() {
+      _isInitialized = false;
+      _initFailed = true;
+    });
+  }
+
+  void _armInitWatchdog() {
+    _initWatchdog?.cancel();
+    _initWatchdog = Timer(const Duration(seconds: 16), () {
+      if (!mounted || _isInitialized) return;
+      _giveUpOnCamera('camera did not start');
+    });
+  }
+
   Future<void> _waitForSurfaceThenInit() async {
     if (!mounted) {
       _reinitCycleActive = false;
@@ -627,32 +718,46 @@ class _TryOnScreenState extends State<TryOnScreen>
     }
 
     _reinitCycleActive = true;
+    _armInitWatchdog();
 
     // 🔧 Surface reattachment wait
     // Since we're NOT changing widget key, same SurfaceView reattaches surface
     debugPrint('Waiting for surface to be ready...');
 
-    // Wait 8 frames for layout
-    for (int i = 0; i < 8; i++) {
-      await Future.delayed(const Duration(milliseconds: 16));
+    try {
+      // Wait 8 frames for layout
+      for (int i = 0; i < 8; i++) {
+        await Future.delayed(const Duration(milliseconds: 16));
+        if (!mounted) {
+          _reinitCycleActive = false;
+          _initWatchdog?.cancel();
+          return;
+        }
+      }
+
+      // 🔧 Reduced from 1200ms to 600ms
+      // Same SurfaceView reattaches surface faster than creating new one
+      await Future.delayed(const Duration(milliseconds: 600));
       if (!mounted) {
         _reinitCycleActive = false;
+        _initWatchdog?.cancel();
         return;
       }
-    }
 
-    // 🔧 Reduced from 1200ms to 600ms
-    // Same SurfaceView reattaches surface faster than creating new one
-    await Future.delayed(const Duration(milliseconds: 600));
-    if (!mounted) {
+      debugPrint('Surface ready — proceeding with DeepAR initialization');
+      if (mounted) setState(() => _surfaceReady = true);
+      await _initializeDeepAR();
+    } catch (e, st) {
+      debugPrint('DeepAR startup failed: $e\n$st');
+      _giveUpOnCamera('startup failed');
+    } finally {
       _reinitCycleActive = false;
-      return;
+      if (_isInitialized || _initFailed) _initWatchdog?.cancel();
     }
 
-    debugPrint('Surface ready — proceeding with DeepAR initialization');
-    if (mounted) setState(() => _surfaceReady = true);
-    await _initializeDeepAR();
-    _reinitCycleActive = false;
+    // Capture can finish while this cycle still owns the reinit flag.
+    // Resume only after the flag is clear, so it is not dropped.
+    if (mounted) await _resumeDeepArAfterPluginCamera();
   }
 
   // ── CATEGORY HELPERS ──────────────────────────────────────────────────────
@@ -666,6 +771,8 @@ class _TryOnScreenState extends State<TryOnScreen>
       setState(() {
         _isInitialized = false;
         _surfaceReady = false; // 🆕
+        _faceVisible = false;
+        _trackedFaceCount = null;
       });
 
     try {
@@ -673,7 +780,34 @@ class _TryOnScreenState extends State<TryOnScreen>
     } catch (_) {}
 
     _deepArController = DeepArController();
+    _bindFaceVisibility(_deepArController);
     _deepArKey = UniqueKey();
+  }
+
+  void _bindFaceVisibility(DeepArController controller) {
+    controller.onFaceVisibilityChanged = (visible) {
+      if (!mounted || _faceVisible == visible) return;
+      setState(() => _faceVisible = visible);
+    };
+    controller.onFaceCountChanged = (count) {
+      if (!mounted || _trackedFaceCount == count) return;
+      setState(() => _trackedFaceCount = count);
+    };
+  }
+
+  /// Why a save is blocked, or null when the face gate is open.
+  ///
+  /// A missing count (no callback yet, or iOS) keeps the visibility check only.
+  String? _faceBlockReason() {
+    if (!_faceVisible) return 'Look at the camera.';
+    final count = _trackedFaceCount;
+    if (count != null && count > 1) return 'One face at a time.';
+    return null;
+  }
+
+  bool _isHighlighter({TryOnCategory? category, String? productKey}) {
+    if (category == TryOnCategory.highlighter) return true;
+    return productKey != null && productKey.startsWith('hgl_');
   }
 
   String _getGameObject(TryOnCategory category) {
@@ -829,7 +963,23 @@ class _TryOnScreenState extends State<TryOnScreen>
     // until now, so this block and the badge below had never once run.
     if (_currentPrefix == 'fnd_' && filtered.isNotEmpty) {
       final skinHex = _foundationSkinHex;
-      if (skinHex != null) {
+      final savedProduct = _savedProductKey;
+      final savedShade = _savedShadeKey;
+      final savedIndex = (savedProduct != null &&
+              savedProduct.isNotEmpty &&
+              savedShade != null &&
+              savedShade.isNotEmpty)
+          ? filtered.indexWhere(
+              (s) => s.productKey == savedProduct && s.shadeKey == savedShade,
+            )
+          : -1;
+      if (savedIndex >= 0) {
+        if (savedIndex > 0) {
+          final pinned = filtered.removeAt(savedIndex);
+          filtered.insert(0, pinned);
+        }
+        _closestFoundationDeltaE = _savedDeltaE;
+      } else if (skinHex != null) {
         // ΔE2000, not RGB distance. Two shades an equal number of RGB steps from
         // your skin are not equally wrong on your face — that is the whole reason
         // the CIE published a perceptual metric. `skin_color.dart` implements it.
@@ -864,15 +1014,11 @@ class _TryOnScreenState extends State<TryOnScreen>
     return filtered;
   }
 
-  /// The skin tone the foundation list is sorted against, or null if unknown.
+  /// The colour the foundation list is sorted against, or null if unknown.
   ///
-  /// A tone *measured* by the shade matcher outranks the questionnaire's: the
-  /// questionnaire asks the user to pick one of six depth swatches, the matcher
-  /// reads the actual colour off five points on their face. Preferring the
-  /// questionnaire would be replacing a measurement with a self-report.
-  ///
-  /// The depth-level swatch is still kept as a last resort — a coarse ordering is
-  /// more useful than catalog order, which is arbitrary.
+  /// Prefer the mapped catalog colour from the last match (`referenceHex`).
+  /// An older server that did not send one falls back to the measured skin hex,
+  /// then to the questionnaire.
   String? get _foundationSkinHex {
     if (_measuredSkinHex != null && _measuredSkinHex!.isNotEmpty) {
       return _measuredSkinHex;
@@ -941,6 +1087,10 @@ class _TryOnScreenState extends State<TryOnScreen>
       _showSnack("That product can't be tried on in AR yet.");
       return;
     }
+    if (_isHighlighter(category: category, productKey: target.productKey)) {
+      _showSnack("Highlighter isn't in this effect.");
+      return;
+    }
 
     final shade = target; // promoted, so the closure below needs no null checks
     setState(() {
@@ -984,83 +1134,13 @@ class _TryOnScreenState extends State<TryOnScreen>
     return null;
   }
 
-  // ── FIND MY SHADE ─────────────────────────────────────────────────────────
-
-  /// The foundation-only strip above the swatch list.
-  ///
-  /// Foundation is the one category where "just pick the one you like" is bad
-  /// advice — the correct shade is a measurable fact about the user's face, and
-  /// scrolling forty circles is the wrong way to find it. So the entry point sits
-  /// directly above the swatches, in the moment the user is actually looking for
-  /// their shade, rather than only in the profile tab.
-  Widget _buildFindMyShadeStrip() {
-    final measured = _measuredSkinHex;
-    final hasMeasurement = measured != null && measured.isNotEmpty;
-    final packed = hasMeasurement ? parseHexColor(measured) : null;
-
-    return GestureDetector(
-      onTap: _openFoundationMatcher,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-        decoration: BoxDecoration(
-          color: AppColors.primary.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: AppColors.primary.withValues(alpha: 0.25)),
-        ),
-        child: Row(
-          children: [
-            if (packed != null)
-              Container(
-                width: 22,
-                height: 22,
-                decoration: BoxDecoration(
-                  color: Color(0xFF000000 | packed),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 1.5),
-                ),
-              )
-            else
-              Icon(Icons.colorize_rounded, size: 18, color: AppColors.primary),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    hasMeasurement
-                        ? 'Sorted for your skin tone'
-                        : 'Find my shade',
-                    style: TextStyle(
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w600,
-                      color: AppColors.textMain,
-                    ),
-                  ),
-                  Text(
-                    hasMeasurement
-                        ? 'Closest match first · tap to re-measure'
-                        : 'Take one photo and let it measure',
-                    style: TextStyle(fontSize: 10.5, color: AppColors.textMuted),
-                  ),
-                ],
-              ),
-            ),
-            Icon(Icons.chevron_right, size: 18, color: AppColors.primary),
-          ],
-        ),
-      ),
-    );
-  }
-
   /// Opens the shade matcher over the camera.
   ///
   /// Uses [_pushOverlay] rather than the root Navigator — see the long note there.
   /// Pushing this on the root Navigator would tear down DeepAR's SurfaceView and
   /// the user would come back to a black screen.
   Future<void> _openFoundationMatcher() async {
-    final request =
-        await _pushOverlay<FoundationTryOnRequest>(const FoundationMatchScreen());
+    final request = await _pushOverlay<Object>(const FoundationMatchScreen());
 
     if (!mounted) return;
 
@@ -1069,10 +1149,12 @@ class _TryOnScreenState extends State<TryOnScreen>
     await _loadMeasuredSkinTone();
     if (!mounted) return;
 
-    if (request != null) {
+    if (request is FoundationTryOnRequest) {
       await _applyShadeRequest(
         'tryOn:${request.productKey}:${request.shadeKey}',
       );
+    } else if (request is FoundationLookRequest) {
+      await _applyHarmonyLook(request);
     }
   }
 
@@ -1108,8 +1190,50 @@ class _TryOnScreenState extends State<TryOnScreen>
     final result = await _overlayNavKey.currentState!.push<T>(
       MaterialPageRoute<T>(builder: (_) => page),
     );
+    // Rebind while _overlayActive is still true so a late `resumed` event
+    // cannot start a second DeepAR init over this one.
+    if (mounted) await _resumeDeepArAfterPluginCamera();
     if (mounted) setState(() => _overlayActive = false);
     return result;
+  }
+
+  /// The foundation capture screen uses the `camera` plugin, which calls
+  /// CameraX `unbindAll()`. DeepAR's preview texture keeps its last frame
+  /// and never gets those frames back. `start_camera` rebinds the existing
+  /// DeepAR session. It does not create another one.
+  Future<void> _resumeDeepArAfterPluginCamera() async {
+    if (!FoundationCaptureScreen.cameraPluginTookDevice) return;
+    if (!mounted || _cameraRebindInFlight || _initInProgress || _reinitCycleActive) {
+      return;
+    }
+    if (!_isInitialized) {
+      // Still starting: leave the flag so the end of that cycle rebinds.
+      // Already failed: Try again opens a new camera, so drop the flag.
+      if (!_initInProgress && !_reinitCycleActive) {
+        FoundationCaptureScreen.cameraPluginTookDevice = false;
+      }
+      return;
+    }
+
+    FoundationCaptureScreen.cameraPluginTookDevice = false;
+    _cameraRebindInFlight = true;
+    _lastReinitAt = DateTime.now();
+    try {
+      if (!Platform.isAndroid) {
+        _giveUpOnCamera('camera feed was not resumed');
+        return;
+      }
+      await const MethodChannel('deep_ar/camerax')
+          .invokeMethod<dynamic>('start_camera')
+          .timeout(const Duration(seconds: 8));
+      debugPrint('DeepAR: camera feed resumed after foundation capture');
+      if (mounted) setState(() => _surfaceReady = true);
+    } catch (e) {
+      debugPrint('DeepAR: camera resume failed: $e');
+      _giveUpOnCamera('camera feed did not resume');
+    } finally {
+      _cameraRebindInFlight = false;
+    }
   }
 
   // ── DEEP AR INIT ──────────────────────────────────────────────────────────
@@ -1143,18 +1267,34 @@ class _TryOnScreenState extends State<TryOnScreen>
       debugPrint('DeepAR: init attempt $attempt/$maxAttempts');
 
       try {
-        await _deepArController.initialize(
-          androidLicenseKey: androidKey,
-          iosLicenseKey: iosKey,
-          resolution: Resolution.high,
-        );
+        final started = await _deepArController
+            .initialize(
+              androidLicenseKey: androidKey,
+              iosLicenseKey: iosKey,
+              resolution: Resolution.high,
+            )
+            .timeout(const Duration(seconds: 8));
+
+        if (started != true) {
+          _initInProgress = false;
+          if (mounted) {
+            setState(() {
+              _isInitialized = false;
+              _initFailed = true;
+              _cameraAccessOff = true;
+            });
+          }
+          return;
+        }
 
         if (!mounted) {
           _initInProgress = false;
           return;
         }
 
-        await _deepArController.switchEffect('assets/effects/makeup.deepar');
+        await _deepArController
+            .switchEffect('assets/effects/makeup.deepar')
+            .timeout(const Duration(seconds: 8));
 
         if (!mounted) {
           _initInProgress = false;
@@ -1165,6 +1305,7 @@ class _TryOnScreenState extends State<TryOnScreen>
           setState(() {
             _isInitialized = true;
             _initFailed = false;
+            _cameraAccessOff = false;
           });
         }
 
@@ -1178,6 +1319,7 @@ class _TryOnScreenState extends State<TryOnScreen>
         _panelController.forward();
         _topBarController.forward();
         _initInProgress = false;
+        _initWatchdog?.cancel();
         debugPrint('DeepAR: ready ✓');
         return;
       } catch (e) {
@@ -1204,7 +1346,8 @@ class _TryOnScreenState extends State<TryOnScreen>
       final shadeRes = await Supabase.instance.client
           .from('product_shades')
           .select()
-          .order('shade_order', ascending: true);
+          .order('shade_order', ascending: true)
+          .timeout(const Duration(seconds: 12));
       final allFetched = (shadeRes as List<dynamic>)
           .map((e) => DbShade.fromMap(e))
           .toList();
@@ -1214,7 +1357,13 @@ class _TryOnScreenState extends State<TryOnScreen>
         final key = '${shade.productKey}_${shade.shadeHex}';
         uniqueShades.putIfAbsent(key, () => shade);
       }
-      if (mounted) setState(() => _allDbShades = uniqueShades.values.toList());
+      if (mounted) {
+        setState(() {
+          _allDbShades = uniqueShades.values.toList();
+          _shadeLoadSettled = true;
+          _shadeLoadError = null;
+        });
+      }
 
       await _saveShadesToCache(
         uniqueShades.values.map((shade) {
@@ -1229,6 +1378,12 @@ class _TryOnScreenState extends State<TryOnScreen>
       );
     } catch (e) {
       debugPrint('❌ Error loading shades: $e');
+      if (mounted && _allDbShades.isEmpty) {
+        setState(() {
+          _shadeLoadSettled = true;
+          _shadeLoadError = 'Shades did not load. Check your connection and try again.';
+        });
+      }
     }
 
     try {
@@ -1384,6 +1539,10 @@ class _TryOnScreenState extends State<TryOnScreen>
           newParameter: vector.Vector4(0, 0, 0, 0),
         );
       }
+      return;
+    }
+
+    if (_isHighlighter(category: category, productKey: shade.productKey)) {
       return;
     }
 
@@ -1553,9 +1712,456 @@ class _TryOnScreenState extends State<TryOnScreen>
     }
   }
 
+  // ── BARE FACE AND SHADE COMPARE ──────────────────────────────────────────
+
+  Future<void> _deleteShot(File? file) async {
+    if (file == null) return;
+    try {
+      if (await file.exists()) await file.delete();
+    } catch (e) {
+      debugPrint('temp screenshot delete failed: $e');
+    }
+  }
+
+  Future<void> _settleFrame() => Future<void>.delayed(const Duration(milliseconds: 280));
+
+  Future<bool> _clearSelectedMakeup() async {
+    if (!_isInitialized) return false;
+    try {
+      for (final entry in _selectedShades.entries) {
+        if (entry.value != null) {
+          await _applyColorToDeepAR(null, entry.key);
+        }
+      }
+      return _isInitialized;
+    } catch (e) {
+      debugPrint('bare-face clear failed: $e');
+      return false;
+    }
+  }
+
+  Future<void> _reapplySelectedShades() async {
+    for (final entry in _selectedShades.entries) {
+      if (entry.value != null) {
+        await _applyColorToDeepAR(entry.value, entry.key);
+      }
+    }
+  }
+
+  Future<void> _beginBareHold() async {
+    if (_bareHoldActive || _compareOpen || _shadeCaptureBusy) return;
+    if (!_selectedShades.values.any((shade) => shade != null)) {
+      _showSnack('Apply a shade first.');
+      return;
+    }
+    if (!_isInitialized) {
+      await _openBareStills();
+      return;
+    }
+    final token = ++_bareToken;
+    _bareHoldActive = true;
+    if (mounted) setState(() {});
+    final cleared = await _clearSelectedMakeup();
+    if (!mounted || token != _bareToken || !_bareHoldActive) {
+      if (cleared) await _reapplySelectedShades();
+      return;
+    }
+    if (!cleared) {
+      _bareHoldActive = false;
+      if (mounted) setState(() {});
+      await _openBareStills();
+    }
+  }
+
+  void _endBareHold() {
+    if (!_bareHoldActive) return;
+    _bareHoldActive = false;
+    _bareToken++;
+    if (mounted) setState(() {});
+    _reapplySelectedShades();
+  }
+
+  Future<File?> _takeShot() async {
+    try {
+      final file = await _deepArController.takeScreenshot();
+      if (!await file.exists()) return null;
+      return file;
+    } catch (e) {
+      debugPrint('screenshot failed: $e');
+      return null;
+    }
+  }
+
+  Future<void> _openBareStills() async {
+    if (_shadeCaptureBusy || _compareOpen) return;
+    if (!_isInitialized) {
+      _showSnack('Could not capture a bare-face photo.');
+      return;
+    }
+    _shadeCaptureBusy = true;
+    File? withMakeup;
+    File? bare;
+    try {
+      withMakeup = await _takeShot();
+      final cleared = await _clearSelectedMakeup();
+      if (withMakeup == null || !cleared) {
+        await _deleteShot(withMakeup);
+        await _reapplySelectedShades();
+        _showSnack('Could not capture a bare-face photo.');
+        return;
+      }
+      await _settleFrame();
+      bare = await _takeShot();
+      await _reapplySelectedShades();
+      if (bare == null) {
+        await _deleteShot(withMakeup);
+        _showSnack('Could not capture a bare-face photo.');
+        return;
+      }
+      await _presentCompare(
+        left: withMakeup,
+        right: bare,
+        leftLabel: 'With makeup',
+        rightLabel: 'Bare face',
+        choosesShade: false,
+      );
+    } catch (e) {
+      debugPrint('bare stills failed: $e');
+      await _deleteShot(withMakeup);
+      await _deleteShot(bare);
+      await _reapplySelectedShades();
+      _showSnack('Could not capture a bare-face photo.');
+    } finally {
+      _shadeCaptureBusy = false;
+    }
+  }
+
+  void _startShadeCompare(TryOnCategory category) {
+    if (_shadeCaptureBusy || _compareOpen) return;
+    final available = _allDbShades
+        .where((shade) => shade.productKey.startsWith(_prefixFor(category)))
+        .length;
+    if (available < 2) {
+      _showSnack('This category needs two shades to compare.');
+      return;
+    }
+    setState(() {
+      _currentCategory = category;
+      _comparePickCategory = category;
+      _comparePicking = true;
+      _comparePicks.clear();
+      _shadeBeforeCompare = _selectedShades[category];
+      _demoStatus = 'Tap two ${_getCategoryName(category).toLowerCase()} shades.';
+    });
+  }
+
+  void _cancelShadeComparePick() {
+    final category = _comparePickCategory;
+    final previous = _shadeBeforeCompare;
+    setState(() {
+      _comparePicking = false;
+      _comparePicks.clear();
+      _demoStatus = null;
+      _selectedShades[category] = previous;
+      _shadeBeforeCompare = null;
+    });
+    _applyColorToDeepAR(previous, category);
+  }
+
+  Future<void> _onCompareShadeTapped(DbShade shade) async {
+    if (!_comparePicking || _shadeCaptureBusy) return;
+    final already = _comparePicks.any(
+      (picked) => picked.productKey == shade.productKey && picked.shadeKey == shade.shadeKey,
+    );
+    if (already) {
+      _showSnack('Pick a different second shade.');
+      return;
+    }
+    setState(() {
+      _comparePicks.add(shade);
+      _selectedShades[_comparePickCategory] = shade;
+      _demoStatus = _comparePicks.length == 1
+          ? 'Tap the second shade.'
+          : 'Capturing both shades…';
+    });
+    await _applyColorToDeepAR(shade, _comparePickCategory);
+    if (_comparePicks.length < 2) return;
+    final first = _comparePicks[0];
+    final second = _comparePicks[1];
+    setState(() => _comparePicking = false);
+    await _captureShadePair(_comparePickCategory, first, second);
+  }
+
+  Future<void> _captureShadePair(
+    TryOnCategory category,
+    DbShade shadeA,
+    DbShade shadeB,
+  ) async {
+    if (!_isInitialized) {
+      _showSnack("Couldn't capture those shades. Back on the camera.");
+      return;
+    }
+    final previous = _shadeBeforeCompare;
+    _shadeCaptureBusy = true;
+    File? fileA;
+    File? fileB;
+    try {
+      setState(() {
+        _currentCategory = category;
+        _selectedShades[category] = shadeA;
+      });
+      await _applyColorToDeepAR(shadeA, category);
+      await _settleFrame();
+      fileA = await _takeShot();
+      if (fileA == null) {
+        await _restoreShade(category, previous);
+        _showSnack("Couldn't capture those shades. Back on the camera.");
+        return;
+      }
+      setState(() => _selectedShades[category] = shadeB);
+      await _applyColorToDeepAR(shadeB, category);
+      await _settleFrame();
+      fileB = await _takeShot();
+      if (fileB == null) {
+        await _deleteShot(fileA);
+        await _restoreShade(category, previous);
+        _showSnack("Couldn't capture those shades. Back on the camera.");
+        return;
+      }
+      _compareShadeA = shadeA;
+      _compareShadeB = shadeB;
+      _compareShadeCategory = category;
+      await _presentCompare(
+        left: fileA,
+        right: fileB,
+        leftLabel: shadeA.shadeName,
+        rightLabel: shadeB.shadeName,
+        choosesShade: true,
+      );
+    } catch (e) {
+      debugPrint('shade compare failed: $e');
+      await _deleteShot(fileA);
+      await _deleteShot(fileB);
+      await _restoreShade(category, previous);
+      _showSnack("Couldn't capture those shades. Back on the camera.");
+    } finally {
+      _shadeCaptureBusy = false;
+      if (mounted) {
+        setState(() {
+          _comparePicks.clear();
+          if (!_compareOpen) _demoStatus = null;
+        });
+      }
+    }
+  }
+
+  Future<void> _restoreShade(TryOnCategory category, DbShade? shade) async {
+    if (!mounted) return;
+    setState(() => _selectedShades[category] = shade);
+    await _applyColorToDeepAR(shade, category);
+  }
+
+  Future<void> _presentCompare({
+    required File left,
+    required File right,
+    required String leftLabel,
+    required String rightLabel,
+    required bool choosesShade,
+  }) async {
+    final leftBytes = await left.readAsBytes();
+    final rightBytes = await right.readAsBytes();
+    if (!mounted) {
+      await _deleteShot(left);
+      await _deleteShot(right);
+      return;
+    }
+    setState(() {
+      _compareLeftFile = left;
+      _compareRightFile = right;
+      _compareLeftBytes = leftBytes;
+      _compareRightBytes = rightBytes;
+      _compareLeftLabel = leftLabel;
+      _compareRightLabel = rightLabel;
+      _compareChoosesShade = choosesShade;
+      _compareSplit = 0.5;
+      _compareOpen = true;
+      _demoStatus = null;
+    });
+  }
+
+  Future<void> _closeCompare({required bool useWinner}) async {
+    final category = _compareShadeCategory;
+    final shadeA = _compareShadeA;
+    final shadeB = _compareShadeB;
+    final previous = _shadeBeforeCompare;
+    final split = _compareSplit;
+    final chooses = _compareChoosesShade;
+    final left = _compareLeftFile;
+    final right = _compareRightFile;
+    if (mounted) {
+      setState(() {
+        _compareOpen = false;
+        _compareLeftBytes = null;
+        _compareRightBytes = null;
+        _compareLeftFile = null;
+        _compareRightFile = null;
+        _compareShadeA = null;
+        _compareShadeB = null;
+        _compareShadeCategory = null;
+        _shadeBeforeCompare = null;
+        _demoStatus = null;
+      });
+    }
+    await _deleteShot(left);
+    await _deleteShot(right);
+    if (!chooses || category == null || shadeA == null || shadeB == null) return;
+    final winner = compareWinner(
+      CatalogShade(
+        productKey: shadeA.productKey,
+        shadeKey: shadeA.shadeKey,
+        shadeName: shadeA.shadeName,
+        shadeHex: shadeA.shadeHex,
+      ),
+      CatalogShade(
+        productKey: shadeB.productKey,
+        shadeKey: shadeB.shadeKey,
+        shadeName: shadeB.shadeName,
+        shadeHex: shadeB.shadeHex,
+      ),
+      split,
+    );
+    final chosen = winner.shadeKey == shadeA.shadeKey && winner.productKey == shadeA.productKey
+        ? shadeA
+        : shadeB;
+    if (useWinner) {
+      await _restoreShade(category, chosen);
+      _showSnack('Using ${chosen.shadeName}.');
+    } else {
+      await _restoreShade(category, previous);
+    }
+  }
+
+  Future<void> _applyHarmonyLook(FoundationLookRequest request) async {
+    if (_allDbShades.isEmpty) {
+      await _loadDataFromDb();
+      if (!mounted) return;
+    }
+    final maps = _allDbShades
+        .map((shade) => {
+              'product_key': shade.productKey,
+              'shade_key': shade.shadeKey,
+              'shade_name': shade.shadeName,
+              'shade_hex': shade.shadeHex,
+            })
+        .toList();
+    final items = <Map<String, dynamic>>[];
+    final names = <String>[];
+    var skipped = 0;
+
+    void addIfPresent(String productKey, String shadeKey, int intensity, String label) {
+      final match = _allDbShades.where(
+        (shade) => shade.productKey == productKey && shade.shadeKey == shadeKey,
+      );
+      if (match.isEmpty) {
+        skipped++;
+        return;
+      }
+      items.add({
+        'product_key': productKey,
+        'shade_key': shadeKey,
+        'intensity': intensity,
+      });
+      names.add('$label ${match.first.shadeName}');
+    }
+
+    addIfPresent(
+      request.productKey,
+      request.shadeKey,
+      ((_intensities[TryOnCategory.foundation] ?? 0.4) * 100).round(),
+      'Foundation',
+    );
+
+    final blushShades = maps.where((row) => row['product_key']!.startsWith('blu_')).toList();
+    var lipShades = maps.where((row) => row['product_key']!.startsWith('lip_')).toList();
+    if (lipShades.isEmpty) {
+      lipShades = maps.where((row) => row['product_key']!.startsWith('gloss_')).toList();
+    }
+    final blush = nearestHarmonyShade(
+      shades: blushShades,
+      skinHex: request.skinHex,
+      undertone: request.undertone,
+      lip: false,
+    );
+    final lip = nearestHarmonyShade(
+      shades: lipShades,
+      skinHex: request.skinHex,
+      undertone: request.undertone,
+      lip: true,
+    );
+    if (blush == null) {
+      skipped++;
+    } else {
+      addIfPresent(
+        blush.productKey,
+        blush.shadeKey,
+        ((_intensities[TryOnCategory.blush] ?? 0.52) * 100).round(),
+        'Blush',
+      );
+    }
+    if (lip == null) {
+      skipped++;
+    } else {
+      addIfPresent(
+        lip.productKey,
+        lip.shadeKey,
+        ((_intensities[TryOnCategory.lipstick] ?? 0.65) * 100).round(),
+        'Lip',
+      );
+    }
+
+    if (items.isEmpty) {
+      _showSnack("Those products aren't in the catalog.");
+      return;
+    }
+    final skippedNote = skipped == 0
+        ? ''
+        : ' Skipped $skipped product${skipped == 1 ? '' : 's'} that ${skipped == 1 ? 'is' : 'are'} not in the catalog.';
+    _loadAndApplySavedLook(
+      items,
+      note: '${names.join(', ')}.$skippedNote',
+    );
+  }
+
+  List<WearOrderLine> _wearLinesForCurrentLook() {
+    final items = <Map<String, dynamic>>[];
+    var layer = 1;
+    for (final entry in _selectedShades.entries) {
+      final shade = entry.value;
+      if (shade == null) continue;
+      items.add({
+        'product_key': shade.productKey,
+        'shade_key': shade.shadeKey,
+        'shade_name': shade.shadeName,
+        'intensity': ((_intensities[entry.key] ?? 0.5) * 100).round(),
+        'layer_order': layer++,
+      });
+    }
+    return wearOrderForItems(
+      items,
+      titleFor: (item) {
+        final key = item['product_key']?.toString() ?? '';
+        final product = ProductsCache.instance.byKey(key)?.name.trim();
+        if (product != null && product.isNotEmpty) return product;
+        final shadeName = item['shade_name']?.toString().trim();
+        if (shadeName != null && shadeName.isNotEmpty) return shadeName;
+        return null;
+      },
+    );
+  }
+
   // ── LOAD SAVED LOOK ───────────────────────────────────────────────────────
 
-  void _loadAndApplySavedLook(List<dynamic> items) {
+  void _loadAndApplySavedLook(List<dynamic> items, {String? note}) {
     // Batch all state mutations into a single setState
     final Map<TryOnCategory, DbShade?> newShades = {
       for (var cat in TryOnCategory.values) cat: null,
@@ -1567,6 +2173,7 @@ class _TryOnScreenState extends State<TryOnScreen>
       _applyColorToDeepAR(null, cat);
     }
 
+    var skippedHighlighter = false;
     for (var item in items) {
       final productKey = item['product_key'] as String;
       final shadeKey = item['shade_key'] as String;
@@ -1575,6 +2182,10 @@ class _TryOnScreenState extends State<TryOnScreen>
 
       final prefix = _prefixForKey(productKey);
       final cat = _categoryForPrefix(prefix);
+      if (_isHighlighter(category: cat, productKey: productKey)) {
+        skippedHighlighter = true;
+        continue;
+      }
       if (cat == null) {
         debugPrint('⚠️ Unknown product prefix: $productKey');
         continue;
@@ -1602,9 +2213,11 @@ class _TryOnScreenState extends State<TryOnScreen>
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: const Text(
-          '✨ Look applied!',
-          style: TextStyle(color: Colors.white),
+        content: Text(
+          skippedHighlighter
+              ? "Highlighter isn't in this effect."
+              : (note ?? '✨ Look applied!'),
+          style: const TextStyle(color: Colors.white),
         ),
         backgroundColor: AppColors.primary,
         behavior: SnackBarBehavior.floating,
@@ -1618,6 +2231,11 @@ class _TryOnScreenState extends State<TryOnScreen>
   // ── SAVE LOOK ─────────────────────────────────────────────────────────────
 
   Future<void> _saveLookToDb(String lookName) async {
+    final block = _faceBlockReason();
+    if (block != null) {
+      _showSnack(block);
+      return;
+    }
     final userId = Supabase.instance.client.auth.currentUser?.id;
     if (userId == null) {
       if (!mounted) return;
@@ -1773,8 +2391,13 @@ class _TryOnScreenState extends State<TryOnScreen>
         ),
       );
 
-      // 💚 Show "Buy This Look" bottom sheet
-      _showBuyThisLookSheet(lookId, trimmedLookName, itemsToInsert);
+      // Wear order, then the existing buy sheet. No second cart button.
+      _showBuyThisLookSheet(
+        lookId,
+        trimmedLookName,
+        itemsToInsert,
+        _wearLinesForCurrentLook(),
+      );
     } catch (e) {
       debugPrint('❌ Save failed, queuing locally: $e');
       try {
@@ -1785,6 +2408,7 @@ class _TryOnScreenState extends State<TryOnScreen>
           itemsToInsert,
         );
         if (!mounted) return;
+        _showWearOrderOnly(_wearLinesForCurrentLook());
         // Dialog already closed, show offline save toast
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -1816,6 +2440,11 @@ class _TryOnScreenState extends State<TryOnScreen>
   // ── SAVE DIALOG ───────────────────────────────────────────────────────────
 
   Future<void> _showSaveLookDialog() async {
+    final block = _faceBlockReason();
+    if (block != null) {
+      _showSnack(block);
+      return;
+    }
     final nameController = TextEditingController();
     if (!mounted) return;
 
@@ -1933,7 +2562,10 @@ class _TryOnScreenState extends State<TryOnScreen>
                     children: [
                       Expanded(
                         child: GestureDetector(
-                          onTap: () => Navigator.pop(context),
+                          onTap: () {
+                            final nav = Navigator.of(context);
+                            if (nav.canPop()) nav.pop();
+                          },
                           child: Container(
                             height: 52,
                             decoration: BoxDecoration(
@@ -1962,7 +2594,8 @@ class _TryOnScreenState extends State<TryOnScreen>
                         child: GestureDetector(
                           onTap: () {
                             // Close dialog immediately for better UX
-                            Navigator.pop(context);
+                            final nav = Navigator.of(context);
+                            if (nav.canPop()) nav.pop();
                             // Start save in background
                             _saveLookToDb(nameController.text);
                           },
@@ -2018,10 +2651,21 @@ class _TryOnScreenState extends State<TryOnScreen>
   }
 
   // 💚 ── BUY THIS LOOK BOTTOM SHEET ────────────────────────────────────────────
+  void _showWearOrderOnly(List<WearOrderLine> lines) {
+    if (!mounted || lines.isEmpty) return;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _WearOrderSheet(lines: lines),
+    );
+  }
+
   void _showBuyThisLookSheet(
     String lookId,
     String lookName,
     List<Map<String, dynamic>> itemsToInsert,
+    List<WearOrderLine> wearLines,
   ) {
     if (!mounted) return;
 
@@ -2049,6 +2693,7 @@ class _TryOnScreenState extends State<TryOnScreen>
           totalPrice: totals.total,
           itemCount: productKeys.length,
           pricedCount: totals.pricedCount,
+          wearLines: wearLines,
         ),
       );
     });
@@ -2058,6 +2703,7 @@ class _TryOnScreenState extends State<TryOnScreen>
 
   @override
   Widget build(BuildContext context) {
+    AppColors.watch(context);
     final currentSelectedShade = _selectedShades[_currentCategory];
     final currentIntensity = _intensities[_currentCategory] ?? 0.5;
     final bool isLoggedIn = Supabase.instance.client.auth.currentUser != null;
@@ -2068,8 +2714,10 @@ class _TryOnScreenState extends State<TryOnScreen>
     // shade strip, intensity slider), the camera preview above it always
     // keeps a guaranteed amount of visible space. Content inside scrolls
     // instead of pushing the sheet — and therefore the camera — smaller.
-    final screenHeight = MediaQuery.of(context).size.height;
-    final maxPanelHeight = screenHeight * 0.46;
+    // One height for lipstick, blush, foundation and every other category.
+    // It used to grow with the foundation strip until it covered about half
+    // the camera.
+    final panelHeight = 236.0 + botPad;
 
     return WillPopScope(
       // 🆕 FIX v2: the overlay Navigator (_overlayNavKey) is NOT the app's
@@ -2077,10 +2725,22 @@ class _TryOnScreenState extends State<TryOnScreen>
       // automatically. While it has something pushed, forward back-presses
       // to it instead of letting them hit (or bypass) the root Navigator.
       onWillPop: () async {
-        if (_overlayActive) {
-          _overlayNavKey.currentState?.maybePop();
+        if (_compareOpen) {
+          _closeCompare(useWinner: false);
           return false;
         }
+        if (_comparePicking) {
+          _cancelShadeComparePick();
+          return false;
+        }
+        final overlay = _overlayNavKey.currentState;
+        if (_overlayActive && overlay != null && overlay.canPop()) {
+          overlay.pop();
+          return false;
+        }
+        // Try-on is often the only route. Popping it empties the navigator
+        // and trips `_history.isNotEmpty` on the next build.
+        if (!Navigator.of(context).canPop()) return false;
         return true;
       },
       child: AnnotatedRegion<SystemUiOverlayStyle>(
@@ -2122,17 +2782,52 @@ class _TryOnScreenState extends State<TryOnScreen>
               Positioned.fill(
                 child: _initFailed
                     ? _ErrorView(
+                        message: _cameraAccessOff ? 'Camera access is off.' : null,
                         onRetry: () {
+                          if (_initInProgress || _reinitCycleActive) return;
+                          _reinitCycleActive = true;
+                          _lastReinitAt = DateTime.now();
                           setState(() {
                             _isInitialized = false;
                             _initFailed = false;
+                            _cameraAccessOff = false;
+                            _faceVisible = false;
+                            _trackedFaceCount = null;
+                            _surfaceReady = false;
                           });
-                          Future.delayed(const Duration(milliseconds: 300), () {
-                            if (mounted) _initializeDeepAR();
+                          _destroyAndResetController().then((_) {
+                            if (!mounted) {
+                              _reinitCycleActive = false;
+                              return;
+                            }
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              if (mounted) {
+                                _waitForSurfaceThenInit();
+                              } else {
+                                _reinitCycleActive = false;
+                              }
+                            });
                           });
                         },
                       )
                     : const _LoadingView(),
+              ),
+
+            if (_isInitialized && _faceBlockReason() != null)
+              Positioned(
+                top: topPad + 72,
+                left: 24,
+                right: 24,
+                child: Text(
+                  _faceBlockReason()!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    shadows: [Shadow(blurRadius: 8, color: Colors.black54)],
+                  ),
+                ),
               ),
 
             // ── TOP GRADIENT ──────────────────────────────────────────────
@@ -2160,7 +2855,7 @@ class _TryOnScreenState extends State<TryOnScreen>
               bottom: 0,
               left: 0,
               right: 0,
-              height: 380,
+              height: 240,
               child: DecoratedBox(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
@@ -2289,7 +2984,20 @@ class _TryOnScreenState extends State<TryOnScreen>
                               if (isLoggedIn) {
                                 final result = await _pushOverlay<String>(const ProfileScreen());
                                 if (result == 'tryOnWithMyBag' && mounted) {
+                                  final bagHasHighlighter = MakeupBagCache
+                                      .instance
+                                      .items
+                                      .any((item) {
+                                    final key =
+                                        item['product_key']?.toString() ?? '';
+                                    return key.startsWith('hgl_');
+                                  });
                                   setState(() => _showOnlyMyBag = true);
+                                  if (bagHasHighlighter) {
+                                    _showSnack(
+                                      "Highlighter isn't in this effect.",
+                                    );
+                                  }
                                 } else if (result != null &&
                                     result.startsWith('tryOn:') &&
                                     mounted) {
@@ -2323,6 +3031,14 @@ class _TryOnScreenState extends State<TryOnScreen>
               ),
             ),
 
+            if (_isInitialized && !_compareOpen)
+              Positioned(
+                left: 12,
+                right: 12,
+                bottom: panelHeight + 8,
+                child: _buildDemoControls(),
+              ),
+
             // ── BOTTOM PANEL ──────────────────────────────────────────────
             Positioned(
               left: 0,
@@ -2338,12 +3054,8 @@ class _TryOnScreenState extends State<TryOnScreen>
                     ),
                     child: BackdropFilter(
                       filter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
-                      child: ConstrainedBox(
-                        // 🆕 Hard cap on the panel's height. Everything below
-                        // the drag handle now lives inside a scroll view, so
-                        // adding more feature rows makes THAT scroll instead
-                        // of growing the panel (and eating the camera).
-                        constraints: BoxConstraints(maxHeight: maxPanelHeight),
+                      child: SizedBox(
+                        height: panelHeight,
                         child: Container(
                           decoration: BoxDecoration(
                             color: AppColors.surface.withValues(alpha: 0.95),
@@ -2365,7 +3077,6 @@ class _TryOnScreenState extends State<TryOnScreen>
                             ],
                           ),
                           child: Column(
-                            mainAxisSize: MainAxisSize.min,
                             children: [
                               // Drag handle — stays fixed at the top of the
                               // panel regardless of how much content scrolls
@@ -2393,326 +3104,94 @@ class _TryOnScreenState extends State<TryOnScreen>
                                 child: SingleChildScrollView(
                                   physics: const BouncingScrollPhysics(),
                                   padding: EdgeInsets.fromLTRB(
-                                    20,
-                                    10,
-                                    20,
-                                    botPad + 14,
+                                    16,
+                                    4,
+                                    16,
+                                    botPad + 8,
                                   ),
                                   child: Column(
                                     mainAxisSize: MainAxisSize.min,
                                     crossAxisAlignment:
                                         CrossAxisAlignment.start,
                                     children: [
-                                      // ── Header row ───────────────────────
+                                      // ── Category chips and compact controls ─
                                       Row(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.center,
                                         children: [
                                           Expanded(
-                                            child: Column(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
-                                              children: [
-                                                Text(
-                                                  'Virtual Try-On',
-                                                  style: TextStyle(
-                                                    fontSize: 17,
-                                                    fontWeight: FontWeight.w800,
-                                                    color: AppColors.textMain,
-                                                    letterSpacing: -0.5,
-                                                  ),
-                                                ),
-                                                const SizedBox(height: 2),
-                                                Row(
-                                                  children: [
-                                                    Container(
-                                                      width: 6,
-                                                      height: 6,
-                                                      decoration: BoxDecoration(
-                                                        color:
-                                                            AppColors.primary,
-                                                        shape: BoxShape.circle,
-                                                      ),
-                                                    ),
-                                                    const SizedBox(width: 5),
-                                                    Text(
-                                                      _getCategoryName(
-                                                        _currentCategory,
-                                                      ),
-                                                      style: TextStyle(
-                                                        fontSize: 12.5,
-                                                        color:
-                                                            AppColors.primary,
-                                                        fontWeight:
-                                                            FontWeight.w600,
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ],
+                                            child: SingleChildScrollView(
+                                              scrollDirection: Axis.horizontal,
+                                              physics:
+                                                  const BouncingScrollPhysics(),
+                                              child: Row(
+                                                children: TryOnCategory.values
+                                                    .where(
+                                                      (cat) =>
+                                                          cat !=
+                                                          TryOnCategory
+                                                              .highlighter,
+                                                    )
+                                                    .map(_buildCategoryTab)
+                                                    .toList(),
+                                              ),
                                             ),
                                           ),
-
-                                          // Save button
-                                          GestureDetector(
+                                          _panelIcon(
+                                            icon: _showOnlyMyBag
+                                                ? Icons.shopping_bag
+                                                : Icons.shopping_bag_outlined,
+                                            selected: _showOnlyMyBag,
+                                            onTap: () {
+                                              if (!isLoggedIn) {
+                                                _showLoginPrompt(
+                                                  'Sign in to view your bag!',
+                                                );
+                                                return;
+                                              }
+                                              setState(
+                                                () => _showOnlyMyBag =
+                                                    !_showOnlyMyBag,
+                                              );
+                                            },
+                                          ),
+                                          if (_currentCategory ==
+                                              TryOnCategory.foundation)
+                                            GestureDetector(
+                                              onTap: _openFoundationMatcher,
+                                              child: Container(
+                                                height: 32,
+                                                margin: const EdgeInsets.only(
+                                                  left: 6,
+                                                ),
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                  horizontal: 10,
+                                                ),
+                                                alignment: Alignment.center,
+                                                decoration: BoxDecoration(
+                                                  color: AppColors.primary,
+                                                  borderRadius:
+                                                      BorderRadius.circular(50),
+                                                ),
+                                                child: const Text(
+                                                  'Find my shade',
+                                                  style: TextStyle(
+                                                    color: Colors.white,
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w700,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                          _panelIcon(
+                                            icon: Icons.bookmark_add_outlined,
                                             onTap: isLoggedIn
                                                 ? () => _showSaveLookDialog()
                                                 : () => _showLoginPrompt(
-                                                    'Sign in to save your look!',
-                                                  ),
-                                            child: AnimatedContainer(
-                                              duration: const Duration(
-                                                milliseconds: 200,
-                                              ),
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                horizontal: 16,
-                                                vertical: 9,
-                                              ),
-                                              decoration: BoxDecoration(
-                                                color: isLoggedIn
-                                                    ? AppColors.primary
-                                                    : AppColors.border,
-                                                borderRadius:
-                                                    BorderRadius.circular(
-                                                  50,
-                                                ),
-                                                boxShadow: isLoggedIn
-                                                    ? [
-                                                        BoxShadow(
-                                                          color: AppColors
-                                                              .primary
-                                                              .withValues(
-                                                            alpha: 0.35,
-                                                          ),
-                                                          blurRadius: 16,
-                                                          offset:
-                                                              const Offset(
-                                                            0,
-                                                            5,
-                                                          ),
-                                                        ),
-                                                      ]
-                                                    : null,
-                                              ),
-                                              child: Row(
-                                                mainAxisSize:
-                                                    MainAxisSize.min,
-                                                children: [
-                                                  Icon(
-                                                    Icons
-                                                        .bookmark_add_outlined,
-                                                    color: isLoggedIn
-                                                        ? Colors.white
-                                                        : AppColors.textMuted,
-                                                    size: 15,
-                                                  ),
-                                                  const SizedBox(width: 6),
-                                                  Text(
-                                                    'Save',
-                                                    style: TextStyle(
-                                                      color: isLoggedIn
-                                                          ? Colors.white
-                                                          : AppColors
-                                                              .textMuted,
-                                                      fontWeight:
-                                                          FontWeight.w700,
-                                                      fontSize: 13.5,
-                                                      letterSpacing: 0.1,
+                                                      'Sign in to save your look!',
                                                     ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
                                           ),
                                         ],
                                       ),
-
-                                      const SizedBox(height: 12),
-
-                                      // ── Category tabs ────────────────────
-                                      SingleChildScrollView(
-                                        scrollDirection: Axis.horizontal,
-                                        physics:
-                                            const BouncingScrollPhysics(),
-                                        child: Row(
-                                          children: TryOnCategory.values
-                                              .map(_buildCategoryTab)
-                                              .toList(),
-                                        ),
-                                      ),
-
-                                      const SizedBox(height: 10),
-
-                                      // ── All / My Bag Toggle ───────────────
-                                      ListenableBuilder(
-                                        listenable: MakeupBagCache.instance,
-                                        builder: (context, _) {
-                                          final bagHasItems =
-                                              !MakeupBagCache.instance
-                                                  .isEmpty;
-                                          return Row(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.center,
-                                            children: [
-                                              Container(
-                                                height: 30,
-                                                decoration: BoxDecoration(
-                                                  color: AppColors.background,
-                                                  borderRadius:
-                                                      BorderRadius.circular(
-                                                          20),
-                                                  border: Border.all(
-                                                      color:
-                                                          AppColors.border),
-                                                ),
-                                                child: Row(
-                                                  mainAxisSize:
-                                                      MainAxisSize.min,
-                                                  children: [
-                                                    GestureDetector(
-                                                      onTap: () => setState(
-                                                          () =>
-                                                              _showOnlyMyBag =
-                                                                  false),
-                                                      child: Container(
-                                                        padding:
-                                                            const EdgeInsets
-                                                                .symmetric(
-                                                                horizontal:
-                                                                    16),
-                                                        alignment:
-                                                            Alignment.center,
-                                                        decoration:
-                                                            BoxDecoration(
-                                                          color: !_showOnlyMyBag
-                                                              ? AppColors
-                                                                  .textMain
-                                                              : Colors
-                                                                  .transparent,
-                                                          borderRadius:
-                                                              BorderRadius
-                                                                  .circular(
-                                                                      20),
-                                                        ),
-                                                        child: Text(
-                                                          'All Shades',
-                                                          style: TextStyle(
-                                                            fontSize: 11.5,
-                                                            fontWeight:
-                                                                !_showOnlyMyBag
-                                                                    ? FontWeight
-                                                                        .w600
-                                                                    : FontWeight
-                                                                        .w500,
-                                                            color: !_showOnlyMyBag
-                                                                ? AppColors
-                                                                    .background
-                                                                : AppColors
-                                                                    .textMuted,
-                                                          ),
-                                                        ),
-                                                      ),
-                                                    ),
-                                                    GestureDetector(
-                                                      onTap: () {
-                                                        if (!isLoggedIn) {
-                                                          _showLoginPrompt(
-                                                              'Sign in to view your bag!');
-                                                          return;
-                                                        }
-                                                        setState(() =>
-                                                            _showOnlyMyBag =
-                                                                true);
-                                                      },
-                                                      child: Container(
-                                                        padding:
-                                                            const EdgeInsets
-                                                                .symmetric(
-                                                                horizontal:
-                                                                    16),
-                                                        alignment:
-                                                            Alignment.center,
-                                                        decoration:
-                                                            BoxDecoration(
-                                                          color: _showOnlyMyBag
-                                                              ? AppColors
-                                                                  .primary
-                                                              : Colors
-                                                                  .transparent,
-                                                          borderRadius:
-                                                              BorderRadius
-                                                                  .circular(
-                                                                      20),
-                                                        ),
-                                                        child: Row(
-                                                          children: [
-                                                            Icon(
-                                                              Icons
-                                                                  .shopping_bag,
-                                                              size: 13,
-                                                              color: _showOnlyMyBag
-                                                                  ? Colors
-                                                                      .white
-                                                                  : AppColors
-                                                                      .textMuted,
-                                                            ),
-                                                            const SizedBox(
-                                                                width: 4),
-                                                            Text(
-                                                              'My Bag',
-                                                              style:
-                                                                  TextStyle(
-                                                                fontSize:
-                                                                    11.5,
-                                                                fontWeight: _showOnlyMyBag
-                                                                    ? FontWeight
-                                                                        .w600
-                                                                    : FontWeight
-                                                                        .w500,
-                                                                color: _showOnlyMyBag
-                                                                    ? Colors
-                                                                        .white
-                                                                    : AppColors
-                                                                        .textMuted,
-                                                              ),
-                                                            ),
-                                                            if (bagHasItems &&
-                                                                !_showOnlyMyBag) ...[
-                                                              const SizedBox(
-                                                                  width: 4),
-                                                              Container(
-                                                                width: 6,
-                                                                height: 6,
-                                                                decoration:
-                                                                    const BoxDecoration(
-                                                                  color: Colors
-                                                                      .redAccent,
-                                                                  shape: BoxShape
-                                                                      .circle,
-                                                                ),
-                                                              ),
-                                                            ]
-                                                          ],
-                                                        ),
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ),
-                                            ],
-                                          );
-                                        },
-                                      ),
-
-                                      // ── Find my shade (foundation only) ───
-                                      if (_currentCategory ==
-                                          TryOnCategory.foundation) ...[
-                                        const SizedBox(height: 10),
-                                        _buildFindMyShadeStrip(),
-                                      ],
-
-                                      const SizedBox(height: 12),
 
                                       // ── Shade label row ──────────────────
                                       Row(
@@ -2900,6 +3379,18 @@ class _TryOnScreenState extends State<TryOnScreen>
                                         ],
                                       ),
 
+                                      if (_demoStatus != null) ...[
+                                        const SizedBox(height: 6),
+                                        Text(
+                                          _demoStatus!,
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: AppColors.primary,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                        ),
+                                      ],
+
                                       const SizedBox(height: 8),
 
                                       // ── Shades list ──────────────────────
@@ -2907,12 +3398,29 @@ class _TryOnScreenState extends State<TryOnScreen>
                                         height: 52,
                                         child: _currentShades.isEmpty
                                             ? Center(
-                                                child: Text(
-                                                  'No shades available',
-                                                  style: TextStyle(
-                                                    color:
-                                                        AppColors.textMuted,
-                                                    fontSize: 13,
+                                                child: GestureDetector(
+                                                  onTap: _shadeLoadError == null
+                                                      ? null
+                                                      : () {
+                                                          setState(() {
+                                                            _shadeLoadSettled =
+                                                                false;
+                                                            _shadeLoadError =
+                                                                null;
+                                                          });
+                                                          _loadDataFromDb();
+                                                        },
+                                                  child: Text(
+                                                    _shadeLoadError ??
+                                                        (_shadeLoadSettled
+                                                            ? 'No shades available'
+                                                            : 'Loading shades…'),
+                                                    textAlign: TextAlign.center,
+                                                    style: TextStyle(
+                                                      color:
+                                                          AppColors.textMuted,
+                                                      fontSize: 13,
+                                                    ),
                                                   ),
                                                 ),
                                               )
@@ -2983,6 +3491,25 @@ class _TryOnScreenState extends State<TryOnScreen>
 
                                                   return GestureDetector(
                                                     onTap: () {
+                                                      if (_isHighlighter(
+                                                        category:
+                                                            _currentCategory,
+                                                        productKey:
+                                                            shade.productKey,
+                                                      )) {
+                                                        _showSnack(
+                                                          "Highlighter isn't in this effect.",
+                                                        );
+                                                        return;
+                                                      }
+                                                      if (_comparePicking &&
+                                                          _currentCategory ==
+                                                              _comparePickCategory) {
+                                                        _onCompareShadeTapped(
+                                                          shade,
+                                                        );
+                                                        return;
+                                                      }
                                                       setState(
                                                         () => _selectedShades[
                                                                 _currentCategory] =
@@ -3001,14 +3528,12 @@ class _TryOnScreenState extends State<TryOnScreen>
                                                           isSelected:
                                                               isSelected,
                                                         ),
-                                                        // 💚 Closest-match badge on
-                                                        // the first foundation
-                                                        // swatch. `_currentShades`
-                                                        // has already sorted the list
-                                                        // by ΔE2000, so index 1 (the
-                                                        // first real shade after the
-                                                        // "clear" circle) *is* the
-                                                        // closest one.
+                                                        // Closest-match badge on the
+                                                        // first foundation swatch.
+                                                        // When a match was saved, that
+                                                        // shade is pinned first. With
+                                                        // no saved recommendation the
+                                                        // list is still sorted by ΔE.
                                                         if (_currentPrefix ==
                                                                 'fnd_' &&
                                                             index == 1 &&
@@ -3077,8 +3602,8 @@ class _TryOnScreenState extends State<TryOnScreen>
                                       // ── Intensity slider ─────────────────
                                       Container(
                                         padding: const EdgeInsets.symmetric(
-                                          horizontal: 14,
-                                          vertical: 8,
+                                          horizontal: 12,
+                                          vertical: 2,
                                         ),
                                         decoration: BoxDecoration(
                                           color: AppColors.primary
@@ -3189,6 +3714,22 @@ class _TryOnScreenState extends State<TryOnScreen>
                 ),
               ),
             ),
+            if (_compareOpen &&
+                _compareLeftBytes != null &&
+                _compareRightBytes != null)
+              Positioned.fill(
+                child: _StillCompareOverlay(
+                  left: _compareLeftBytes!,
+                  right: _compareRightBytes!,
+                  leftLabel: _compareLeftLabel,
+                  rightLabel: _compareRightLabel,
+                  split: _compareSplit,
+                  showUse: _compareChoosesShade,
+                  onSplit: (value) => setState(() => _compareSplit = value),
+                  onClose: () => _closeCompare(useWinner: false),
+                  onUse: () => _closeCompare(useWinner: true),
+                ),
+              ),
             // ── OVERLAY NAVIGATOR ────────────────────────────────────────
             // 🆕 FIX v2: AuthScreen / ProfileScreen / SavedLooksScreen are
             // pushed onto THIS Navigator (via _pushOverlay), never the root
@@ -3204,12 +3745,17 @@ class _TryOnScreenState extends State<TryOnScreen>
                 ignoring: !_overlayActive,
                 child: Navigator(
                   key: _overlayNavKey,
-                  onGenerateRoute: (settings) => PageRouteBuilder(
-                    settings: settings,
-                    opaque: false,
-                    pageBuilder: (context, animation, secondaryAnimation) =>
-                        const SizedBox.shrink(),
-                  ),
+                  // A permanent root page. Popping the last route of this
+                  // nested navigator used to empty `_history` and fail the
+                  // framework assertion on the next build, which left the
+                  // camera spinner up under a red error screen.
+                  pages: const [
+                    MaterialPage<void>(
+                      key: ValueKey<String>('try-on-overlay-root'),
+                      child: SizedBox.shrink(),
+                    ),
+                  ],
+                  onPopPage: (route, result) => false,
                 ),
               ),
             ),
@@ -3220,19 +3766,114 @@ class _TryOnScreenState extends State<TryOnScreen>
     );
   }
 
+  Widget _buildDemoControls() {
+    final lipEntry = _currentCategory == TryOnCategory.lipstick;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Listener(
+          onPointerDown: (_) => _beginBareHold(),
+          onPointerUp: (_) => _endBareHold(),
+          onPointerCancel: (_) => _endBareHold(),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: _bareHoldActive ? 0.62 : 0.38),
+              borderRadius: BorderRadius.circular(50),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.35)),
+            ),
+            child: Text(
+              _bareHoldActive ? 'Release to restore makeup' : 'Hold to see bare face',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: _DemoChip(
+                label: 'Compare two lip shades',
+                filled: true,
+                onTap: _shadeCaptureBusy
+                    ? null
+                    : () => _startShadeCompare(TryOnCategory.lipstick),
+              ),
+            ),
+            if (!lipEntry) ...[
+              const SizedBox(width: 6),
+              Expanded(
+                child: _DemoChip(
+                  label: 'Compare ${_getCategoryName(_currentCategory)}',
+                  onTap: _shadeCaptureBusy
+                      ? null
+                      : () => _startShadeCompare(_currentCategory),
+                ),
+              ),
+            ],
+          ],
+        ),
+        if (_comparePicking)
+          TextButton(
+            onPressed: _cancelShadeComparePick,
+            child: const Text(
+              'Cancel compare',
+              style: TextStyle(color: Colors.white, fontSize: 12),
+            ),
+          ),
+      ],
+    );
+  }
+
   // ── CATEGORY TAB ──────────────────────────────────────────────────────────
+
+  Widget _panelIcon({
+    required IconData icon,
+    required VoidCallback onTap,
+    bool selected = false,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 32,
+        height: 32,
+        margin: const EdgeInsets.only(left: 6),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.primary : AppColors.background,
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: selected ? AppColors.primary : AppColors.border,
+          ),
+        ),
+        child: Icon(
+          icon,
+          size: 16,
+          color: selected ? Colors.white : AppColors.textMain,
+        ),
+      ),
+    );
+  }
 
   Widget _buildCategoryTab(TryOnCategory cat) {
     final isSelected = _currentCategory == cat;
     final hasShade = _selectedShades[cat] != null;
 
     return GestureDetector(
-      onTap: () => setState(() => _currentCategory = cat),
+      onTap: () {
+        if (_comparePicking && cat != _comparePickCategory) {
+          _cancelShadeComparePick();
+        }
+        setState(() => _currentCategory = cat);
+      },
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 220),
         curve: Curves.easeOutCubic,
         margin: const EdgeInsets.only(right: 7),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
           color: isSelected ? AppColors.primary : Colors.transparent,
           borderRadius: BorderRadius.circular(50),
@@ -3362,7 +4003,8 @@ class _LoadingView extends StatelessWidget {
 
 class _ErrorView extends StatelessWidget {
   final VoidCallback onRetry;
-  const _ErrorView({required this.onRetry});
+  final String? message;
+  const _ErrorView({required this.onRetry, this.message});
 
   @override
   Widget build(BuildContext context) {
@@ -3395,7 +4037,7 @@ class _ErrorView extends StatelessWidget {
               ),
               const SizedBox(height: 20),
               Text(
-                'Camera unavailable',
+                message ?? 'Camera unavailable',
                 style: TextStyle(
                   color: AppColors.textMain,
                   fontSize: 16,
@@ -3404,7 +4046,9 @@ class _ErrorView extends StatelessWidget {
               ),
               const SizedBox(height: 8),
               Text(
-                'Could not start the AR camera.\nPlease try again.',
+                message == null
+                    ? 'Could not start the AR camera.\nPlease try again.'
+                    : 'Allow camera access, then try again.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: AppColors.textMuted,
@@ -3443,6 +4087,198 @@ class _ErrorView extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DemoChip extends StatelessWidget {
+  const _DemoChip({required this.label, required this.onTap, this.filled = false});
+
+  final String label;
+  final VoidCallback? onTap;
+  final bool filled;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: filled ? AppColors.primary : Colors.black.withValues(alpha: 0.42),
+      borderRadius: BorderRadius.circular(50),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(50),
+        child: Container(
+          height: 32,
+          alignment: Alignment.center,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(50),
+            border: Border.all(
+              color: filled ? AppColors.primary : Colors.white.withValues(alpha: 0.35),
+            ),
+          ),
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SplitClipper extends CustomClipper<Rect> {
+  _SplitClipper(this.fraction);
+  final double fraction;
+
+  @override
+  Rect getClip(Size size) => Rect.fromLTWH(0, 0, size.width * fraction, size.height);
+
+  @override
+  bool shouldReclip(_SplitClipper oldClipper) => oldClipper.fraction != fraction;
+}
+
+class _StillCompareOverlay extends StatelessWidget {
+  const _StillCompareOverlay({
+    required this.left,
+    required this.right,
+    required this.leftLabel,
+    required this.rightLabel,
+    required this.split,
+    required this.showUse,
+    required this.onSplit,
+    required this.onClose,
+    required this.onUse,
+  });
+
+  final Uint8List left;
+  final Uint8List right;
+  final String leftLabel;
+  final String rightLabel;
+  final double split;
+  final bool showUse;
+  final ValueChanged<double> onSplit;
+  final VoidCallback onClose;
+  final VoidCallback onUse;
+
+  @override
+  Widget build(BuildContext context) {
+    final winner = split >= 0.5 ? leftLabel : rightLabel;
+    return ColoredBox(
+      color: Colors.black,
+      child: SafeArea(
+        child: Column(
+          children: [
+            Align(
+              alignment: Alignment.centerRight,
+              child: IconButton(
+                onPressed: onClose,
+                icon: const Icon(Icons.close_rounded, color: Colors.white),
+              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(18),
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      return Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          Image.memory(
+                            right,
+                            fit: BoxFit.cover,
+                            width: constraints.maxWidth,
+                            height: constraints.maxHeight,
+                          ),
+                          ClipRect(
+                            clipper: _SplitClipper(split),
+                            child: Image.memory(
+                              left,
+                              fit: BoxFit.cover,
+                              width: constraints.maxWidth,
+                              height: constraints.maxHeight,
+                            ),
+                          ),
+                          Positioned(
+                            left: constraints.maxWidth * split - 1,
+                            top: 0,
+                            bottom: 0,
+                            child: Container(width: 2, color: Colors.white),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      leftLabel,
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                  ),
+                  Expanded(
+                    child: Text(
+                      rightLabel,
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Slider(
+              value: split.clamp(0.02, 0.98),
+              min: 0.02,
+              max: 0.98,
+              activeColor: AppColors.primary,
+              onChanged: onSplit,
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: showUse
+                  ? SizedBox(
+                      width: double.infinity,
+                      height: 48,
+                      child: ElevatedButton(
+                        onPressed: onUse,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          foregroundColor: Colors.white,
+                          elevation: 0,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                        child: Text(
+                          'Use this one · $winner',
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                    )
+                  : TextButton(
+                      onPressed: onClose,
+                      child: const Text(
+                        'Close',
+                        style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+            ),
+          ],
         ),
       ),
     );
@@ -3620,6 +4456,106 @@ class _MiniColorDot extends StatelessWidget {
 /// to their browser via [WebBridge.openAuthenticated] and lands on
 /// `/looks/<id>?action=buy`, where the web app fills its own cart from the look
 /// and goes straight to checkout.
+class _WearOrderSheet extends StatelessWidget {
+  const _WearOrderSheet({required this.lines});
+
+  final List<WearOrderLine> lines;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(22, 10, 22, 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: AppColors.neutral300,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              _WearOrderBlock(lines: lines),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _WearOrderBlock extends StatelessWidget {
+  const _WearOrderBlock({required this.lines});
+
+  final List<WearOrderLine> lines;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Wear order',
+          style: TextStyle(
+            color: AppColors.textMain,
+            fontSize: 14,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        const SizedBox(height: 8),
+        for (final line in lines)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 92,
+                  child: Text(
+                    line.zoneLabel,
+                    style: TextStyle(
+                      color: AppColors.textMuted,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: Text(
+                    line.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: line.missing ? AppColors.textMuted : AppColors.textMain,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      fontStyle: line.missing ? FontStyle.italic : FontStyle.normal,
+                    ),
+                  ),
+                ),
+                Text(
+                  '${line.intensity}%',
+                  style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 class _BuyThisLookSheet extends StatefulWidget {
   final String lookId;
   final String lookName;
@@ -3632,6 +4568,7 @@ class _BuyThisLookSheet extends StatefulWidget {
   /// the catalog cache is cold or a product has no price, in which case the
   /// total shown is a floor rather than the real figure.
   final int pricedCount;
+  final List<WearOrderLine> wearLines;
 
   const _BuyThisLookSheet({
     required this.lookId,
@@ -3639,6 +4576,7 @@ class _BuyThisLookSheet extends StatefulWidget {
     required this.totalPrice,
     required this.itemCount,
     required this.pricedCount,
+    required this.wearLines,
   });
 
   @override
@@ -3663,7 +4601,8 @@ class _BuyThisLookSheetState extends State<_BuyThisLookSheet> {
     // Only dismiss on success. WebBridge surfaces its own error, and closing the
     // sheet underneath it would leave the user with a message and no way to retry.
     if (opened) {
-      Navigator.of(context).pop();
+      final nav = Navigator.of(context);
+      if (nav.canPop()) nav.pop();
     } else {
       setState(() => _opening = false);
     }
@@ -3733,6 +4672,10 @@ class _BuyThisLookSheetState extends State<_BuyThisLookSheet> {
                 ),
               ),
               const SizedBox(height: 18),
+              if (widget.wearLines.isNotEmpty) ...[
+                _WearOrderBlock(lines: widget.wearLines),
+                const SizedBox(height: 14),
+              ],
 
               // ── Price summary ────────────────────────────────────────────
               Container(
@@ -3835,7 +4778,12 @@ class _BuyThisLookSheetState extends State<_BuyThisLookSheet> {
               const SizedBox(height: 6),
 
               TextButton(
-                onPressed: _opening ? null : () => Navigator.of(context).pop(),
+                onPressed: _opening
+                    ? null
+                    : () {
+                        final nav = Navigator.of(context);
+                        if (nav.canPop()) nav.pop();
+                      },
                 child: Text(
                   'Not now',
                   style: TextStyle(

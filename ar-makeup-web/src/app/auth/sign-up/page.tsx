@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
+import PasswordField from "@/src/components/auth/PasswordField";
 import AuthShell from "@/src/components/layout/AuthShell";
 import { supabase } from "@/src/lib/supabase/client";
 
@@ -73,13 +74,12 @@ function SignUpForm() {
             <label className="block text-xs font-medium text-black/70 mb-1">
               Password
             </label>
-            <input
+            <PasswordField
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              type="password"
               autoComplete="new-password"
               placeholder="Create a strong password"
-              className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm text-black outline-none placeholder:text-black/35 focus:border-[#C06C84]/40 focus:ring-4 focus:ring-[#F4C2C2]/30"
+              className="w-full rounded-2xl border border-black/10 bg-white pl-4 py-3 text-sm text-black outline-none placeholder:text-black/35 focus:border-[#C06C84]/40 focus:ring-4 focus:ring-[#F4C2C2]/30"
               style={{ WebkitTextFillColor: "#000", WebkitBoxShadow: "0 0 0 1000px #fff inset" }}
               required
             />

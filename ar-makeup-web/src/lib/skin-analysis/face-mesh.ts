@@ -111,14 +111,35 @@ export async function processFaceImage(
       };
     }
 
-    // 4. Check: Lighting / Luminance Validation
     const luminance = checkImageLuminance(imageSource);
-    if (luminance < 35) {
+    if (luminance < 40) {
       return {
         isValid: false,
         error: "TOO_DARK",
-        errorMessage: "Lighting is too dark. Please move to a brighter area.",
+        errorMessage: "Lighting is too dark. Face a window or turn on a light in front of you.",
         averageLuminance: luminance,
+      };
+    }
+    if (luminance > 225) {
+      return {
+        isValid: false,
+        error: "TOO_DARK",
+        errorMessage: "The photo is washed out. Avoid direct flash and face a softer light.",
+        averageLuminance: luminance,
+      };
+    }
+
+    const pose = checkPose(landmarks);
+    if (pose) {
+      return { isValid: false, error: "NO_FACE", errorMessage: pose };
+    }
+
+    const blur = estimateBlur(imageSource, landmarks);
+    if (blur < 12) {
+      return {
+        isValid: false,
+        error: "NO_FACE",
+        errorMessage: "This photo is too blurry. Hold still and retake it.",
       };
     }
 
@@ -165,6 +186,65 @@ function checkImageLuminance(imageSource: HTMLImageElement | HTMLCanvasElement):
   }
 
   return totalLuminance / (data.length / 4);
+}
+
+function checkPose(landmarks: NormalizedLandmark[]): string | null {
+  const nose = landmarks[1];
+  const leftEye = landmarks[33];
+  const rightEye = landmarks[263];
+  if (!nose || !leftEye || !rightEye) return null;
+  const midX = (leftEye.x + rightEye.x) / 2;
+  if (Math.abs(nose.x - midX) > 0.08) {
+    return "Please face the camera straight on, not from the side.";
+  }
+  if (Math.abs(leftEye.y - rightEye.y) > 0.06) {
+    return "Keep your head level and look straight at the camera.";
+  }
+  return null;
+}
+
+function estimateBlur(
+  imageSource: HTMLImageElement | HTMLCanvasElement,
+  landmarks: NormalizedLandmark[],
+): number {
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return 100;
+  const size = 80;
+  canvas.width = size;
+  canvas.height = size;
+  let minX = 1, minY = 1, maxX = 0, maxY = 0;
+  landmarks.forEach((pt) => {
+    minX = Math.min(minX, pt.x);
+    minY = Math.min(minY, pt.y);
+    maxX = Math.max(maxX, pt.x);
+    maxY = Math.max(maxY, pt.y);
+  });
+  const sx = Math.max(0, Math.floor(minX * imageSource.width));
+  const sy = Math.max(0, Math.floor(minY * imageSource.height));
+  const sw = Math.max(1, Math.floor((maxX - minX) * imageSource.width));
+  const sh = Math.max(1, Math.floor((maxY - minY) * imageSource.height));
+  ctx.drawImage(imageSource, sx, sy, sw, sh, 0, 0, size, size);
+  const data = ctx.getImageData(0, 0, size, size).data;
+  const gray = new Float32Array(size * size);
+  for (let i = 0; i < gray.length; i++) {
+    gray[i] = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
+  }
+  let sum = 0;
+  let count = 0;
+  for (let y = 1; y < size - 1; y++) {
+    for (let x = 1; x < size - 1; x++) {
+      const lap =
+        -4 * gray[y * size + x] +
+        gray[(y - 1) * size + x] +
+        gray[(y + 1) * size + x] +
+        gray[y * size + (x - 1)] +
+        gray[y * size + (x + 1)];
+      sum += lap * lap;
+      count++;
+    }
+  }
+  return count ? sum / count : 0;
 }
 
 export function drawLandmarksOnCanvas(

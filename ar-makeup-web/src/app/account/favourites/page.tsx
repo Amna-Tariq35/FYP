@@ -31,27 +31,26 @@ export default function FavouritesPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
 
-  // productKey -> shadeKey (sirf non-empty shade store karo)
-  const shadeMap = useMemo(() => {
-    const map = new Map<string, string | undefined>();
-    wishlist.forEach((k) => {
-      const [pk, sk] = k.split("__");
-      if (sk) map.set(pk, sk);
+  const lines = useMemo(() => {
+    return wishlist.map((entry) => {
+      const splitAt = entry.indexOf("__");
+      return {
+        key: entry,
+        product_key: splitAt === -1 ? entry : entry.slice(0, splitAt),
+        shade_key: splitAt === -1 ? "" : entry.slice(splitAt + 2),
+      };
     });
-    return map;
   }, [wishlist]);
 
   useEffect(() => {
     async function fetchFavourites() {
-      if (wishlist.length === 0) {
+      if (lines.length === 0) {
         setProducts([]);
         setLoading(false);
         return;
       }
 
-      const productKeys = Array.from(
-        new Set(wishlist.map((k) => k.split("__")[0])),
-      );
+      const productKeys = Array.from(new Set(lines.map((line) => line.product_key)));
       const { data, error } = await supabase
         .from("makeup_products")
         .select("*")
@@ -64,20 +63,20 @@ export default function FavouritesPage() {
     }
 
     fetchFavourites();
-  }, [wishlist]);
+  }, [lines]);
 
   // Favourited shades ke human-readable naam resolve karo — cart mein sahi
   // shade_name jaye, "No Shade" jaisi ghalat cheez nahi.
   useEffect(() => {
     async function fetchShadeNames() {
-      const pairs = Array.from(shadeMap.entries()) as [string, string][];
+      const pairs = lines.filter((line) => line.shade_key);
       if (pairs.length === 0) {
         setShadeNames(new Map());
         return;
       }
 
-      const productKeys = pairs.map(([pk]) => pk);
-      const shadeKeys = Array.from(new Set(pairs.map(([, sk]) => sk)));
+      const productKeys = pairs.map((line) => line.product_key);
+      const shadeKeys = Array.from(new Set(pairs.map((line) => line.shade_key)));
 
       const { data, error } = await supabase
         .from("product_shades")
@@ -99,40 +98,42 @@ export default function FavouritesPage() {
     }
 
     fetchShadeNames();
-  }, [shadeMap]);
+  }, [lines]);
 
-  // Default: jab bhi favourites list load/change ho, sab products checked
-  // hon — chahe user app se aaye ya web se seedha is page pe pahunche.
   useEffect(() => {
-    setSelected(new Set(products.map((p) => p.product_key)));
-  }, [products]);
+    setSelected(new Set(lines.map((line) => line.key)));
+  }, [lines]);
 
-  const toggleSelected = useCallback((productKey: string) => {
+  const toggleSelected = useCallback((lineKey: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(productKey)) next.delete(productKey);
-      else next.add(productKey);
+      if (next.has(lineKey)) next.delete(lineKey);
+      else next.add(lineKey);
       return next;
     });
   }, []);
 
-  const allSelected = products.length > 0 && selected.size === products.length;
+  const allSelected = lines.length > 0 && selected.size === lines.length;
 
   const toggleSelectAll = useCallback(() => {
-    setSelected(allSelected ? new Set() : new Set(products.map((p) => p.product_key)));
-  }, [allSelected, products]);
+    setSelected(allSelected ? new Set() : new Set(lines.map((line) => line.key)));
+  }, [allSelected, lines]);
+
+  const productByKey = useMemo(() => {
+    const map = new Map<string, MakeupProduct>();
+    products.forEach((product) => map.set(product.product_key, product));
+    return map;
+  }, [products]);
 
   const cartPayloadFor = useCallback(
-    (product: MakeupProduct, quantity = 1) => {
-      const shadeKey = shadeMap.get(product.product_key);
+    (product: MakeupProduct, shadeKey: string, quantity = 1) => {
       const shadeName = shadeKey
-        ? shadeNames.get(shadeMapKey(product.product_key, shadeKey)) ??
-          UNKNOWN_SHADE_NAME
+        ? shadeNames.get(shadeMapKey(product.product_key, shadeKey)) ?? UNKNOWN_SHADE_NAME
         : undefined;
 
       return {
         product_key: product.product_key,
-        shade_key: shadeKey ?? "",
+        shade_key: shadeKey,
         shade_name: shadeName,
         quantity,
         name: product.name,
@@ -141,27 +142,28 @@ export default function FavouritesPage() {
         image_url: product.image_url,
       };
     },
-    [shadeMap, shadeNames],
+    [shadeNames],
   );
 
-  const selectedProducts = useMemo(
-    () => products.filter((p) => selected.has(p.product_key)),
-    [products, selected],
+  const selectedLines = useMemo(
+    () => lines.filter((line) => selected.has(line.key) && productByKey.has(line.product_key)),
+    [lines, selected, productByKey],
   );
 
-  const selectedTotal = selectedProducts.reduce(
-    (sum, p) => sum + (p.price ?? 0),
-    0,
-  );
+  const selectedTotal = selectedLines.reduce((sum, line) => {
+    return sum + (productByKey.get(line.product_key)?.price ?? 0);
+  }, 0);
 
-  // Sab selected favourites cart mein daal do aur seedha checkout pe le jao —
-  // "Shop All Favourites" (app se yahan aane wala) button ka asli maksad yahi hai.
   const handleAddSelectedToCart = useCallback(() => {
-    if (selectedProducts.length === 0) return;
+    if (selectedLines.length === 0) return;
     setAdding(true);
-    selectedProducts.forEach((p) => addToCart(cartPayloadFor(p)));
-    router.push("/checkout/shipping");
-  }, [selectedProducts, cartPayloadFor, router]);
+    selectedLines.forEach((line) => {
+      const product = productByKey.get(line.product_key);
+      if (!product) return;
+      addToCart(cartPayloadFor(product, line.shade_key));
+    });
+    router.push("/cart");
+  }, [selectedLines, productByKey, cartPayloadFor, router]);
 
   if (loading) {
     return (
@@ -171,7 +173,7 @@ export default function FavouritesPage() {
     );
   }
 
-  if (products.length === 0) {
+  if (lines.length === 0) {
     return (
       <div className="mx-auto flex max-w-lg flex-col items-center justify-center py-32 text-center">
         <div className="mb-6 rounded-full bg-white p-6 shadow-sm ring-1 ring-black/5">
@@ -202,7 +204,7 @@ export default function FavouritesPage() {
             My Favourites
           </h1>
           <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-[#8A8A8A] ring-1 ring-black/5">
-            {products.length} Items
+            {lines.length} Items
           </span>
         </div>
 
@@ -215,11 +217,16 @@ export default function FavouritesPage() {
       </div>
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4 lg:gap-6">
-        {products.map((product) => {
-          const isSelected = selected.has(product.product_key);
+        {lines.map((line) => {
+          const product = productByKey.get(line.product_key);
+          if (!product) return null;
+          const isSelected = selected.has(line.key);
+          const shadeLabel = line.shade_key
+            ? shadeNames.get(shadeMapKey(line.product_key, line.shade_key)) ?? UNKNOWN_SHADE_NAME
+            : null;
           return (
             <div
-              key={product.product_key}
+              key={line.key}
               className={`group relative rounded-2xl transition-all ${
                 isSelected ? "ring-2 ring-[#C06C84]/70" : "ring-2 ring-transparent"
               }`}
@@ -231,7 +238,7 @@ export default function FavouritesPage() {
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  toggleSelected(product.product_key);
+                  toggleSelected(line.key);
                 }}
                 aria-pressed={isSelected}
                 aria-label={isSelected ? "Deselect item" : "Select item"}
@@ -246,10 +253,13 @@ export default function FavouritesPage() {
 
               <ProductCard
                 product={product}
-                isWished={isWished(product.product_key)}
-                onWishlistToggle={(pk) => toggle(pk)}
-                favShadeKey={shadeMap.get(product.product_key)}
+                isWished={isWished(product.product_key, line.shade_key)}
+                onWishlistToggle={(pk) => toggle(pk, line.shade_key)}
+                favShadeKey={line.shade_key || undefined}
               />
+              {shadeLabel ? (
+                <p className="px-3 pb-3 text-xs font-medium text-[#C06C84]">{shadeLabel}</p>
+              ) : null}
             </div>
           );
         })}
@@ -279,7 +289,7 @@ export default function FavouritesPage() {
               ) : (
                 <>
                   <ShoppingBag className="h-3.5 w-3.5" />
-                  Checkout
+                  Add selected
                 </>
               )}
             </button>

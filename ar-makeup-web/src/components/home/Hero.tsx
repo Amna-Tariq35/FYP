@@ -37,28 +37,21 @@ export default function Hero() {
 
           {/* Subtext */}
           <p className="mt-5 text-sm font-light leading-7 text-[#5a4048] sm:text-[15px]">
-            Try shades, browse products, and open shared looks — in a clean,
-            elegant web experience.
+            Browse products and open saved looks.
           </p>
 
           {/* CTAs */}
           <div className="mt-8 flex flex-wrap gap-3">
             <Link
-              href="/try-on"
-              className="inline-flex items-center justify-center rounded-2xl bg-[#B65C7A] px-6 py-3 text-sm font-medium text-white transition hover:bg-[#A94E6C]"
-            >
-              Try-On Lite
-            </Link>
-            <Link
               href="/products"
-              className="inline-flex items-center justify-center rounded-2xl border border-black/10 bg-white/65 px-6 py-3 text-sm font-medium text-[#1a0e13] backdrop-blur transition hover:bg-white/85"
+              className="inline-flex items-center justify-center rounded-2xl bg-[#B65C7A] px-6 py-3 text-sm font-medium text-white transition hover:bg-[#A94E6C]"
             >
               Browse Products
             </Link>
           </div>
 
           <p className="mt-5 text-[11px] tracking-wide text-[#9a7a85]">
-            Full real-time AR is available on mobile.
+            The full camera is in the Android app.
           </p>
         </div>
       </div>

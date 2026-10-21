@@ -48,11 +48,11 @@ export default function AuthShell({
           {/* Footer note */}
           <p className="mt-5 text-center text-xs text-black/40 leading-5">
             By continuing, you agree to our{" "}
-            <Link href="/" className="text-[#C06C84]/80 hover:text-[#C06C84] underline-offset-2 hover:underline transition-colors">
+            <Link href="/terms" className="text-[#C06C84]/80 hover:text-[#C06C84] underline-offset-2 hover:underline transition-colors">
               Terms of Service
             </Link>{" "}
             and{" "}
-            <Link href="/" className="text-[#C06C84]/80 hover:text-[#C06C84] underline-offset-2 hover:underline transition-colors">
+            <Link href="/privacy" className="text-[#C06C84]/80 hover:text-[#C06C84] underline-offset-2 hover:underline transition-colors">
               Privacy Policy
             </Link>
             .

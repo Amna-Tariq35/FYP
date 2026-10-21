@@ -5,6 +5,9 @@ import type { CreateOrderPayload } from "@/src/types/order";
 import { randomUUID } from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import { createSupabaseAdminClient } from "@/src/lib/supabase/admin";
+import { stampCheckoutFields } from "@/src/lib/orders/checkout-session";
+
+export const dynamic = "force-dynamic";
 
 function jsonError(message: string, status = 400) {
   return NextResponse.json({ error: message }, { status });
@@ -296,6 +299,19 @@ export async function POST(req: Request) {
 
     if (rpcErr || !orderIdData) {
       console.error("GUEST TOKEN LOOKUP ERROR:", rpcErr);
+      await supabaseAdmin
+        .from("orders")
+        .update({ status: "cancelled" })
+        .eq("guest_token", guest_token)
+        .eq("status", "placed");
+      await Promise.all(
+        reservedItems.map((item) =>
+          supabaseAdmin.rpc("release_product_stock", {
+            p_product_key: item.product_key,
+            p_quantity: item.quantity,
+          }),
+        ),
+      );
       return NextResponse.json(
         {
           error: "Order created but failed to finalize items.",
@@ -354,6 +370,18 @@ export async function POST(req: Request) {
     );
   }
 
+  if (!order_id) {
+    return NextResponse.json({ error: "Failed to create order." }, { status: 500 });
+  }
+
+  const paymentMethod =
+    body.payment_method === "cash_on_delivery" ? "cash_on_delivery" : "card";
+  const contactEmail = user_id ? (email || user_email) : guest_email;
+  await stampCheckoutFields(supabaseAdmin, order_id, {
+    payment_method: paymentMethod,
+    contact_email: contactEmail,
+  });
+
   // -----------------------------
   // Success
   // -----------------------------
@@ -393,6 +421,7 @@ export async function GET(req: Request) {
     .select("id,status,currency,total,subtotal,shipping_fee,created_at,shipping_name,shipping_city", {
       count: "exact",
     })
+    .eq("user_id", user.id)
     .order("created_at", { ascending: false });
 
   if (status) query = query.eq("status", status);

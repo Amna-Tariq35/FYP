@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../utils/app_colors.dart';
+import 'saved_looks_screen.dart';
 import 'try_on_screen.dart';
+import 'welcome_screen.dart';
 
 class CameraPermissionScreen extends StatefulWidget {
   const CameraPermissionScreen({super.key});
@@ -83,8 +86,25 @@ class _CameraPermissionScreenState extends State<CameraPermissionScreen>
     );
   }
 
+  void _maybeLater() {
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) {
+      navigator.pop();
+      return;
+    }
+    final signedIn = Supabase.instance.client.auth.currentSession != null;
+    navigator.pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => signedIn
+            ? const SavedLooksScreen()
+            : const WelcomeScreen(),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    AppColors.watch(context);
     // ── Screen dimensions ke hisaab se responsive ──────────────────────
     final screenH = MediaQuery.of(context).size.height;
     final isSmallScreen = screenH < 700;
@@ -135,7 +155,17 @@ class _CameraPermissionScreenState extends State<CameraPermissionScreen>
                           SizedBox(height: isSmallScreen ? 12 : 16),
 
                           Text(
-                            'To apply virtual makeup in real-time, we need access to your camera. Your video is processed on-device and never stored.',
+                            'To apply virtual makeup in real-time, we need access to your camera. Try-on camera video stays on this phone and is not uploaded.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              fontSize: 15,
+                              color: AppColors.textMuted,
+                              height: 1.6,
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            'Face a window so the makeup can sit on your face.',
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               fontSize: 15,
@@ -154,7 +184,7 @@ class _CameraPermissionScreenState extends State<CameraPermissionScreen>
                           const SizedBox(height: 12),
                           _buildFeatureRow(
                             icon: Icons.shield_outlined,
-                            label: 'Video never leaves your device',
+                            label: 'Try-on camera video stays on this phone',
                           ),
                           const SizedBox(height: 12),
                           _buildFeatureRow(
@@ -212,9 +242,7 @@ class _CameraPermissionScreenState extends State<CameraPermissionScreen>
                       const SizedBox(height: 8),
 
                       TextButton(
-                        onPressed: () => _showSnackBar(
-                          'You can enable camera access later in Settings.',
-                        ),
+                        onPressed: _isRequesting ? null : _maybeLater,
                         style: TextButton.styleFrom(
                           foregroundColor: AppColors.textMuted,
                           padding: const EdgeInsets.symmetric(

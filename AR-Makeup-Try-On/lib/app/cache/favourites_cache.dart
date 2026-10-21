@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class FavouritesCache extends ChangeNotifier {
@@ -10,8 +13,19 @@ class FavouritesCache extends ChangeNotifier {
   final Set<String> _favouriteKeys = {};
   List<Map<String, dynamic>> _rawFavourites = [];
   bool _isLoading = false;
- RealtimeChannel? _channel;
+  RealtimeChannel? _channel;
   String? _listeningUserId;
+  int _generation = 0;
+  String? _activeUserId;
+
+  bool _isCurrent(int generation, String userId) =>
+      generation == _generation && _activeUserId == userId;
+
+  @visibleForTesting
+  static String prefsKeyFor(String userId) {
+    final safe = userId.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+    return 'user_favourites_cache_${safe.isEmpty ? 'unknown' : safe}';
+  }
 
   bool get isLoading => _isLoading;
   bool get isEmpty => _rawFavourites.isEmpty;
@@ -24,8 +38,12 @@ class FavouritesCache extends ChangeNotifier {
   }
 
   Future<void> prefetch(String userId) async {
+    final generation = _generation;
+    _activeUserId = userId;
     _isLoading = true;
     notifyListeners();
+    await _loadFromDisk(generation, userId);
+    if (!_isCurrent(generation, userId)) return;
     try {
       final res = await Supabase.instance.client
           .from('user_favourites')
@@ -33,20 +51,70 @@ class FavouritesCache extends ChangeNotifier {
           .eq('user_id', userId)
           .order('created_at', ascending: false);
 
+      if (!_isCurrent(generation, userId)) return;
       _rawFavourites = _dedupe(
         List<Map<String, dynamic>>.from(res),
-      ); // 🆕 dedupe use karo
-      _favouriteKeys.clear();
-      for (var item in _rawFavourites) {
-        final pk = item['product_key'] as String;
-        final sk = item['shade_key'] as String?;
-        _favouriteKeys.add('${pk}__${sk ?? ''}');
-      }
+      );
+      _rebuildKeys();
+      await _saveToDisk(generation, userId);
     } catch (e) {
       debugPrint('❌ Favourites fetch failed: $e');
     } finally {
-      _isLoading = false;
+      if (_isCurrent(generation, userId)) {
+        _isLoading = false;
+        notifyListeners();
+      }
+    }
+  }
+
+  void _rebuildKeys() {
+    _favouriteKeys.clear();
+    for (var item in _rawFavourites) {
+      final pk = item['product_key'] as String;
+      final sk = item['shade_key'] as String?;
+      _favouriteKeys.add('${pk}__${sk ?? ''}');
+    }
+  }
+
+  Future<void> _loadFromDisk(int generation, String userId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!_isCurrent(generation, userId)) return;
+      final cached = prefs.getString(prefsKeyFor(userId));
+      if (cached == null || cached.isEmpty) return;
+      final decoded = jsonDecode(cached);
+      if (decoded is! List || !_isCurrent(generation, userId)) return;
+      _rawFavourites = _dedupe(
+        decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList(),
+      );
+      _rebuildKeys();
       notifyListeners();
+    } catch (e) {
+      debugPrint('❌ Favourites disk load failed: $e');
+    }
+  }
+
+  Future<void> _saveToDisk(int generation, String userId) async {
+    try {
+      if (!_isCurrent(generation, userId)) return;
+      final prefs = await SharedPreferences.getInstance();
+      if (!_isCurrent(generation, userId)) return;
+      await prefs.setString(prefsKeyFor(userId), jsonEncode(_rawFavourites));
+      if (!_isCurrent(generation, userId)) {
+        await prefs.remove(prefsKeyFor(userId));
+      }
+    } catch (e) {
+      debugPrint('❌ Favourites disk save failed: $e');
+    }
+  }
+
+  Future<void> _deleteDisk(String? userId) async {
+    if (userId == null || userId.isEmpty) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(prefsKeyFor(userId));
+    } catch (e) {
+      debugPrint('❌ Favourites disk clear failed: $e');
     }
   }
 
@@ -100,6 +168,9 @@ void listenRealtime(String userId) {
               }
             }
           }
+          if (_activeUserId == userId) {
+            _saveToDisk(_generation, userId);
+          }
           notifyListeners();
         },
       )
@@ -139,6 +210,8 @@ void stopListening() {
   Future<void> toggleFavourite(String productKey, String? shadeKey) async {
     final userId = Supabase.instance.client.auth.currentUser?.id;
     if (userId == null) return;
+    final generation = _generation;
+    _activeUserId ??= userId;
 
     final normalizedShade =
         shadeKey ?? ''; // 🆕 hamesha string, kabhi null nahi
@@ -161,6 +234,7 @@ void stopListening() {
       });
     }
     notifyListeners();
+    await _saveToDisk(generation, userId);
 
     try {
       if (isCurrentlyFav) {
@@ -192,14 +266,19 @@ void stopListening() {
         _favouriteKeys.remove(key);
       }
       notifyListeners();
+      await _saveToDisk(generation, userId);
     }
   }
 
   void clear() {
+    final previousUser = _activeUserId;
+    _generation++;
+    _activeUserId = null;
     _favouriteKeys.clear();
     _rawFavourites.clear();
     stopListening();
     notifyListeners();
+    _deleteDisk(previousUser);
   }
 
   @override

@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   ShoppingCart,
   Loader2,
@@ -13,6 +14,7 @@ import MobilePromo from "../../components/MobilePromo";
 import { MakeupProduct, ProductShade } from "../../types/catalog";
 import { supabase } from "../../lib/supabase/client";
 import { addToCart } from "../../store/cart";
+import { useMakeupBag } from "../../hooks/useMakeupBag";
 
 // ─── DeepAR singleton management ─────────────────────────────────────────────
 // Prevents multiple DeepAR instances from being created during React StrictMode
@@ -94,6 +96,8 @@ interface AppliedItem {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export default function TryOnPage() {
+  const router = useRouter();
+  const { addItem } = useMakeupBag();
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -101,6 +105,8 @@ export default function TryOnPage() {
   const [isInitializingAR, setIsInitializingAR] = useState(true);
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [cameraAttempt, setCameraAttempt] = useState(0);
 
   const [products, setProducts] = useState<MakeupProduct[]>([]);
   const [shades, setShades] = useState<ProductShade[]>([]);
@@ -112,6 +118,9 @@ export default function TryOnPage() {
   >({ lipstick: null, blush: null });
 
   const [cartMessage, setCartMessage] = useState<string | null>(null);
+  const [selectedProductKey, setSelectedProductKey] = useState<
+    Record<MakeupCategory, string | null>
+  >({ lipstick: null, blush: null });
 
   // ── Fetch products & shades ─────────────────────────────────────────────────
   useEffect(() => {
@@ -126,19 +135,26 @@ export default function TryOnPage() {
 
         if (productsError) throw productsError;
 
-        if (productsData && productsData.length > 0) {
-          const productKeys = productsData.map((p) => p.product_key);
+        const rows = productsData ?? [];
+        if (rows.length > 0) {
+          const productKeys = rows.map((p) => p.product_key);
           const { data: shadesData, error: shadesError } = await supabase
             .from("product_shades")
             .select("*")
             .in("product_key", productKeys);
 
           if (shadesError) throw shadesError;
-          setProducts(productsData);
           setShades(shadesData ?? []);
+        } else {
+          setShades([]);
         }
+        setProducts(rows);
+        setCatalogError(null);
       } catch (err) {
         console.error("Error fetching makeup data:", err);
+        setProducts([]);
+        setShades([]);
+        setCatalogError("Could not load lipstick and blush products. Please refresh and try again.");
       } finally {
         setIsLoadingData(false);
       }
@@ -174,7 +190,7 @@ export default function TryOnPage() {
       isActive = false;
       deepARRelease(instance);
     };
-  }, []);
+  }, [cameraAttempt]);
 
   // ── Apply makeup to DeepAR ──────────────────────────────────────────────────
   const applyMakeupToDeepAR = async (
@@ -214,11 +230,15 @@ export default function TryOnPage() {
   };
 
   // ── Derived state ───────────────────────────────────────────────────────────
-  const currentProduct = products.find((p) =>
+  const categoryProducts = products.filter((p) =>
     activeCategory === "lipstick"
       ? p.product_key.startsWith("lip_")
       : p.product_key.startsWith("blu_")
   );
+  const currentProduct =
+    categoryProducts.find((p) => p.product_key === selectedProductKey[activeCategory]) ??
+    categoryProducts[0] ??
+    null;
   const currentShades = shades.filter(
     (s) => s.product_key === currentProduct?.product_key
   );
@@ -254,6 +274,29 @@ export default function TryOnPage() {
     applyMakeupToDeepAR(activeCategory, null, 0);
   };
 
+  const retryCamera = () => {
+    setError(null);
+    setIsInitializingAR(true);
+    setCameraAttempt((attempt) => attempt + 1);
+  };
+
+  const handleSaveToBag = async (category: MakeupCategory) => {
+    const item = appliedMakeup[category];
+    if (!item) return;
+    const result = await addItem(item.product.product_key, item.shade.shade_key, "try_on");
+    if (!result.ok && result.reason === "auth") {
+      router.push("/auth/sign-in?next=/try-on");
+      return;
+    }
+    if (!result.ok) {
+      setCartMessage("Could not save to your bag");
+      setTimeout(() => setCartMessage(null), 1600);
+      return;
+    }
+    setCartMessage(result.already ? "Already in your bag" : "Saved to bag");
+    setTimeout(() => setCartMessage(null), 1600);
+  };
+
   const handleAddSingle = (category: MakeupCategory) => {
     const item = appliedMakeup[category];
     if (!item) return;
@@ -268,6 +311,54 @@ export default function TryOnPage() {
       image_url:   item.product.image_url,
     });
     setCartMessage(`${item.product.name} Added ✓`);
+    setTimeout(() => setCartMessage(null), 1600);
+  };
+
+  const handleSaveLook = async () => {
+    const applied = (["lipstick", "blush"] as MakeupCategory[])
+      .map((category) => appliedMakeup[category])
+      .filter((item): item is AppliedItem => item !== null);
+    if (applied.length === 0) return;
+
+    const { data: auth } = await supabase.auth.getUser();
+    if (!auth.user) {
+      router.push("/auth/sign-in?next=/try-on");
+      return;
+    }
+
+    const { data: look, error } = await supabase
+      .from("saved_looks")
+      .insert({
+        user_id: auth.user.id,
+        look_name: "Try-on look",
+        tags: applied.map((item) => item.product.category || "try-on"),
+      })
+      .select("id")
+      .single();
+
+    if (error || !look?.id) {
+      setCartMessage("Could not save this look");
+      setTimeout(() => setCartMessage(null), 1600);
+      return;
+    }
+
+    const { error: itemsError } = await supabase.from("saved_look_items").insert(
+      applied.map((item, index) => ({
+        look_id: look.id,
+        product_key: item.product.product_key,
+        shade_key: item.shade.shade_key,
+        intensity: Math.round((item.intensity / 0.6) * 100),
+        layer_order: index,
+      })),
+    );
+
+    if (itemsError) {
+      setCartMessage("Could not save this look");
+      setTimeout(() => setCartMessage(null), 1600);
+      return;
+    }
+
+    setCartMessage("Saved to My Looks");
     setTimeout(() => setCartMessage(null), 1600);
   };
 
@@ -336,6 +427,9 @@ export default function TryOnPage() {
                     Camera Error
                   </p>
                   <p style={{ fontSize: 13, color: "#9a8f8f" }}>{error}</p>
+                  <button type="button" className="camera-retry" onClick={retryCamera}>
+                    Try camera again
+                  </button>
                 </div>
               )}
               <canvas ref={canvasRef} />
@@ -369,8 +463,38 @@ export default function TryOnPage() {
                 <div className="loading-controls">
                   <Loader2 size={28} style={{ color: "#C06C84" }} className="spin" />
                 </div>
+              ) : catalogError ? (
+                <p className="catalog-error">{catalogError}</p>
               ) : (
                 <>
+                  <div className="shades-section">
+                    <div className="shades-header">
+                      <span className="section-label">Select Product</span>
+                    </div>
+                    {categoryProducts.length > 0 ? (
+                      <select
+                        className="product-select"
+                        value={currentProduct?.product_key ?? ""}
+                        onChange={(e) =>
+                          setSelectedProductKey((prev) => ({
+                            ...prev,
+                            [activeCategory]: e.target.value,
+                          }))
+                        }
+                      >
+                        {categoryProducts.map((product) => (
+                          <option key={product.product_key} value={product.product_key}>
+                            {product.brand ? `${product.brand} — ${product.name}` : product.name}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <p style={{ fontSize: 13, color: "#b0a0a8" }}>
+                        No {activeCategory} products are available.
+                      </p>
+                    )}
+                  </div>
+
                   {/* Shade selection */}
                   <div className="shades-section">
                     <div className="shades-header">
@@ -487,12 +611,22 @@ export default function TryOnPage() {
                                 >
                                   Add
                                 </button>
+                                <button
+                                  className="save-bag-btn"
+                                  onClick={() => handleSaveToBag(cat)}
+                                >
+                                  Save to bag
+                                </button>
                               </div>
                             </div>
                           );
                         })}
 
                         <div className="add-all-wrap">
+                          <button className="save-look-btn" type="button" onClick={() => void handleSaveLook()}>
+                            <Sparkles size={16} />
+                            Save look
+                          </button>
                           <button className="add-all-btn" onClick={handleAddAll}>
                             <ShoppingCart size={16} />
                             Add All to Cart
@@ -830,6 +964,46 @@ const pageStyles = `
   }
   .product-shade-name { font-size: 11px; color: #C06C84; font-weight: 500; }
   .product-right { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex-shrink: 0; }
+  .product-select {
+    width: 100%;
+    margin-top: 8px;
+    border-radius: 12px;
+    border: 1px solid rgba(0,0,0,0.08);
+    background: #fff;
+    padding: 10px 12px;
+    font-size: 13px;
+    color: #1a1a1a;
+  }
+  .catalog-error {
+    font-size: 13px;
+    line-height: 1.5;
+    color: #9b3a4a;
+    background: #fdf2f4;
+    border: 1px solid rgba(192,108,132,0.25);
+    border-radius: 14px;
+    padding: 12px 14px;
+  }
+  .camera-retry {
+    margin-top: 14px;
+    border: 0;
+    border-radius: 999px;
+    background: #C06C84;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 8px 14px;
+    cursor: pointer;
+  }
+  .save-bag-btn {
+    border: 1px solid rgba(192,108,132,0.35);
+    background: #fff;
+    color: #C06C84;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 8px;
+    cursor: pointer;
+  }
   .product-price { font-size: 14px; font-weight: 600; color: #1a1a1a; }
   .add-single-btn {
     font-size: 11px; font-weight: 600;
@@ -845,7 +1019,22 @@ const pageStyles = `
   .add-single-btn:hover { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
 
   /* Add all */
-  .add-all-wrap { position: relative; margin-top: 12px; }
+  .add-all-wrap { position: relative; margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .save-look-btn {
+    width: 100%;
+    background: #fff;
+    color: #C06C84;
+    border: 1.5px solid rgba(192,108,132,0.45);
+    padding: 12px;
+    border-radius: 16px;
+    font-size: 14px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    cursor: pointer;
+  }
   .add-all-btn {
     width: 100%;
     background: linear-gradient(135deg, #C06C84 0%, #a85870 100%);

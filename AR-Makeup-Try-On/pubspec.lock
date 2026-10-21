@@ -260,8 +260,8 @@ packages:
   deepar_flutter:
     dependency: "direct main"
     description:
-      path: "C:\\Users\\amnat\\AppData\\Local\\Pub\\Cache\\hosted\\pub.dev\\deepar_flutter-0.0.5"
-      relative: false
+      path: "packages/deepar_flutter"
+      relative: true
     source: path
     version: "0.0.5"
   ed25519_edwards:

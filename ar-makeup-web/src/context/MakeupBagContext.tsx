@@ -145,18 +145,31 @@ export function MakeupBagProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      const { data } = await supabase
+      const withSource = await supabase
         .from("makeup_bag_items")
         .select("id, product_key, shade_key, source, added_at")
         .eq("bag_id", id)
         .order("added_at", { ascending: false });
+      const loaded = withSource.error
+        ? await supabase
+            .from("makeup_bag_items")
+            .select("id, product_key, shade_key, added_at")
+            .eq("bag_id", id)
+            .order("added_at", { ascending: false })
+        : withSource;
 
       applyItems(
-        (data ?? []).map((row) => ({
+        ((loaded.data ?? []) as Array<{
+          id: string;
+          product_key: string;
+          shade_key: string | null;
+          source?: MakeupBagSource | null;
+          added_at?: string;
+        }>).map((row) => ({
           id: row.id,
           product_key: row.product_key,
           shade_key: row.shade_key ?? "",
-          source: (row.source as MakeupBagSource) ?? "manual",
+          source: row.source === "purchase" || row.source === "try_on" || row.source === "manual" ? row.source : undefined,
           added_at: row.added_at,
         })),
       );
@@ -195,7 +208,7 @@ export function MakeupBagProvider({ children }: { children: React.ReactNode }) {
                 id: row.id,
                 product_key: row.product_key,
                 shade_key: row.shade_key ?? "",
-                source: (row.source as MakeupBagSource) ?? "manual",
+                source: row.source === "purchase" || row.source === "try_on" || row.source === "manual" ? row.source : undefined,
                 added_at: row.added_at,
               };
               if (exists) {

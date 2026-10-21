@@ -18,6 +18,9 @@ import { ProductShade } from "@/src/types/catalog";
 import { supabase } from "../../../lib/supabase/client";
 import { addToCart } from "@/src/store/cart";
 import { markLookAddedToCart } from "@/src/components/checkout/BuyLookBanner";
+import { useSession } from "@/src/hooks/useSession";
+import { useMakeupBag } from "@/src/hooks/useMakeupBag";
+import CopyLookLink from "@/src/components/looks/CopyLookLink";
 
 const PRODUCTS_TABLE  = "makeup_products";
 const PRODUCT_KEY_COL = "product_key";
@@ -35,6 +38,76 @@ const UNKNOWN_SHADE_NAME = "Shade unavailable";
 /** `shade_key` is only unique within a product, so pair it with the product. */
 function shadeMapKey(productKey: string, shadeKey: string) {
   return `${productKey}__${shadeKey}`;
+}
+
+/** Fixed wear order. Same four steps the phone shows after a look is saved. */
+const WEAR_ZONE_ORDER = ["foundation", "eyes", "cheeks", "lips"] as const;
+
+function wearZone(productKey: string, category?: string | null): string {
+  const key = productKey.toLowerCase();
+  const cat = (category ?? "").toLowerCase().replace(/\s+/g, "_");
+  if (key.startsWith("fnd_") || cat === "foundation") return "foundation";
+  if (
+    /^(esh_|eln_|mas_|lsh_)/.test(key) ||
+    cat === "eyeshadow" ||
+    cat === "eyeliner" ||
+    cat === "mascara" ||
+    cat === "eyelashes" ||
+    cat === "lashes"
+  ) {
+    return "eyes";
+  }
+  if (
+    /^(blu_|hgl_)/.test(key) ||
+    cat === "blush" ||
+    cat === "highlighter"
+  ) {
+    return "cheeks";
+  }
+  if (
+    /^(lip_|gloss_)/.test(key) ||
+    cat === "lipstick" ||
+    cat === "lip_gloss" ||
+    cat === "lipgloss"
+  ) {
+    return "lips";
+  }
+  return "other";
+}
+
+function wearZoneLabel(zone: string): string {
+  if (zone === "foundation") return "Foundation";
+  if (zone === "eyes") return "Eyes";
+  if (zone === "cheeks") return "Cheeks";
+  if (zone === "lips") return "Lips";
+  return "Other";
+}
+
+function zoneRank(zone: string): number {
+  const order: readonly string[] = WEAR_ZONE_ORDER;
+  const index = order.indexOf(zone);
+  return index === -1 ? order.length : index;
+}
+
+function wearOrder(items: LookItemWithProduct[]): LookItemWithProduct[] {
+  return [...items].sort((a, b) => {
+    const rankA = zoneRank(wearZone(a.product_key, a.product?.category));
+    const rankB = zoneRank(wearZone(b.product_key, b.product?.category));
+    if (rankA !== rankB) return rankA - rankB;
+    return (a.layer_order ?? 0) - (b.layer_order ?? 0);
+  });
+}
+
+type StockFields = {
+  is_active?: boolean | null;
+  stock_quantity?: number | null;
+};
+
+function canBuyProduct(product: StockFields | null | undefined) {
+  if (!product) return false;
+  if (product.is_active === false) return false;
+  const stock = Number(product.stock_quantity);
+  return Number.isFinite(stock) && stock > 0;
 }
 
 /**
@@ -158,6 +231,10 @@ export default function LookDetailPage() {
   const [addedIds, setAddedIds] = useState<Set<string>>(new Set());
   const [allAdded, setAllAdded] = useState(false);
   const [buyState, setBuyState] = useState<BuyState>({ kind: "idle" });
+  const { status } = useSession();
+  const { isInBag, loading: bagLoading } = useMakeupBag();
+  const signedIn = status === "signed_in";
+  const ownershipReady = status === "signed_out" || (signedIn && !bagLoading);
 
   /**
    * `addToCart` *increments* quantity for a product/shade already in the cart,
@@ -286,6 +363,18 @@ export default function LookDetailPage() {
    * Only the human-readable name can fail, and only when the shade row itself
    * has gone missing from the catalog.
    */
+  const ownsItem = useCallback(
+    (item: LookItemWithProduct) => {
+      if (!signedIn || !item.product) return false;
+      return isInBag(item.product.product_key, item.shade_key);
+    },
+    [signedIn, isInBag],
+  );
+
+  const buyableItems = items.filter(
+    (item) => item.product && canBuyProduct(item.product) && !ownsItem(item),
+  );
+
   const cartPayloadFor = useCallback((item: LookItemWithProduct, quantity = 1) => {
     const p = item.product!;
     return {
@@ -302,29 +391,28 @@ export default function LookDetailPage() {
 
   const handleAddToCart = useCallback(
     (item: LookItemWithProduct) => {
-      if (!item.product) return;
+      if (!item.product || !canBuyProduct(item.product) || ownsItem(item)) return;
       addToCart(cartPayloadFor(item));
       setAddedIds((prev) => new Set(prev).add(item.id));
       pushToast(`"${item.product.name}" added to cart`);
     },
-    [cartPayloadFor, pushToast]
+    [cartPayloadFor, ownsItem, pushToast]
   );
 
   const handleAddAllToCart = useCallback(() => {
-    const validItems = items.filter((i) => i.product);
-    if (validItems.length === 0) return;
-    validItems.forEach((item) => addToCart(cartPayloadFor(item)));
-    setAddedIds(new Set(validItems.map((i) => i.id)));
+    if (buyableItems.length === 0) return;
+    buyableItems.forEach((item) => addToCart(cartPayloadFor(item)));
+    setAddedIds(new Set(buyableItems.map((i) => i.id)));
     setAllAdded(true);
-    pushToast(`${validItems.length} product${validItems.length > 1 ? "s" : ""} added to cart`);
-  }, [items, cartPayloadFor, pushToast]);
+    pushToast(`${buyableItems.length} product${buyableItems.length > 1 ? "s" : ""} added to cart`);
+  }, [buyableItems, cartPayloadFor, pushToast]);
 
   // ── "Buy this look" handoff from the app ────────────────────────────────────
   //
   // The app opens {WEB}/auth/bridge#…&next=/looks/{id}?action=buy. The bridge
   // installs the session and forwards here, so this runs signed in.
   useEffect(() => {
-    if (loading || notFound || buyHandled.current) return;
+    if (loading || notFound || !ownershipReady || buyHandled.current) return;
 
     // Read straight from the URL rather than useSearchParams(): this is a
     // one-shot client-only read, and useSearchParams() would require wrapping
@@ -345,33 +433,35 @@ export default function LookDetailPage() {
       `${window.location.pathname}${qs ? `?${qs}` : ""}${window.location.hash}`
     );
 
-    const validItems = items.filter((i) => i.product);
-    if (validItems.length === 0) {
+    const purchasable = items.filter(
+      (item) => item.product && canBuyProduct(item.product) && !(signedIn && isInBag(item.product.product_key, item.shade_key)),
+    );
+    if (purchasable.length === 0) {
       setBuyState({ kind: "unavailable" });
       return;
     }
 
-    validItems.forEach((item) => addToCart(cartPayloadFor(item)));
-    setAddedIds(new Set(validItems.map((i) => i.id)));
-    setAllAdded(true);
+    purchasable.forEach((item) => addToCart(cartPayloadFor(item)));
+    setAddedIds(new Set(purchasable.map((i) => i.id)));
+    setAllAdded(purchasable.length === items.length);
 
-    if (validItems.length === items.length) {
-      markLookAddedToCart(lookLabel(look), validItems.length);
-      setBuyState({ kind: "redirecting", count: validItems.length });
+    if (purchasable.length === items.length) {
+      markLookAddedToCart(lookLabel(look), purchasable.length);
+      setBuyState({ kind: "redirecting", count: purchasable.length });
       // replace, not push: the back button should return to My Looks, not to a
       // URL that re-triggers the handoff.
       router.replace("/checkout/shipping");
       return;
     }
 
-    // Something in the look is gone. The cart holds what survived; the banner
-    // below says so, and the user chooses whether that is still worth buying.
+    // Owned, inactive, or out-of-stock lines stay off the cart so checkout
+    // does not try to reserve stock that is not for sale.
     setBuyState({
       kind: "partial",
-      available: validItems.length,
+      available: purchasable.length,
       total: items.length,
     });
-  }, [loading, notFound, items, look, cartPayloadFor, router]);
+  }, [loading, notFound, ownershipReady, items, look, cartPayloadFor, router, signedIn, isInBag]);
 
   const continueToCheckout = useCallback(() => {
     if (buyState.kind !== "partial") return;
@@ -379,8 +469,12 @@ export default function LookDetailPage() {
     router.push("/checkout/shipping");
   }, [buyState, look, router]);
 
-  const totalPrice = items.reduce((sum, item) => sum + (item.product?.price ?? 0), 0);
+  const totalPrice = items.reduce((sum, item) => {
+    if (!item.product || !canBuyProduct(item.product)) return sum;
+    return sum + (item.product.price ?? 0);
+  }, 0);
   const validItemCount = items.filter((i) => i.product).length;
+  const buyableCount = buyableItems.length;
 
   if (loading) {
     return (
@@ -463,8 +557,8 @@ export default function LookDetailPage() {
                       {buyState.available} of {buyState.total} products available
                     </p>
                     <p className="buy-notice__desc">
-                      The rest are no longer in our catalog. What is still
-                      available is already in your cart.
+                      The rest are already in your bag, out of stock, or no longer
+                      for sale. Only shades that can be reserved are in your cart.
                     </p>
                     <button onClick={continueToCheckout} className="buy-notice__btn">
                       Continue to checkout
@@ -480,8 +574,9 @@ export default function LookDetailPage() {
                   <div className="buy-notice__body">
                     <p className="buy-notice__title">This look can&apos;t be bought right now</p>
                     <p className="buy-notice__desc">
-                      None of its products are in our catalog any more. The look
-                      itself is safe — you can still wear it in the app.
+                      Nothing left in this look can be reserved. Shades may already
+                      be in your bag, be out of stock, or no longer be for sale.
+                      The look itself is safe — you can still wear it in the app.
                     </p>
                     <Link href="/products" className="buy-notice__btn">
                       Browse products
@@ -492,7 +587,10 @@ export default function LookDetailPage() {
 
               {/* Name + tags */}
               <div className="detail-header">
-                <h1 className="detail-title">{look.look_name || "Untitled Look"}</h1>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <h1 className="detail-title">{look.look_name || "Untitled Look"}</h1>
+                  <CopyLookLink lookId={look.id} />
+                </div>
                 {look.tags && look.tags.length > 0 && (
                   <div className="detail-tags">
                     {look.tags.map((tag, i) => (
@@ -504,6 +602,7 @@ export default function LookDetailPage() {
                 )}
               </div>
 
+              <div className="products-and-order">
               {/* Products */}
               <div className="products-section">
                 <div className="products-section-header">
@@ -514,6 +613,10 @@ export default function LookDetailPage() {
                   )}
                 </div>
 
+                {status === "signed_out" && (
+                  <p className="no-products">Sign in to see shades already in your bag.</p>
+                )}
+
                 {items.length === 0 || validItemCount === 0 ? (
                   <p className="no-products">No products found for this look.</p>
                 ) : (
@@ -522,6 +625,17 @@ export default function LookDetailPage() {
                       if (!item.product) return null;
                       const isAdded = addedIds.has(item.id);
                       const hex = safeHex(item.shade?.shade_hex);
+                      const owned = ownsItem(item);
+                      const forSale = canBuyProduct(item.product);
+                      const stock = Number(item.product.stock_quantity);
+                      const statusLabel = owned
+                        ? "Already in your bag"
+                        : item.product.is_active === false
+                          ? "Can't buy — unavailable"
+                          : !Number.isFinite(stock) || stock < 1
+                            ? "Can't buy — out of stock"
+                            : "In stock";
+                      const canAdd = forSale && !owned;
                       return (
                         <div key={item.id} className="product-row">
                           <ProductImage src={item.product.image_url} alt={item.product.name} />
@@ -557,15 +671,21 @@ export default function LookDetailPage() {
                                 {item.shade?.shade_name ?? UNKNOWN_SHADE_NAME}
                               </span>
                             </div>
-                            <div className="product-price">
-                              ${(item.product.price ?? 0).toFixed(2)}
+                            <div className={`product-price ${forSale ? "" : "product-price--muted"}`}>
+                              {forSale ? `$${(item.product.price ?? 0).toFixed(2)}` : "Not in total"}
+                            </div>
+                            <div className={`stock-chip ${canAdd ? "stock-chip--ok" : "stock-chip--no"}`}>
+                              {statusLabel}
                             </div>
                           </div>
                           <button
                             onClick={() => handleAddToCart(item)}
+                            disabled={!canAdd}
                             className={`add-btn ${isAdded ? "add-btn--added" : ""}`}
                             aria-label={
-                              isAdded
+                              !canAdd
+                                ? statusLabel
+                                : isAdded
                                 ? "Added to cart"
                                 : `Add ${item.product.name}${
                                     item.shade ? ` in ${item.shade.shade_name}` : ""
@@ -581,6 +701,30 @@ export default function LookDetailPage() {
                 )}
               </div>
 
+              {items.length > 0 && (
+                <aside className="wear-order" aria-label="Wear order">
+                  <h3 className="products-section-title">Wear order</h3>
+                  <ol className="wear-order-list">
+                    {wearOrder(items).map((item) => {
+                      const zone = wearZone(item.product_key, item.product?.category);
+                      const missing = !item.product;
+                      return (
+                        <li key={item.id} className="wear-order-row">
+                          <span className="wear-zone">{wearZoneLabel(zone)}</span>
+                          <span className={missing ? "wear-name wear-name--missing" : "wear-name"}>
+                            {missing ? "Can't buy — unavailable" : item.product?.name}
+                          </span>
+                          {item.intensity != null && (
+                            <span className="wear-intensity">{item.intensity}%</span>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </aside>
+              )}
+              </div>
+
               {/* Footer */}
               <div className="detail-footer">
                 <div className="total-row">
@@ -590,19 +734,19 @@ export default function LookDetailPage() {
 
                 <button
                   onClick={handleAddAllToCart}
-                  disabled={validItemCount === 0 || allAdded}
+                  disabled={buyableCount === 0 || allAdded}
                   className={`add-all-btn ${allAdded ? "add-all-btn--done" : ""}`}
                 >
                   {allAdded ? (
                     <>
-                      <Check className="w-5 h-5" /> All Added to Cart
+                      <Check className="w-5 h-5" /> In-stock shades added
                     </>
                   ) : (
                     <>
                       <ShoppingBag className="w-5 h-5" />
-                      Add All to Cart
-                      {validItemCount > 0 && (
-                        <span className="add-all-count">{validItemCount}</span>
+                      Add missing in-stock shades
+                      {buyableCount > 0 && (
+                        <span className="add-all-count">{buyableCount}</span>
                       )}
                     </>
                   )}
@@ -792,7 +936,53 @@ const detailStyles = `
     color: var(--text-muted);
   }
 
-  .products-section { flex: 1; display: flex; flex-direction: column; gap: 12px; }
+  .products-and-order {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  @media (min-width: 860px) {
+    .products-and-order { flex-direction: row; align-items: flex-start; }
+    .wear-order { width: 230px; flex-shrink: 0; }
+  }
+  .products-section { flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .wear-order-list {
+    list-style: none;
+    margin: 10px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .wear-order-row {
+    display: grid;
+    grid-template-columns: 78px 1fr auto;
+    gap: 8px;
+    align-items: baseline;
+    font-size: 12.5px;
+  }
+  .wear-zone {
+    color: var(--text-muted);
+    font-weight: 600;
+    font-size: 11.5px;
+  }
+  .wear-name {
+    color: var(--text-main);
+    font-weight: 600;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .wear-name--missing {
+    color: var(--text-muted);
+    font-style: italic;
+    font-weight: 400;
+  }
+  .wear-intensity {
+    color: var(--text-muted);
+    font-size: 11.5px;
+  }
   .products-section-header { display: flex; align-items: center; gap: 8px; }
   .products-section-title {
     font-size: 14px;
@@ -886,6 +1076,17 @@ const detailStyles = `
   }
 
   .product-price { font-size: 13px; font-weight: 600; color: var(--rose-primary); }
+  .product-price--muted { color: var(--text-muted); font-weight: 500; }
+  .stock-chip {
+    display: inline-flex;
+    margin-top: 4px;
+    border-radius: 99px;
+    padding: 1px 8px;
+    font-size: 10.5px;
+    font-weight: 600;
+  }
+  .stock-chip--ok { background: rgba(34,197,94,0.12); color: #15803d; }
+  .stock-chip--no { background: rgba(0,0,0,0.05); color: var(--text-muted); }
 
   .add-btn {
     width: 34px; height: 34px; flex-shrink: 0;
@@ -897,7 +1098,8 @@ const detailStyles = `
     cursor: pointer;
     transition: all 0.18s;
   }
-  .add-btn:hover {
+  .add-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .add-btn:hover:not(:disabled) {
     border-color: var(--rose-primary);
     color: var(--rose-primary);
     background: rgba(192,108,132,0.07);

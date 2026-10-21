@@ -29,7 +29,6 @@ export default function Footer() {
             <div className="mt-4 flex flex-col gap-2.5">
               {[
                 { label: "Products", href: "/products" },
-                { label: "Try-On Lite", href: "/try-on" },
                 { label: "Skin Analysis", href: "/skin-analysis" },
                 { label: "Saved Looks", href: "/my-looks" },
               ].map((x) => (
@@ -70,10 +69,10 @@ export default function Footer() {
             © {new Date().getFullYear()} AR Makeup. All rights reserved.
           </p>
           <div className="flex gap-5">
-            <Link href="/" className="text-[11px] text-[#9a7a85] hover:text-[#B65C7A]">
+            <Link href="/privacy" className="text-[11px] text-[#9a7a85] hover:text-[#B65C7A]">
               Privacy
             </Link>
-            <Link href="/" className="text-[11px] text-[#9a7a85] hover:text-[#B65C7A]">
+            <Link href="/terms" className="text-[11px] text-[#9a7a85] hover:text-[#B65C7A]">
               Terms
             </Link>
           </div>

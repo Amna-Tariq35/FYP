@@ -16,8 +16,8 @@ export default function MobileCTA() {
           </h3>
           <p className="mt-2.5 text-[12.5px] font-light leading-7 text-white/55">
             Real-time face landmark detection and live makeup rendering runs on
-            the mobile app. The web focuses on catalog browsing, Try-On Lite,
-            saved looks, and checkout.
+            the mobile app. The full camera is in the Android app. This website
+            covers the shop, saved looks, and checkout.
           </p>
         </div>
 

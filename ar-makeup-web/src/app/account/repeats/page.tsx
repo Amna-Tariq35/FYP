@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { ShoppingCart, Loader2, Repeat2 } from "lucide-react";
 import { addToCart } from "@/src/store/cart";
 
@@ -18,9 +19,11 @@ type Repeat = {
   price: number | null;
   stock_quantity: number;
   is_active: boolean;
+  has_shades?: boolean;
 };
 
 export default function RepeatsPage() {
+  const router = useRouter();
   const [repeats, setRepeats] = useState<Repeat[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -40,6 +43,11 @@ export default function RepeatsPage() {
 
   function addRepeat(item: Repeat) {
     if (!item.is_active || !item.price || item.stock_quantity < 1) return;
+    const missingShade = !item.shade_key || item.shade_key === "no-shade";
+    if (missingShade && item.has_shades) {
+      router.push(`/products/${encodeURIComponent(item.product_key)}`);
+      return;
+    }
     addToCart({
       product_key: item.product_key,
       shade_key: item.shade_key ?? "no-shade",
@@ -50,7 +58,7 @@ export default function RepeatsPage() {
       price: item.price,
       image_url: item.image_url,
     });
-    setAdded(item.product_key);
+    setAdded(`${item.product_key}:${item.shade_key ?? ""}`);
     setTimeout(() => setAdded(null), 1600);
   }
 
@@ -98,7 +106,7 @@ export default function RepeatsPage() {
                     <div className="flex items-center justify-between gap-3">
                       <span className="font-semibold text-[#C06C84]">{item.price === null ? "Unavailable" : `$${item.price.toFixed(2)}`}</span>
                       <button type="button" disabled={unavailable} onClick={() => addRepeat(item)} className="inline-flex items-center gap-1.5 rounded-full bg-[#C06C84] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-gray-300">
-                        <ShoppingCart size={13} /> {added === item.product_key ? "Added" : unavailable ? "Unavailable" : "Add again"}
+                        <ShoppingCart size={13} /> {added === `${item.product_key}:${item.shade_key ?? ""}` ? "Added" : unavailable ? "Unavailable" : (!item.shade_key || item.shade_key === "no-shade") && item.has_shades ? "Choose shade" : "Add again"}
                       </button>
                     </div>
                   </div>

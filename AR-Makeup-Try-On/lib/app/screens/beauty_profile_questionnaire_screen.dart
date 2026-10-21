@@ -92,8 +92,8 @@ class _BeautyProfileQuestionnaireScreenState
           _selectedConcerns.addAll(concerns.cast<String>());
         }
       });
-    } catch (e) {
-      print('[PreFillData] Error: $e');
+    } catch (_) {
+      return;
     }
   }
 
@@ -212,10 +212,10 @@ class _BeautyProfileQuestionnaireScreenState
       } else {
         setState(() => _errorMessage = 'Failed to save profile. Try again.');
       }
-    } catch (e) {
+    } catch (_) {
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Error: ${e.toString()}';
+        _errorMessage = 'Could not save your beauty profile.';
       });
     }
   }
@@ -224,6 +224,7 @@ class _BeautyProfileQuestionnaireScreenState
 
   @override
   Widget build(BuildContext context) {
+    AppColors.watch(context);
     return Scaffold(
       appBar: AppBar(
         title: Text('Beauty Profile · Step ${_currentStep + 1} of 4'),

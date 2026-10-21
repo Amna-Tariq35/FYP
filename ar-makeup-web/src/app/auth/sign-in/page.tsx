@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
+import PasswordField from "@/src/components/auth/PasswordField";
 import AuthShell from "@/src/components/layout/AuthShell";
 import { supabase } from "@/src/lib/supabase/client";
+import { safeNext } from "@/src/app/auth/bridge/BridgeClient";
 
 // ─── Admin email (FYP: hardcoded for demo; replace with role-based check in production) ───
 const ADMIN_EMAIL = "admin@makeup.com";
@@ -12,7 +14,7 @@ const ADMIN_EMAIL = "admin@makeup.com";
 function SignInForm() {
   const router = useRouter();
   const sp = useSearchParams();
-  const next = sp.get("next") || "/";
+  const next = safeNext(sp.get("next"));
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -72,13 +74,12 @@ function SignInForm() {
           <label className="block text-xs font-medium text-black/70 mb-1">
             Password
           </label>
-          <input
+          <PasswordField
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            type="password"
             autoComplete="current-password"
             placeholder="••••••••"
-            className="w-full rounded-2xl border border-black/10 bg-white px-4 py-3 text-sm text-black outline-none placeholder:text-black/35 shadow-sm focus:border-[#C06C84]/50 focus:ring-4 focus:ring-[#F4C2C2]/35"
+            className="w-full rounded-2xl border border-black/10 bg-white pl-4 py-3 text-sm text-black outline-none placeholder:text-black/35 shadow-sm focus:border-[#C06C84]/50 focus:ring-4 focus:ring-[#F4C2C2]/35"
             style={{ WebkitTextFillColor: "#000", WebkitBoxShadow: "0 0 0 1000px #fff inset" }}
             required
           />
@@ -101,6 +102,15 @@ function SignInForm() {
         </button>
 
         {/* Secondary links */}
+        <div className="text-center text-sm">
+          <Link
+            href="/auth/forgot-password"
+            className="font-semibold text-[#C06C84] hover:underline"
+          >
+            Forgot password?
+          </Link>
+        </div>
+
         <div className="flex items-center justify-between text-sm">
           <Link
             href="/"

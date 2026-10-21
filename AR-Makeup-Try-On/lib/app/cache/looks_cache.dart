@@ -2,13 +2,23 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+typedef LooksFetcher = Future<List<Map<String, dynamic>>> Function(String userId);
+
 class LooksCache {
-  LooksCache._();
+  LooksCache._({LooksFetcher? fetchOverride}) : _fetchOverride = fetchOverride;
+
+  /// Test seam. Production code uses [instance].
+  @visibleForTesting
+  LooksCache.forTest(LooksFetcher fetch) : _fetchOverride = fetch;
+
   static final LooksCache instance = LooksCache._();
+
+  final LooksFetcher? _fetchOverride;
 
   // ── State ──────────────────────────────────────────────────────────────────
   List<Map<String, dynamic>> _looks = [];
@@ -16,15 +26,39 @@ class LooksCache {
   bool _loading = false;
   Completer<void>? _prefetchCompleter;
 
+  /// Bumped by [clear] and by a forced refresh so an in-flight prefetch cannot
+  /// write the previous user's looks back after sign-out.
+  int _generation = 0;
+  String? _activeUserId;
+
   // Expose read-only view
   List<Map<String, dynamic>> get looks => List.unmodifiable(_looks);
   bool get isLoaded => _loaded;
   bool get isLoading => _loading;
 
+  /// Disk name for one account. Not a shared file, so the next sign-in cannot
+  /// paint the previous gallery before the network returns.
+  @visibleForTesting
+  static String cacheFileNameFor(String userId) {
+    final safe = userId.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
+    if (safe.isEmpty) return 'saved_looks_cache_unknown.json';
+    return 'saved_looks_cache_$safe.json';
+  }
+
+  static const String legacyCacheFileName = 'saved_looks_cache.json';
+
+  bool _isCurrent(int generation, String userId) =>
+      generation == _generation && _activeUserId == userId;
+
   // ── File helpers ───────────────────────────────────────────────────────────
-  Future<File> get _cacheFile async {
+  Future<File> _cacheFileFor(String userId) async {
     final dir = await getApplicationSupportDirectory();
-    return File('${dir.path}/saved_looks_cache.json');
+    return File('${dir.path}/${cacheFileNameFor(userId)}');
+  }
+
+  Future<File> _legacyCacheFile() async {
+    final dir = await getApplicationSupportDirectory();
+    return File('${dir.path}/$legacyCacheFileName');
   }
 
   // ── Listeners ──────────────────────────────────────────────────────────────
@@ -38,90 +72,153 @@ class LooksCache {
   }
 
   // ── Load from cache file (offline) ─────────────────────────────────────────
-  Future<void> _loadFromCacheFile() async {
+  Future<void> _loadFromCacheFile(int generation, String userId) async {
+    if (_fetchOverride != null) return;
     try {
-      final file = await _cacheFile;
+      final file = await _cacheFileFor(userId);
+      if (!_isCurrent(generation, userId)) return;
       if (!await file.exists()) return;
 
       final contents = await file.readAsString();
+      if (!_isCurrent(generation, userId)) return;
       if (contents.isEmpty) return;
 
       final jsonData = jsonDecode(contents) as List<dynamic>;
+      if (!_isCurrent(generation, userId)) return;
       _looks = jsonData
           .map((item) => Map<String, dynamic>.from(item as Map<String, dynamic>))
           .toList();
       debugPrint('✓ Loaded ${_looks.length} looks from offline cache');
     } catch (e) {
       debugPrint('⚠️ Offline cache load failed: $e');
-      _looks = [];
+      if (_isCurrent(generation, userId)) _looks = [];
     }
   }
 
   // ── Save to cache file ─────────────────────────────────────────────────────
-  Future<void> _saveToCacheFile() async {
+  Future<void> _saveToCacheFile(int generation, String userId) async {
+    if (_fetchOverride != null) return;
     try {
-      final file = await _cacheFile;
-      await file.writeAsString(jsonEncode(_looks), flush: true);
+      if (!_isCurrent(generation, userId)) return;
+      final file = await _cacheFileFor(userId);
+      if (!_isCurrent(generation, userId)) return;
+      final payload = jsonEncode(_looks);
+      if (!_isCurrent(generation, userId)) return;
+      await file.writeAsString(payload, flush: true);
+      if (!_isCurrent(generation, userId)) {
+        try {
+          if (await file.exists()) await file.delete();
+        } catch (e) {
+          debugPrint('⚠️ Stale looks cache delete failed: $e');
+        }
+      }
     } catch (e) {
       debugPrint('⚠️ Cache file write failed: $e');
     }
   }
 
+  Future<void> _deleteCacheFiles(String? userId) async {
+    if (_fetchOverride != null) return;
+    try {
+      final legacy = await _legacyCacheFile();
+      if (await legacy.exists()) await legacy.delete();
+    } catch (e) {
+      debugPrint('⚠️ Legacy looks cache delete failed: $e');
+    }
+    if (userId == null || userId.isEmpty) return;
+    try {
+      final file = await _cacheFileFor(userId);
+      if (await file.exists()) await file.delete();
+    } catch (e) {
+      debugPrint('⚠️ Looks cache delete failed: $e');
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchLooks(String userId) {
+    final override = _fetchOverride;
+    if (override != null) return override(userId);
+    return _fetchFromNetwork(userId);
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchFromNetwork(String userId) async {
+    final response = await Supabase.instance.client
+        .from('saved_looks')
+        .select()
+        .eq('user_id', userId)
+        .order('created_at', ascending: false)
+        .timeout(
+          const Duration(seconds: 8),
+          onTimeout: () => throw TimeoutException('Network timeout'),
+        );
+    return List<Map<String, dynamic>>.from(response);
+  }
+
   // ── Prefetch (from network, fallback to offline) ────────────────────────────
   Future<void> prefetch(String userId, {bool force = false}) async {
-    if (_loaded && !force) return;
+    if (_loaded && !force && _activeUserId == userId) return;
 
-    // Agar already load ho raha hai — naya call mat karo, existing ka wait karo
-    if (_loading && _prefetchCompleter != null) {
+    // A forced refresh must not adopt the in-flight result it is replacing.
+    if (force && _loading) {
+      _generation++;
+      final pending = _prefetchCompleter;
+      _prefetchCompleter = null;
+      _loading = false;
+      if (pending != null && !pending.isCompleted) pending.complete();
+    }
+
+    if (_loading && _prefetchCompleter != null && !force && _activeUserId == userId) {
       return _prefetchCompleter!.future;
     }
 
+    final generation = _generation;
+    _activeUserId = userId;
     _loading = true;
-    _prefetchCompleter = Completer<void>();
+    final completer = Completer<void>();
+    _prefetchCompleter = completer;
+    var failed = false;
 
     try {
-      // Pehle offline cache load karo
-      await _loadFromCacheFile();
+      await _loadFromCacheFile(generation, userId);
+      if (!_isCurrent(generation, userId)) return;
 
-      // Phir network se fetch karne ki koshish karo
       try {
-        final response = await Supabase.instance.client
-            .from('saved_looks')
-            .select()
-            .eq('user_id', userId)
-            .order('created_at', ascending: false)
-            .timeout(
-              const Duration(seconds: 8),
-              onTimeout: () => throw TimeoutException('Network timeout'),
-            );
-        _looks = List<Map<String, dynamic>>.from(response);
+        final response = await _fetchLooks(userId);
+        if (!_isCurrent(generation, userId)) return;
+        _looks = response;
         _loaded = true;
-        // Success — save to cache for offline use
-        await _saveToCacheFile();
+        await _saveToCacheFile(generation, userId);
+        if (!_isCurrent(generation, userId)) {
+          _looks = [];
+          _loaded = false;
+          return;
+        }
         _notify();
-        _prefetchCompleter!.complete();
       } on SocketException catch (e) {
-        // Network error — use offline cache
         debugPrint('⚠️ Network error: $e. Using offline cache.');
+        if (!_isCurrent(generation, userId)) return;
         _loaded = true;
         _notify();
-        _prefetchCompleter!.complete();
       } on TimeoutException catch (e) {
-        // Timeout — use offline cache
         debugPrint('⚠️ Network timeout: $e. Using offline cache.');
+        if (!_isCurrent(generation, userId)) return;
         _loaded = true;
         _notify();
-        _prefetchCompleter!.complete();
       }
     } catch (e) {
+      if (!_isCurrent(generation, userId)) return;
       debugPrint('❌ LooksCache prefetch error: $e');
       _loaded = true;
-      // Even if everything fails, we still have offline cache
       _notify();
-      _prefetchCompleter!.completeError(e);
+      failed = true;
+      if (!completer.isCompleted) completer.completeError(e);
     } finally {
-      _loading = false;
-      _prefetchCompleter = null;
+      if (_isCurrent(generation, userId)) {
+        _loading = false;
+        if (!failed && !completer.isCompleted) completer.complete();
+        if (identical(_prefetchCompleter, completer)) {
+          _prefetchCompleter = null;
+        }
+      }
     }
   }
 
@@ -129,8 +226,10 @@ class LooksCache {
   void optimisticAdd(Map<String, dynamic> look) {
     _looks.insert(0, look);
     _notify();
-    // Persist to cache immediately
-    _saveToCacheFile();
+    final userId = _activeUserId;
+    if (userId != null) {
+      _saveToCacheFile(_generation, userId);
+    }
   }
 
   // ── Update a look in-place ─────────────────────────────────────────────────
@@ -139,8 +238,10 @@ class LooksCache {
     if (idx != -1) {
       _looks[idx] = {..._looks[idx], ...patch};
       _notify();
-      // Persist to cache immediately
-      _saveToCacheFile();
+      final userId = _activeUserId;
+      if (userId != null) {
+        _saveToCacheFile(_generation, userId);
+      }
     }
   }
 
@@ -153,23 +254,30 @@ class LooksCache {
   void remove(String lookId) {
     _looks.removeWhere((l) => l['id'] == lookId);
     _notify();
-    // Persist to cache immediately
-    _saveToCacheFile();
+    final userId = _activeUserId;
+    if (userId != null) {
+      _saveToCacheFile(_generation, userId);
+    }
   }
 
   // ── Hard refresh ───────────────────────────────────────────────────────────
   Future<void> refresh(String userId) {
-    _loaded = false; // force block karo chahe _loading true ho
+    _loaded = false;
     return prefetch(userId, force: true);
   }
 
   // ── Clear on logout ────────────────────────────────────────────────────────
   void clear() {
+    final previousUser = _activeUserId;
+    _generation++;
     _looks = [];
     _loaded = false;
     _loading = false;
+    _activeUserId = null;
+    final pending = _prefetchCompleter;
     _prefetchCompleter = null;
     _notify();
-    _saveToCacheFile();
+    if (pending != null && !pending.isCompleted) pending.complete();
+    _deleteCacheFiles(previousUser);
   }
 }

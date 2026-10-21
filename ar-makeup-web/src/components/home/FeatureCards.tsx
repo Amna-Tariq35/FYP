@@ -1,13 +1,7 @@
 import Link from "next/link";
-import { Sparkles, ShoppingBag, ScanFace, Heart } from "lucide-react";
+import { ShoppingBag, ScanFace, Heart } from "lucide-react";
 
 const items = [
-  {
-    title: "Try-On Lite",
-    desc: "Preview shades on your photo.",
-    href: "/try-on",
-    Icon: Sparkles,
-  },
   {
     title: "Browse Products",
     desc: "Explore catalog & shades.",
@@ -48,7 +42,7 @@ export default function FeatureCards() {
       </div>
 
       {/* Grid */}
-      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {items.map(({ title, desc, href, Icon }) => (
           <Link
             key={title}

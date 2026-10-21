@@ -71,9 +71,38 @@ class AppConfig {
   static const String productsPath = '/products';
   static const String skinAnalysisPath = '/skin-analysis';
   static const String supportPath = '/support';
+
+  /// Public password reset page (`src/app/auth/forgot-password`). No session.
+  static const String forgotPasswordPath = '/auth/forgot-password';
+
+  /// Public terms page (`src/app/terms`).
+  static const String termsPath = '/terms';
+
+  /// Public privacy page on the companion site (`src/app/privacy`).
+  static const String privacyPath = '/privacy';
+
+  /// Makeup bag on the website. `?add=1` opens the catalog picker.
+  static const String makeupBagPath = '/makeup-bag';
+
+  static String makeupBagAddPath() => '$makeupBagPath?add=1';
+
+  /// Product detail route. The page reads `shade` and preselects that chip.
+  static String productPagePath(String productKey, {String? shadeKey}) {
+    final key = Uri.encodeComponent(productKey.trim());
+    final path = '$productsPath/$key';
+    final shade = shadeKey?.trim() ?? '';
+    if (shade.isEmpty) return path;
+    return '$path?shade=${Uri.encodeComponent(shade)}';
+  }
+
   static const String cartPath = '/cart';
   static const String myLooksPath = '/my-looks';
   static const String myOrdersPath = '/my-orders';
+
+  /// Order detail on the website (`src/app/my-orders/[id]`).
+  static String orderPath(String orderId) =>
+      '$myOrdersPath/${Uri.encodeComponent(orderId.trim())}';
+
   static const String checkoutPath = '/checkout/shipping';
 
   static String lookPath(String lookId) => '/looks/$lookId';

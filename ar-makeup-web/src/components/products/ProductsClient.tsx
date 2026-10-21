@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo, useEffect, useCallback } from "react";
+import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import {
   Search,
@@ -18,39 +18,66 @@ import {
 import ProductCard from "./ProductCard";
 import { MakeupProduct } from "@/src/types/catalog";
 import { useWishlist } from "@/src/hooks/useWishlist";
-import { normalizeCategory } from "@/src/lib/catalog/category-taxonomy";
+import {
+  categoriesForMainCategory,
+  categoryLabel,
+  normalizeCategory,
+} from "@/src/lib/catalog/category-taxonomy";
+import {
+  CATALOG_PAGE_SIZE,
+  catalogQueryToSearchParams,
+  defaultCatalogQuery,
+  normalizeCatalogQuery,
+  type CatalogFacets,
+  type CatalogListQuery,
+  type CatalogPageResult,
+} from "@/src/lib/catalog/list-contract";
 
-const ITEMS_PER_PAGE = 9;
+type MainFilter = "All" | "makeup" | "skincare";
+
 const RECENTLY_VIEWED_KEY = "fyp_recently_viewed";
 const MAX_RECENT = 6;
 
-// ── Recently Viewed Hook ─────────────────────────────────────────────────────
-export function useRecentlyViewed(allProducts: MakeupProduct[]) {
+export function useRecentlyViewed() {
   const [keys, setKeys] = useState<string[]>([]);
+  const [recentProducts, setRecentProducts] = useState<MakeupProduct[]>([]);
 
   useEffect(() => {
     try {
       const stored = localStorage.getItem(RECENTLY_VIEWED_KEY);
-      if (stored) setKeys(JSON.parse(stored));
+      if (!stored) return;
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed)) {
+        setKeys(parsed.filter((key) => typeof key === "string").slice(0, MAX_RECENT));
+      }
     } catch {}
   }, []);
 
   const addViewed = useCallback((productKey: string) => {
     setKeys((prev) => {
-      const filtered = prev.filter((k) => k !== productKey);
-      const next = [productKey, ...filtered].slice(0, MAX_RECENT);
+      const next = [productKey, ...prev.filter((key) => key !== productKey)].slice(0, MAX_RECENT);
       try { localStorage.setItem(RECENTLY_VIEWED_KEY, JSON.stringify(next)); } catch {}
       return next;
     });
   }, []);
 
-  const recentProducts = useMemo(
-    () =>
-      keys
-        .map((k) => allProducts.find((p) => p.product_key === k))
-        .filter(Boolean) as MakeupProduct[],
-    [keys, allProducts]
-  );
+  useEffect(() => {
+    if (keys.length === 0) {
+      setRecentProducts([]);
+      return;
+    }
+    const controller = new AbortController();
+    const params = new URLSearchParams({ keys: keys.join(",") });
+    fetch(`/api/catalog/lookup?${params}`, { signal: controller.signal })
+      .then((response) => (response.ok ? response.json() : Promise.reject(new Error("lookup failed"))))
+      .then((data: { products?: MakeupProduct[] }) => {
+        setRecentProducts(data.products ?? []);
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+      });
+    return () => controller.abort();
+  }, [keys]);
 
   return { recentProducts, addViewed };
 }
@@ -63,6 +90,7 @@ function FilterGroup({
   selected,
   onChange,
   name,
+  labelFor,
 }: {
   title: string;
   icon: React.ReactNode;
@@ -70,6 +98,7 @@ function FilterGroup({
   selected: string;
   onChange: (v: string) => void;
   name: string;
+  labelFor?: (opt: string) => string;
 }) {
   return (
     <div className="filter-group">
@@ -90,7 +119,7 @@ function FilterGroup({
             />
             <span className={`filter-radio-dot ${selected === opt ? "active" : ""}`} />
             <span className={`filter-radio-text ${selected === opt ? "selected" : ""}`}>
-              {opt}
+              {labelFor ? labelFor(opt) : opt}
             </span>
           </label>
         ))}
@@ -152,43 +181,59 @@ function RecentlyViewedStrip({
 
 // ── Main Component ───────────────────────────────────────────────────────────
 export default function ProductsClient({
-  initialProducts,
+  initialPage,
+  facets: initialFacets,
   userProfile,
 }: {
-  initialProducts: MakeupProduct[];
+  initialPage: CatalogPageResult;
+  facets: CatalogFacets;
   userProfile?: {
     undertone?: string | null;
     depth_level?: string | null;
     skin_tone_hex?: string | null;
     finish_preference?: string | null;
     allergies?: string[] | null;
+    skin_type?: string | null;
   } | null;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("All");
   const [selectedBrand, setSelectedBrand] = useState("All");
   const [sortBy, setSortBy] = useState("featured");
-  const [currentPage, setCurrentPage] = useState(1);
+  const [currentPage, setCurrentPage] = useState(initialPage.page || 1);
   const [isMobileFiltersOpen, setIsMobileFiltersOpen] = useState(false);
   const [selectedFinish, setSelectedFinish] = useState("All");
+  const [selectedMain, setSelectedMain] = useState<MainFilter>("All");
+  const [inStockOnly, setInStockOnly] = useState(false);
+  const [skinFriendlyOnly, setSkinFriendlyOnly] = useState(false);
+  const [hasReviewsOnly, setHasReviewsOnly] = useState(false);
+  const [pageProducts, setPageProducts] = useState<MakeupProduct[]>(initialPage.products);
+  const [resultTotal, setResultTotal] = useState(initialPage.total);
+  const [reviewsUnavailable, setReviewsUnavailable] = useState(initialPage.reviewsUnavailable);
+  const [catalogFacets, setCatalogFacets] = useState(initialFacets);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  // Price range
-  const [maxPrice, setMaxPrice] = useState(100);
-  const [priceRange, setPriceRange] = useState<[number, number]>([0, 100]);
+  const startingMax = Math.max(1, Math.ceil(initialFacets.maxPrice || 1));
+  const [maxPrice, setMaxPrice] = useState(startingMax);
+  const [priceRange, setPriceRange] = useState<[number, number]>([0, startingMax]);
+  const [debouncedPrice, setDebouncedPrice] = useState<[number, number]>([0, startingMax]);
   const [minInput, setMinInput] = useState("0");
-  const [maxInput, setMaxInput] = useState("100");
+  const [maxInput, setMaxInput] = useState(String(startingMax));
 
-  // Hooks
   const { wishlist, toggle: toggleWishlist, isWished, count: wishlistCount } = useWishlist();
-  const { recentProducts, addViewed } = useRecentlyViewed(initialProducts);
+  const { recentProducts, addViewed } = useRecentlyViewed();
 
   useEffect(() => {
-    const max = Math.ceil(Math.max(...initialProducts.map((p) => p.price || 0), 1));
-    setMaxPrice(max);
-    setPriceRange([0, max]);
-    setMinInput("0");
-    setMaxInput(String(max));
-  }, [initialProducts]);
+    const timer = setTimeout(() => setDebouncedSearch(searchQuery.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedPrice(priceRange), 300);
+    return () => clearTimeout(timer);
+  }, [priceRange]);
 
   const handleSliderChange = (newRange: [number, number]) => {
     setPriceRange(newRange);
@@ -208,78 +253,144 @@ export default function ProductsClient({
     setMaxInput(String(val));
   };
 
+  const resetPrice = () => {
+    setPriceRange([0, maxPrice]);
+    setMinInput("0");
+    setMaxInput(String(maxPrice));
+  };
+
+  const applyMainCategory = (next: MainFilter) => {
+    setSelectedMain(next);
+    if (next !== "All" && selectedCategory !== "All") {
+      const allowed = categoriesForMainCategory(next);
+      if (!allowed.includes(normalizeCategory(selectedCategory))) {
+        setSelectedCategory("All");
+      }
+    }
+  };
+
   const categories = useMemo(() => {
-    const cats = new Set(initialProducts.map((p) => normalizeCategory(p.category) || "makeup"));
-    return ["All", ...Array.from(cats)].sort();
-  }, [initialProducts]);
-
-  const brands = useMemo(() => {
-    const brs = new Set(initialProducts.map((p) => p.brand?.trim()).filter(Boolean));
-    return ["All", ...Array.from(brs)].sort();
-  }, [initialProducts]);
-
-  // Extract unique finish values from products
-  const finishes = useMemo(() => {
-    const fins = new Set(initialProducts.map((p) => p.finish?.trim()).filter(Boolean));
-    return ["All", ...Array.from(fins)].sort();
-  }, [initialProducts]);
-
-  const filteredProducts = useMemo(() => {
-    let result = [...initialProducts];
-
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      result = result.filter(
-        (p) =>
-          p.name?.toLowerCase().includes(q) ||
-          p.brand?.toLowerCase().includes(q) ||
-          p.description?.toLowerCase().includes(q)
-      );
-    }
-
-    if (selectedCategory !== "All") {
-      result = result.filter((p) => (normalizeCategory(p.category) || "makeup") === normalizeCategory(selectedCategory));
-    }
-
-    if (selectedBrand !== "All") {
-      result = result.filter((p) => p.brand?.trim() === selectedBrand);
-    }
-
-    // Add finish filter
-    if (selectedFinish !== "All") {
-      result = result.filter((p) => p.finish?.trim() === selectedFinish);
-    }
-
-    result = result.filter(
-      (p) => (p.price || 0) >= priceRange[0] && (p.price || 0) <= priceRange[1]
+    const allowed =
+      selectedMain === "All" ? null : new Set(categoriesForMainCategory(selectedMain));
+    const source =
+      selectedMain === "All"
+        ? Object.values(catalogFacets.categoriesByMain).flat()
+        : catalogFacets.categoriesByMain[selectedMain] ?? [];
+    const cats = new Set(
+      source
+        .map((category) => normalizeCategory(category))
+        .filter((category) => category && (allowed === null || allowed.has(category))),
     );
-
-    if (sortBy === "price-asc") {
-      result.sort((a, b) => (a.price || 0) - (b.price || 0));
-    } else if (sortBy === "price-desc") {
-      result.sort((a, b) => (b.price || 0) - (a.price || 0));
-    } else if (sortBy === "name-asc") {
-      result.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    if (
+      selectedCategory !== "All" &&
+      (allowed === null || allowed.has(normalizeCategory(selectedCategory)))
+    ) {
+      cats.add(normalizeCategory(selectedCategory));
     }
+    return ["All", ...Array.from(cats).sort()];
+  }, [catalogFacets, selectedMain, selectedCategory]);
 
-    return result;
-  }, [initialProducts, searchQuery, selectedCategory, selectedBrand, sortBy, priceRange]);
-
-  const totalPages = Math.ceil(filteredProducts.length / ITEMS_PER_PAGE);
-  const paginatedProducts = filteredProducts.slice(
-    (currentPage - 1) * ITEMS_PER_PAGE,
-    currentPage * ITEMS_PER_PAGE
+  const brands = useMemo(
+    () => ["All", ...catalogFacets.brands.filter(Boolean)],
+    [catalogFacets.brands],
   );
 
-  useEffect(() => { setCurrentPage(1); }, [searchQuery, selectedCategory, selectedBrand, sortBy, priceRange, selectedFinish]);
+  const finishes = useMemo(
+    () => ["All", ...catalogFacets.finishes.filter(Boolean)],
+    [catalogFacets.finishes],
+  );
 
-  const priceFilterActive = priceRange[0] > 0 || priceRange[1] < maxPrice;
+  const priceChipActive = priceRange[0] > 0 || priceRange[1] < maxPrice;
+  const priceQueryActive = debouncedPrice[0] > 0 || debouncedPrice[1] < maxPrice;
+  const listQuery = useMemo<CatalogListQuery>(() => {
+    return normalizeCatalogQuery({
+      page: currentPage,
+      search: debouncedSearch,
+      main: selectedMain === "All" ? "all" : selectedMain,
+      category: selectedCategory,
+      brand: selectedBrand,
+      finish: selectedFinish,
+      minPrice: priceQueryActive ? debouncedPrice[0] : null,
+      maxPrice: priceQueryActive ? debouncedPrice[1] : null,
+      inStock: inStockOnly,
+      skinFriendly: skinFriendlyOnly,
+      hasReviews: hasReviewsOnly,
+      sort: sortBy === "price-asc" || sortBy === "price-desc" || sortBy === "name-asc" || sortBy === "rating-desc"
+        ? sortBy
+        : "featured",
+    });
+  }, [
+    currentPage,
+    debouncedSearch,
+    selectedMain,
+    selectedCategory,
+    selectedBrand,
+    selectedFinish,
+    priceQueryActive,
+    debouncedPrice,
+    inStockOnly,
+    skinFriendlyOnly,
+    hasReviewsOnly,
+    sortBy,
+  ]);
+
+  const filterSignature = JSON.stringify({ ...listQuery, page: undefined });
+  const [pageFilterSignature, setPageFilterSignature] = useState(filterSignature);
+  if (pageFilterSignature !== filterSignature) {
+    setPageFilterSignature(filterSignature);
+    if (currentPage !== 1) setCurrentPage(1);
+  }
+
+  const requestQuery = currentPage === 1 || pageFilterSignature === filterSignature
+    ? listQuery
+    : { ...listQuery, page: 1 };
+  const serializedQuery = catalogQueryToSearchParams(normalizeCatalogQuery(requestQuery)).toString();
+  const initialSerialized = useRef(catalogQueryToSearchParams(defaultCatalogQuery()).toString());
+  const usedInitial = useRef(false);
+
+  useEffect(() => {
+    if (!usedInitial.current && serializedQuery === initialSerialized.current) {
+      usedInitial.current = true;
+      return;
+    }
+    usedInitial.current = true;
+    const controller = new AbortController();
+    setLoading(true);
+    setLoadError(null);
+    fetch(`/api/catalog/products?${serializedQuery}`, { signal: controller.signal })
+      .then((response) => response.json().then((data) => ({ ok: response.ok, data })))
+      .then(({ ok, data }) => {
+        if (!ok) throw new Error(typeof data.error === "string" ? data.error : "Could not load products.");
+        setPageProducts(data.products ?? []);
+        setResultTotal(Number(data.total) || 0);
+        setReviewsUnavailable(Boolean(data.reviewsUnavailable));
+        if (data.facets) setCatalogFacets(data.facets);
+      })
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setLoadError(error instanceof Error ? error.message : "Could not load products.");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+    return () => controller.abort();
+  }, [serializedQuery]);
+
+  const finishPreference = userProfile?.finish_preference?.trim() || "";
+  const preferredFinishValue =
+    finishes.find(
+      (finish) => finish !== "All" && finish.toLowerCase() === finishPreference.toLowerCase()
+    ) ?? finishPreference;
   const activeFiltersCount = [
     selectedCategory !== "All",
     selectedBrand !== "All",
     searchQuery.trim() !== "",
-    priceFilterActive,
+    priceChipActive,
     selectedFinish !== "All",
+    selectedMain !== "All",
+    inStockOnly,
+    skinFriendlyOnly,
+    hasReviewsOnly,
   ].filter(Boolean).length;
 
   const clearAllFilters = () => {
@@ -287,42 +398,96 @@ export default function ProductsClient({
     setSelectedCategory("All");
     setSelectedBrand("All");
     setSelectedFinish("All");
-    setPriceRange([0, maxPrice]);
-    setMinInput("0");
-    setMaxInput(String(maxPrice));
+    setSelectedMain("All");
+    setInStockOnly(false);
+    setSkinFriendlyOnly(false);
+    setHasReviewsOnly(false);
+    resetPrice();
   };
+
+  const applyPreferredFinish = () => {
+    if (!finishPreference) return;
+    setSelectedFinish(preferredFinishValue);
+  };
+
+  const filterChips = [
+    searchQuery.trim()
+      ? {
+          key: "search",
+          label: `Search: ${searchQuery.trim()}`,
+          onRemove: () => setSearchQuery(""),
+        }
+      : null,
+    selectedMain !== "All"
+      ? {
+          key: "main",
+          label: selectedMain === "makeup" ? "Makeup" : "Skincare",
+          onRemove: () => applyMainCategory("All"),
+        }
+      : null,
+    selectedCategory !== "All"
+      ? {
+          key: "category",
+          label: categoryLabel(selectedCategory),
+          onRemove: () => setSelectedCategory("All"),
+        }
+      : null,
+    selectedBrand !== "All"
+      ? {
+          key: "brand",
+          label: selectedBrand,
+          onRemove: () => setSelectedBrand("All"),
+        }
+      : null,
+    selectedFinish !== "All"
+      ? {
+          key: "finish",
+          label: selectedFinish,
+          onRemove: () => setSelectedFinish("All"),
+        }
+      : null,
+    priceChipActive
+      ? {
+          key: "price",
+          label: `$${priceRange[0]}–$${priceRange[1]}`,
+          onRemove: resetPrice,
+        }
+      : null,
+    inStockOnly
+      ? {
+          key: "stock",
+          label: "In stock",
+          onRemove: () => setInStockOnly(false),
+        }
+      : null,
+    skinFriendlyOnly
+      ? {
+          key: "skin",
+          label: "Skin-friendly",
+          onRemove: () => setSkinFriendlyOnly(false),
+        }
+      : null,
+    hasReviewsOnly
+      ? {
+          key: "reviews",
+          label: "Has reviews",
+          onRemove: () => setHasReviewsOnly(false),
+        }
+      : null,
+  ].filter((chip): chip is { key: string; label: string; onRemove: () => void } => chip !== null);
+
+  const totalPages = Math.max(1, Math.ceil(resultTotal / CATALOG_PAGE_SIZE));
+  const resultStart = resultTotal === 0 ? 0 : (currentPage - 1) * CATALOG_PAGE_SIZE + 1;
+  const resultEnd = Math.min(currentPage * CATALOG_PAGE_SIZE, resultTotal);
+  const resultIsPaged = resultTotal > CATALOG_PAGE_SIZE;
 
   const renderSidebarContent = () => (
     <div className="sidebar-content">
       <div className="filter-group">
         <div className="filter-group-header">
-          <Search className="w-3.5 h-3.5" />
-          <span>Search</span>
-        </div>
-        <div className="search-input-wrapper">
-          <Search className="search-icon" />
-          <input
-            type="text"
-            placeholder="Products, brands..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="search-input"
-          />
-          {searchQuery && (
-            <button onClick={() => setSearchQuery("")} className="search-clear-btn">
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="sidebar-divider" />
-
-      <div className="filter-group">
-        <div className="filter-group-header">
           <DollarSign className="w-3.5 h-3.5" />
           <span>Price Range</span>
-          {priceFilterActive && <span className="price-active-dot" title="Filter active" />}
+          {priceChipActive && <span className="price-active-dot" title="Filter active" />}
         </div>
 
         <div className="price-inputs-row">
@@ -392,6 +557,35 @@ export default function ProductsClient({
 
       <div className="sidebar-divider" />
 
+      <div className="filter-group">
+        <label className="filter-toggle">
+          <input
+            type="checkbox"
+            checked={inStockOnly}
+            onChange={(e) => setInStockOnly(e.target.checked)}
+          />
+          <span>In stock only</span>
+        </label>
+        <label className="filter-toggle">
+          <input
+            type="checkbox"
+            checked={skinFriendlyOnly}
+            onChange={(e) => setSkinFriendlyOnly(e.target.checked)}
+          />
+          <span>Skin-friendly</span>
+        </label>
+        <label className="filter-toggle">
+          <input
+            type="checkbox"
+            checked={hasReviewsOnly}
+            onChange={(e) => setHasReviewsOnly(e.target.checked)}
+          />
+          <span>Has reviews</span>
+        </label>
+      </div>
+
+      <div className="sidebar-divider" />
+
       <FilterGroup
         title="Category"
         icon={<Layers className="w-3.5 h-3.5" />}
@@ -399,6 +593,7 @@ export default function ProductsClient({
         selected={selectedCategory}
         onChange={setSelectedCategory}
         name="category"
+        labelFor={(opt) => (opt === "All" ? "All" : categoryLabel(opt))}
       />
 
       {brands.length > 1 && (
@@ -415,21 +610,24 @@ export default function ProductsClient({
         </>
       )}
 
-      {finishes.length > 1 && (
+      {(finishes.length > 1 || finishPreference) && (
         <>
           <div className="sidebar-divider" />
-          <FilterGroup
-            title="Finish"
-            icon={<Layers className="w-3.5 h-3.5" />}
-            options={finishes}
-            selected={selectedFinish}
-            onChange={setSelectedFinish}
-            name="finish"
-          />
-          {userProfile?.finish_preference && (
-            <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "6px", fontStyle: "italic" }}>
-              Your preference: <strong>{userProfile.finish_preference}</strong>
-            </div>
+          {finishes.length > 1 && (
+            <FilterGroup
+              title="Finish"
+              icon={<Layers className="w-3.5 h-3.5" />}
+              options={finishes}
+              selected={selectedFinish}
+              onChange={setSelectedFinish}
+              name="finish"
+            />
+          )}
+          {finishPreference && (
+            <button type="button" className="use-finish-btn" onClick={applyPreferredFinish}>
+              Use my finish
+              <span className="use-finish-value">{preferredFinishValue}</span>
+            </button>
           )}
         </>
       )}
@@ -739,6 +937,114 @@ export default function ProductsClient({
         }
         .search-clear-btn:hover { color: var(--text-main); }
 
+        .catalog-search { width: 100%; }
+        .main-seg {
+          display: inline-flex;
+          align-self: flex-start;
+          padding: 3px;
+          border-radius: 12px;
+          border: 1.5px solid var(--border-soft);
+          background: var(--bg-base);
+          gap: 2px;
+        }
+        .main-seg-btn {
+          border: none;
+          background: transparent;
+          border-radius: 9px;
+          padding: 6px 12px;
+          font-size: 13px;
+          font-weight: 500;
+          color: var(--text-muted);
+          cursor: pointer;
+        }
+        .main-seg-btn.active {
+          background: var(--rose-primary);
+          color: white;
+          font-weight: 600;
+        }
+        .filter-toggle {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          font-size: 13px;
+          color: var(--text-main);
+          cursor: pointer;
+          padding: 6px 8px;
+          border-radius: 10px;
+        }
+        .filter-toggle:hover { background: var(--bg-base); }
+        .filter-toggle input {
+          accent-color: var(--rose-primary);
+          width: 16px;
+          height: 16px;
+          margin: 0;
+          cursor: pointer;
+        }
+        .use-finish-btn {
+          margin-top: 8px;
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 12px;
+          font-weight: 600;
+          color: var(--rose-primary);
+          background: rgba(192,108,132,0.08);
+          border: 1px solid rgba(192,108,132,0.35);
+          border-radius: 10px;
+          padding: 6px 10px;
+          cursor: pointer;
+        }
+        .use-finish-btn:hover { background: rgba(192,108,132,0.14); }
+        .use-finish-value {
+          font-weight: 500;
+          text-transform: capitalize;
+        }
+        .filter-chips {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          align-items: center;
+        }
+        .filter-chip {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          max-width: 100%;
+          padding: 4px 8px 4px 10px;
+          border-radius: 999px;
+          border: 1px solid var(--border-soft);
+          background: var(--bg-base);
+          font-size: 12px;
+          color: var(--text-main);
+        }
+        .filter-chip-label {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          max-width: 220px;
+        }
+        .filter-chip-remove {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border: none;
+          background: transparent;
+          color: var(--text-muted);
+          cursor: pointer;
+          padding: 0;
+        }
+        .filter-chip-remove:hover { color: var(--text-main); }
+        .chips-clear {
+          background: none;
+          border: none;
+          color: var(--rose-primary);
+          font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+          padding: 4px 6px;
+        }
+        .chips-clear:hover { text-decoration: underline; }
+
         .sidebar-divider {
           height: 1px;
           background: var(--border-soft);
@@ -787,8 +1093,13 @@ export default function ProductsClient({
           padding: 14px 18px;
           box-shadow: 0 1px 3px rgba(0,0,0,0.04);
         }
+        .topbar-row {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
         @media (min-width: 640px) {
-          .products-topbar { flex-direction: row; align-items: center; }
+          .topbar-row { flex-direction: row; align-items: center; }
         }
         .results-count {
           font-size: 13px;
@@ -1197,9 +1508,56 @@ export default function ProductsClient({
         <div className="products-main">
           {/* Top Bar */}
           <div className="products-topbar">
+            <div className="catalog-search search-input-wrapper">
+              <Search className="search-icon" />
+              <input
+                type="text"
+                placeholder="Products, brands..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="search-input"
+                aria-label="Search products"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  className="search-clear-btn"
+                  aria-label="Clear search"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            <div className="main-seg" role="group" aria-label="Product type">
+              {(["All", "makeup", "skincare"] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className={`main-seg-btn ${selectedMain === option ? "active" : ""}`}
+                  aria-pressed={selectedMain === option}
+                  onClick={() => applyMainCategory(option)}
+                >
+                  {option === "All" ? "All" : option === "makeup" ? "Makeup" : "Skincare"}
+                </button>
+              ))}
+            </div>
+
+            <div className="topbar-row">
             <span className="results-count">
-              Showing <strong>{filteredProducts.length}</strong>{" "}
-              {filteredProducts.length === 1 ? "product" : "products"}
+              {resultTotal === 0 ? (
+                <>Showing <strong>0</strong> products</>
+              ) : resultIsPaged ? (
+                <>
+                  Showing <strong>{resultStart}–{resultEnd}</strong> of <strong>{resultTotal}</strong>
+                </>
+              ) : (
+                <>
+                  Showing <strong>{resultTotal}</strong>{" "}
+                  {resultTotal === 1 ? "product" : "products"}
+                </>
+              )}
             </span>
 
             <div className="topbar-right">
@@ -1237,20 +1595,61 @@ export default function ProductsClient({
                   <option value="price-asc">Price: Low → High</option>
                   <option value="price-desc">Price: High → Low</option>
                   <option value="name-asc">Name: A → Z</option>
+                  <option value="rating-desc">Rating: High → Low</option>
                 </select>
               </div>
             </div>
+            </div>
+
+            {filterChips.length > 0 && (
+              <div className="filter-chips">
+                {filterChips.map((chip) => (
+                  <span key={chip.key} className="filter-chip">
+                    <span className="filter-chip-label">{chip.label}</span>
+                    <button
+                      type="button"
+                      className="filter-chip-remove"
+                      onClick={chip.onRemove}
+                      aria-label={`Remove ${chip.label}`}
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </span>
+                ))}
+                <button type="button" className="chips-clear" onClick={clearAllFilters}>
+                  Clear all
+                </button>
+              </div>
+            )}
           </div>
 
+          {loadError && (
+            <p className="results-count" role="alert">{loadError}</p>
+          )}
+          {reviewsUnavailable && hasReviewsOnly && (
+            <p className="results-count" role="status">
+              Reviews are unavailable right now, so Has reviews cannot be applied.
+            </p>
+          )}
+          {reviewsUnavailable && sortBy === "rating-desc" && !hasReviewsOnly && (
+            <p className="results-count" role="status">
+              Ratings are unavailable, so this list is in featured order.
+            </p>
+          )}
+
           {/* Grid or Empty State */}
-          {filteredProducts.length === 0 ? (
+          {pageProducts.length === 0 ? (
             <div className="empty-state">
               <div className="empty-icon-wrap">
                 <Search className="w-7 h-7" style={{ color: "var(--rose-primary)" }} />
               </div>
-              <p className="empty-title">No products found</p>
+              <p className="empty-title">
+                {reviewsUnavailable && hasReviewsOnly ? "Reviews are unavailable" : "No products found"}
+              </p>
               <p className="empty-desc">
-                Nothing matched your current filters. Try adjusting your search or clearing the filters.
+                {reviewsUnavailable && hasReviewsOnly
+                  ? "Has reviews cannot be applied until review counts load. Try again in a moment."
+                  : "Nothing matched your current filters. Try adjusting your search or clearing the filters."}
               </p>
               <button className="empty-clear-btn" onClick={clearAllFilters}>
                 <X className="w-4 h-4" />
@@ -1258,8 +1657,8 @@ export default function ProductsClient({
               </button>
             </div>
           ) : (
-            <div className="products-grid">
-              {paginatedProducts.map((p) => (
+            <div className="products-grid" style={loading ? { opacity: 0.55 } : undefined} aria-busy={loading}>
+              {pageProducts.map((p) => (
                 <ProductCard
                   key={p.product_key}
                   product={p}
@@ -1267,6 +1666,14 @@ export default function ProductsClient({
                   onWishlistToggle={toggleWishlist}
                   onView={addViewed}
                   userFinishPreference={userProfile?.finish_preference}
+                  matchProfile={
+                    userProfile
+                      ? {
+                          finish: userProfile.finish_preference ?? null,
+                          skinType: userProfile.skin_type ?? null,
+                        }
+                      : null
+                  }
                 />
               ))}
             </div>

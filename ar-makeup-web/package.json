@@ -9,7 +9,9 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "verify:phase0": "ts-node --project scripts/tsconfig.json scripts/verify-phase0.ts",
-    "verify:foundation": "ts-node --project scripts/tsconfig.json scripts/verify-foundation.ts"
+    "verify:foundation": "ts-node --project scripts/tsconfig.json scripts/verify-foundation.ts",
+    "foundation:eval": "ts-node --project scripts/tsconfig.json scripts/foundation-eval.ts",
+    "test:skin": "ts-node --transpile-only --project scripts/tsconfig.json scripts/skin-analysis-checks.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "^3.0.64",

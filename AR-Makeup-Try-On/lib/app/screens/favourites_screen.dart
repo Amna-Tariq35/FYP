@@ -48,6 +48,7 @@ class _FavouritesScreenState extends State<FavouritesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.watch(context);
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
@@ -111,67 +112,65 @@ class _FavouritesScreenState extends State<FavouritesScreen> {
             );
           }
 
-          // 🆕 ProductsCache ab sirf makeup products load karta hai (skincare
-          // network se fetch hi nahi hoti), isliye koi purani skincare
-          // favourite yahan product == null degi. Aisi entries list se
-          // chhupa do — favourites mein sirf makeup hi dikhega.
-          final makeupFavs = favs
-              .where(
-                (item) =>
-                    ProductsCache.instance.byKey(item['product_key']) != null,
-              )
-              .toList();
-
-          if (makeupFavs.isEmpty) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    Icons.favorite_border_rounded,
-                    size: 64,
-                    color: AppColors.border,
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'No favourites yet',
-                    style: TextStyle(
-                      color: AppColors.textMain,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Tap the heart icon in Try-On Studio\nto save your loved shades.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: AppColors.textMuted, fontSize: 14),
-                  ),
-                ],
-              ),
-            );
-          }
+          final catalog = ProductsCache.instance;
+          final namesLoading = catalog.isLoading && !catalog.isLoaded;
+          final namesFailed = catalog.isLoaded && catalog.isEmpty;
 
           return Column(
             children: [
+              if (namesLoading)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Loading product names...',
+                      style: TextStyle(color: AppColors.textMuted, fontSize: 14),
+                    ),
+                  ),
+                ),
+              if (namesFailed)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Could not load product names.',
+                      style: TextStyle(color: AppColors.textMuted, fontSize: 14),
+                    ),
+                  ),
+                ),
               Expanded(
                 child: ListView.separated(
                   padding: const EdgeInsets.all(20),
                   physics: const BouncingScrollPhysics(),
-                  itemCount: makeupFavs.length,
+                  itemCount: favs.length,
                   separatorBuilder: (_, __) => const SizedBox(height: 16),
                   itemBuilder: (context, index) {
-                    final item = makeupFavs[index];
-                    final productKey = item['product_key'];
-                    final shadeKey = item['shade_key'];
-                    final product = ProductsCache.instance.byKey(productKey);
+                    final item = favs[index];
+                    final rawKey = item['product_key'];
+                    final productKey =
+                        rawKey is String && rawKey.isNotEmpty ? rawKey : '';
+                    final rawShade = item['shade_key'];
+                    final shadeKey = rawShade is String && rawShade.isNotEmpty
+                        ? rawShade
+                        : null;
+                    final product = productKey.isEmpty
+                        ? null
+                        : catalog.byKey(productKey);
 
                     return _FavouriteCard(
                       productKey: productKey,
                       shadeKey: shadeKey,
                       product: product,
-                      onBuy: () => _buyProduct(productKey, shadeKey),
-                      onRemove: () => _removeFavourite(productKey, shadeKey),
+                      namesLoading: namesLoading && product == null,
+                      onBuy: productKey.isEmpty
+                          ? null
+                          : () => _buyProduct(productKey, shadeKey),
+                      onRemove: () => _removeFavourite(
+                        productKey,
+                        shadeKey,
+                      ),
                     );
                   },
                 ),
@@ -222,13 +221,15 @@ class _FavouriteCard extends StatelessWidget {
   final String productKey;
   final String? shadeKey;
   final DbProduct? product;
-  final VoidCallback onBuy;
+  final bool namesLoading;
+  final VoidCallback? onBuy;
   final VoidCallback onRemove;
 
   const _FavouriteCard({
     required this.productKey,
     this.shadeKey,
     this.product,
+    this.namesLoading = false,
     required this.onBuy,
     required this.onRemove,
   });
@@ -294,7 +295,9 @@ class _FavouriteCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  product?.displayBrand ?? 'Loading...',
+                  namesLoading
+                      ? 'Loading...'
+                      : (product?.displayBrand ?? '—'),
                   style: TextStyle(
                     color: AppColors.textMuted,
                     fontSize: 11,
@@ -303,7 +306,8 @@ class _FavouriteCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  product?.displayName ?? productKey,
+                  product?.displayName ??
+                      (productKey.isNotEmpty ? productKey : 'Saved favourite'),
                   style: TextStyle(
                     color: AppColors.textMain,
                     fontSize: 14,
@@ -330,22 +334,24 @@ class _FavouriteCard extends StatelessWidget {
             tooltip: 'Remove from favourites',
             onPressed: onRemove,
           ),
-          const SizedBox(width: 4),
-          OutlinedButton(
-            onPressed: onBuy,
-            style: OutlinedButton.styleFrom(
-              foregroundColor: AppColors.primary,
-              side: BorderSide(color: AppColors.primary.withOpacity(0.3)),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(30),
+          if (onBuy != null) ...[
+            const SizedBox(width: 4),
+            OutlinedButton(
+              onPressed: onBuy,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.primary,
+                side: BorderSide(color: AppColors.primary.withOpacity(0.3)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(30),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               ),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: const Text(
+                'Buy on Web',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+              ),
             ),
-            child: const Text(
-              'Buy on Web',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-            ),
-          ),
+          ],
         ],
       ),
     );

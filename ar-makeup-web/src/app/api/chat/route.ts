@@ -9,6 +9,12 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createGroq } from "@ai-sdk/groq";
 import { z } from "zod";
 import { createSupabaseServerClient } from "@/src/lib/supabase/server";
+import { clientKey, rateLimit } from "@/src/lib/skin-analysis/rate-limit";
+import { loadShopperMatchProfile } from "@/src/lib/catalog/product-profile-matching";
+import { asStringList } from "@/src/lib/skin-analysis/product-shape";
+
+const PROVIDER_FALLBACK =
+  "AI Assistant is currently undergoing quick maintenance. Please try again in a moment.";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const MAX_MESSAGES_IN_CONTEXT = 10;
@@ -48,6 +54,24 @@ function buildErrorResponse(
   );
 }
 
+function preferScore(
+  row: { finish?: string | null; skin_type?: unknown },
+  skinType?: string,
+  finish?: string,
+) {
+  let score = 0;
+  if (finish && typeof row.finish === "string" && row.finish.trim().toLowerCase() === finish.trim().toLowerCase()) {
+    score += 2;
+  }
+  if (
+    skinType &&
+    asStringList(row.skin_type).some((value) => value.toLowerCase() === skinType.trim().toLowerCase())
+  ) {
+    score += 2;
+  }
+  return score;
+}
+
 // ─── SINGLE SMART TOOL: For Both Makeup & Skincare ───────────────────────────
 const searchProducts = tool({
   description:
@@ -78,6 +102,10 @@ const searchProducts = tool({
       .optional()
       .describe("e.g. Red, Pink, Nude (Mostly for makeup)"),
     undertone: z.string().optional().describe("e.g. Warm, Cool, Neutral"),
+    finish: z
+      .string()
+      .optional()
+      .describe("e.g. matte, dewy, satin. Prefer products with this finish."),
   }),
   execute: async ({
     category,
@@ -86,15 +114,20 @@ const searchProducts = tool({
     tags,
     colorFamily,
     undertone,
+    finish,
   }) => {
     try {
       const supabase = await createSupabaseServerClient();
+      const stored = await loadShopperMatchProfile(supabase);
+      const preferredSkin = skinType || stored?.skinType || undefined;
+      const preferredFinish = finish || stored?.finish || undefined;
 
       let query = supabase
         .from("makeup_products")
         .select(
-          "id, product_key, name, brand, category, price, image_url, product_shades(id, shade_name, color_family, skin_tone, undertone, shade_hex)"
+          "id, product_key, name, brand, category, price, image_url, finish, skin_type, product_shades(id, shade_name, color_family, skin_tone, undertone, shade_hex)"
         )
+        .eq("is_active", true)
         .limit(SUPABASE_RESULTS_LIMIT);
 
       if (category) query = query.ilike("category", `%${category}%`);
@@ -118,7 +151,11 @@ const searchProducts = tool({
         };
       }
 
-      if (!data || data.length === 0) {
+      const products = (data ?? [])
+        .filter((row) => typeof row.product_key === "string" && row.product_key.length > 0)
+        .sort((a, b) => preferScore(b, preferredSkin, preferredFinish) - preferScore(a, preferredSkin, preferredFinish));
+
+      if (products.length === 0) {
         return {
           success: true,
           products: [],
@@ -126,7 +163,7 @@ const searchProducts = tool({
         };
       }
 
-      return { success: true, products: data, message: "" };
+      return { success: true, products, message: "" };
     } catch (err) {
       console.error("[searchProducts] Unexpected error:", err);
       return {
@@ -139,21 +176,41 @@ const searchProducts = tool({
 });
 
 // ─── System Prompt ───────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are a premium AI Beauty & Clinical Skincare Assistant. 
-You are an expert in both Color Cosmetics (Makeup) and Dermatology (Skincare).
+const SYSTEM_PROMPT = `You are a shopping guide for this store's makeup and skincare catalog.
+You help people choose products. You are not a dermatologist, and you do not diagnose skin conditions or give clinical treatment advice.
 
 STRICT RULES:
 1. ALWAYS call the 'searchProducts' tool before answering product-related questions.
 2. Extract context: If they say "I have acne and need a face wash", category="cleanser", tags="acne". If they want "red lipstick", category="lipstick", colorFamily="Red".
-3. NEVER list plain text product IDs or raw data. The UI will render the product cards automatically based on your tool call.
-4. Keep your response conversational, empathetic, and short (1-2 sentences). 
+3. NEVER list plain text product IDs, database ids, or raw data. Product cards are rendered from tool results and must be identified only by product_key.
+4. Keep your response conversational and short (1-2 sentences).
+5. If someone asks for a medical diagnosis or treatment plan, say you can only help them shop for products.
 
 FALLBACK RULE:
 If the tool returns 0 products, DO NOT hallucinate products. Reply gracefully with:
-"I couldn't find an exact match for that right now. 😔 Could we try looking for a different category or adjusting your skin type?"`;
+"I couldn't find an exact match for that right now. Could we try looking for a different category or preference?"`;
+
+function chatStream(result: { toUIMessageStreamResponse: (init?: { onError?: (error: unknown) => string }) => Response }) {
+  return result.toUIMessageStreamResponse({
+    onError: (error) => {
+      console.error("[chat/route] stream failed", error);
+      return PROVIDER_FALLBACK;
+    },
+  });
+}
 
 // ─── Route Handler (Gemini First -> Groq Fallback) ──────────────────────────
 export async function POST(req: Request) {
+  const limit = rateLimit(`chat:${clientKey(req)}`, 12, 60_000);
+  if (!limit.ok) {
+    return buildErrorResponse(
+      "RATE_LIMIT",
+      "High traffic detected. Please wait a few seconds before retrying.",
+      429,
+      60,
+    );
+  }
+
   let messages: UIMessage[];
   try {
     const body = await req.json();
@@ -168,6 +225,11 @@ export async function POST(req: Request) {
   const trimmedMessages = trimMessages(messages);
   const modelMessages = await convertToModelMessages(trimmedMessages);
   const tools = { searchProducts };
+  const shopper = await loadShopperMatchProfile(await createSupabaseServerClient());
+  const systemPrompt =
+    shopper && (shopper.skinType || shopper.finish)
+      ? `${SYSTEM_PROMPT}\n\nThe signed-in shopper's stored skin type is "${shopper.skinType ?? "not set"}" and finish preference is "${shopper.finish ?? "not set"}". When you call searchProducts, pass skinType and finish so matching products are preferred.`
+      : SYSTEM_PROMPT;
 
   let isGeminiQuotaExceeded = false;
 
@@ -176,13 +238,13 @@ export async function POST(req: Request) {
     console.log("Attempting Chat with Gemini...");
     const result = streamText({
       model: google("gemini-3.5-flash"),
-      system: SYSTEM_PROMPT,
+      system: systemPrompt,
       messages: modelMessages,
       tools,
       stopWhen: stepCountIs(3),
     });
 
-    return result.toUIMessageStreamResponse();
+    return chatStream(result);
   } catch (geminiErr: any) {
     console.warn("Gemini failed. Attempting Groq fallback...", geminiErr?.message || geminiErr);
 
@@ -199,7 +261,7 @@ export async function POST(req: Request) {
       console.log("Attempting Chat with Groq Fallback...");
       const result = streamText({
         model: groq("qwen-3.6-27b"),
-        system: SYSTEM_PROMPT,
+        system: systemPrompt,
         messages: modelMessages,
         tools,
         stopWhen: stepCountIs(3),
@@ -208,7 +270,7 @@ export async function POST(req: Request) {
         },
       });
 
-      return result.toUIMessageStreamResponse();
+      return chatStream(result);
     } catch (groqErr: any) {
       console.error("[chat/route] All AI Providers Failed:", groqErr?.message || groqErr);
 
@@ -229,7 +291,7 @@ export async function POST(req: Request) {
 
       return buildErrorResponse(
         "SERVER_ERROR",
-        "AI Assistant is currently undergoing quick maintenance. Please try again in a moment.",
+        PROVIDER_FALLBACK,
         503
       );
     }

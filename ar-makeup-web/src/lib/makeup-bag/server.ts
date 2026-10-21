@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { normalizeShadeKey } from "./keys";
+import { DEFAULT_BAG_NAME, normalizeShadeKey } from "./keys";
 
 export type PurchaseBagResult = {
   added: number;
@@ -17,29 +17,28 @@ async function ensureDefaultBag(
     .from("makeup_bags")
     .select("id")
     .eq("user_id", userId)
-    .eq("is_default", true)
+    .eq("name", DEFAULT_BAG_NAME)
     .maybeSingle();
 
   if (existing?.id) return existing.id as string;
 
+  // Same identity as the browser hook. Live SQL has no is_default column.
   const { data: created, error } = await client
     .from("makeup_bags")
     .insert({
       user_id: userId,
-      name: "My Makeup Bag",
-      is_default: true,
+      name: DEFAULT_BAG_NAME,
     })
     .select("id")
-    .single();
+    .maybeSingle();
 
   if (created?.id) return created.id as string;
 
-  // Race: another request created the default bag first.
   const { data: retry } = await client
     .from("makeup_bags")
     .select("id")
     .eq("user_id", userId)
-    .eq("is_default", true)
+    .eq("name", DEFAULT_BAG_NAME)
     .maybeSingle();
 
   if (retry?.id) return retry.id as string;
@@ -47,9 +46,11 @@ async function ensureDefaultBag(
   return null;
 }
 
+const BAG_ELIGIBLE_STATUSES = new Set(["paid", "processing", "shipped", "delivered"]);
+
 /**
- * Copy paid/placed order line items into the user's default makeup bag.
- * Idempotent via the unique (bag_id, product_key, shade_key) index.
+ * Copy paid order line items into the user's default makeup bag.
+ * Unpaid (placed) orders are skipped. Idempotent for keys already in the bag.
  */
 export async function addOrderItemsToDefaultBag(
   client: SupabaseClient,
@@ -62,12 +63,16 @@ export async function addOrderItemsToDefaultBag(
 
   const { data: order, error: orderErr } = await client
     .from("orders")
-    .select("id, user_id")
+    .select("id, user_id, status")
     .eq("id", orderId)
     .maybeSingle();
 
   if (orderErr || !order) {
     return { added: 0, skipped: true, itemIds: [], keys: [], reason: "order_not_found" };
+  }
+
+  if (!BAG_ELIGIBLE_STATUSES.has(String(order.status || "").toLowerCase())) {
+    return { added: 0, skipped: true, itemIds: [], keys: [], reason: "unpaid" };
   }
 
   if (!order.user_id) {
@@ -91,10 +96,10 @@ export async function addOrderItemsToDefaultBag(
   const rows = items
     .filter((it) => it.product_key)
     .map((it) => ({
+      user_id: order.user_id as string,
       bag_id: bagId,
       product_key: it.product_key as string,
       shade_key: normalizeShadeKey(it.shade_key as string | null),
-      source: "purchase" as const,
     }));
 
   const seen = new Set<string>();
@@ -105,54 +110,43 @@ export async function addOrderItemsToDefaultBag(
     return true;
   });
 
-  const { data: upserted, error: upsertErr } = await client
+  // Direct insert: repo SQL does not define add_item_to_bag. shade_key is '' not null.
+  // user_id matches the live items table. Skip keys already in the bag so a
+  // missing unique constraint cannot create a second row.
+  const { data: existingItems } = await client
     .from("makeup_bag_items")
-    .upsert(uniqueRows, {
-      onConflict: "bag_id,product_key,shade_key",
-      ignoreDuplicates: true,
-    })
-    .select("id, product_key, shade_key");
+    .select("id, product_key, shade_key")
+    .eq("bag_id", bagId);
+  const existingKeys = new Set(
+    (existingItems ?? []).map((item) => `${item.product_key}__${item.shade_key ?? ""}`),
+  );
 
-  if (upsertErr) {
-    // Expression unique index may not be visible to PostgREST ON CONFLICT.
-    // Fall back to per-row inserts.
-    const insertedIds: string[] = [];
-    const keys: string[] = [];
-    for (const row of uniqueRows) {
-      const { data, error } = await client
-        .from("makeup_bag_items")
-        .insert({
-          user_id: order.user_id,
-          bag_id: row.bag_id,
-          product_key: row.product_key,
-          shade_key: row.shade_key || null,
-        })
-        .select("id")
-        .maybeSingle();
-      
-      // Ignore unique violations since it just means it's already in the bag
-      if (error && error.code !== "23505") {
-        continue;
-      }
-      if (data?.id) {
-        insertedIds.push(data.id);
-        keys.push(`${row.product_key}__${row.shade_key}`);
-      }
+  const insertedIds: string[] = [];
+  const keys: string[] = [];
+  for (const row of uniqueRows) {
+    const key = `${row.product_key}__${row.shade_key}`;
+    if (existingKeys.has(key)) {
+      keys.push(key);
+      continue;
     }
-    return {
-      added: insertedIds.length,
-      skipped: false,
-      itemIds: insertedIds,
-      keys,
-    };
+    const { data, error } = await client
+      .from("makeup_bag_items")
+      .insert(row)
+      .select("id")
+      .maybeSingle();
+
+    if (error && error.code !== "23505") {
+      console.error("makeup bag purchase insert failed:", error.message);
+      continue;
+    }
+    keys.push(key);
+    if (data?.id) insertedIds.push(data.id);
   }
 
-  const itemIds = (upserted ?? []).map((r) => r.id as string);
-  const keys = uniqueRows.map((r) => `${r.product_key}__${r.shade_key}`);
   return {
-    added: itemIds.length || uniqueRows.length,
+    added: insertedIds.length,
     skipped: false,
-    itemIds,
+    itemIds: insertedIds,
     keys,
   };
 }
@@ -168,16 +162,16 @@ export async function removePurchaseItemsFromBag(
     .from("makeup_bags")
     .select("id")
     .eq("user_id", userId)
-    .eq("is_default", true)
+    .eq("name", DEFAULT_BAG_NAME)
     .maybeSingle();
 
   if (!bag?.id) return 0;
 
+  // Live items have no source column, so undo matches product and shade keys.
   const { data: items } = await client
     .from("makeup_bag_items")
     .select("id, product_key, shade_key")
-    .eq("bag_id", bag.id)
-    .eq("source", "purchase");
+    .eq("bag_id", bag.id);
 
   const wanted = new Set(keys);
   const ids = (items ?? [])

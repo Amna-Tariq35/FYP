@@ -58,7 +58,6 @@ export default function Navbar() {
       { href: "/", label: "Home" },
       { href: "/products", label: "Products" },
       { href: "/skin-analysis", label: "Skin Analysis" },
-      { href: "/try-on", label: "Try-On Lite" },
     ],
     []
   );
@@ -206,6 +205,13 @@ export default function Navbar() {
               <div className="absolute right-0 mt-2 w-56 overflow-hidden rounded-2xl border border-black/10 bg-white/70 shadow-xl backdrop-blur">
                 <div className="px-4 py-3 text-xs text-black/55">Account</div>
                 <div className="h-px bg-black/10" />
+                <Link
+                  href="/account"
+                  onClick={() => setIsMenuOpen(false)}
+                  className="flex items-center gap-2 px-4 py-3 text-sm text-black/75 hover:bg-black/5 hover:text-black transition-colors"
+                >
+                  Your account
+                </Link>
                 <Link
                   href="/makeup-bag"
                   onClick={() => setIsMenuOpen(false)}

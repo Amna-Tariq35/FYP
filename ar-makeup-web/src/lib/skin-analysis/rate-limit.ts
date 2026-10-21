@@ -1,0 +1,21 @@
+const buckets = new Map<string, { count: number; resetAt: number }>();
+
+/** Best-effort limiter. Each server instance has its own memory. */
+export function rateLimit(key: string, limit = 8, windowMs = 60_000) {
+  const now = Date.now();
+  const current = buckets.get(key);
+  if (!current || current.resetAt < now) {
+    buckets.set(key, { count: 1, resetAt: now + windowMs });
+    return { ok: true, remaining: limit - 1 };
+  }
+  if (current.count >= limit) {
+    return { ok: false, remaining: 0 };
+  }
+  current.count += 1;
+  return { ok: true, remaining: limit - current.count };
+}
+
+export function clientKey(req: Request) {
+  const forwarded = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  return forwarded || req.headers.get("x-real-ip") || "local";
+}

@@ -34,6 +34,8 @@ export interface Product {
   image_url: string;
   category: string;
   brand: string;
+  is_active?: boolean | null;
+  stock_quantity?: number | null;
 }
 
 export interface LookItemWithProduct extends SavedLookItem {

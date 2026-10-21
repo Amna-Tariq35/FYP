@@ -69,6 +69,7 @@ export default function AddToCartPanel({ product, shades }: Props) {
       brand: product.brand,
       price: product.price,
       image_url: product.image_url,
+      stock_quantity: product.stock_quantity,
     });
     setAdded(true);
     setTimeout(() => setAdded(false), 1800);
@@ -145,6 +146,7 @@ export default function AddToCartPanel({ product, shades }: Props) {
         <p className="text-[11px] font-semibold uppercase tracking-widest text-[var(--text-muted)] mb-3">
           Quantity
         </p>
+        <div className="flex flex-wrap items-center gap-3">
         <div className="inline-flex items-center gap-2 rounded-xl border border-[var(--border-soft)] bg-white px-2 py-1.5">
           <button
             type="button"
@@ -170,6 +172,15 @@ export default function AddToCartPanel({ product, shades }: Props) {
           >
             +
           </button>
+        </div>
+        {inStock && product.stock_quantity <= 5 ? (
+          <span className="text-xs font-medium text-amber-800">
+            {product.stock_quantity} available
+          </span>
+        ) : null}
+        {!inStock ? (
+          <span className="text-sm font-semibold text-red-700">Out of stock</span>
+        ) : null}
         </div>
       </div>
 

@@ -7,6 +7,7 @@ function CheckoutCancelContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const orderId = searchParams.get("order_id");
+  const guestToken = searchParams.get("guest_token");
 
   const [statusMsg, setStatusMsg] = useState("Cancelling your order...");
 
@@ -16,7 +17,10 @@ function CheckoutCancelContent() {
       fetch("/api/orders/cancel", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ order_id: orderId }),
+        body: JSON.stringify({
+          order_id: orderId,
+          guest_token: guestToken,
+        }),
       })
         .then((res) => res.json())
         .then((data) => {
@@ -30,7 +34,7 @@ function CheckoutCancelContent() {
     } else {
       setStatusMsg("Payment was cancelled.");
     }
-  }, [orderId]);
+  }, [orderId, guestToken]);
 
   return (
     <div className="min-h-screen flex items-center justify-center" style={{ background: "var(--bg-base, #FAF7F5)" }}>

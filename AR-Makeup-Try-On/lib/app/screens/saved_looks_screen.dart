@@ -264,6 +264,7 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
   Future<void> _applySavedLook(String lookId) async {
     showDialog(
       context: context,
+      useRootNavigator: false,
       barrierDismissible: false,
       builder: (_) => Center(
         child: Container(
@@ -289,12 +290,14 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
           .select()
           .eq('look_id', lookId);
       if (mounted) {
-        Navigator.pop(context); // dismiss loader
-        Navigator.pop(context, items); // return to TryOnScreen
+        final nav = Navigator.of(context);
+        if (nav.canPop()) nav.pop(); // dismiss loader
+        if (nav.canPop()) nav.pop(items); // return to TryOnScreen
       }
     } catch (e) {
       if (mounted) {
-        Navigator.pop(context);
+        final nav = Navigator.of(context);
+        if (nav.canPop()) nav.pop();
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Failed to load look details.')),
         );
@@ -527,6 +530,7 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
 
   @override
   Widget build(BuildContext context) {
+    AppColors.watch(context);
     final topPad = MediaQuery.of(context).padding.top;
     final isLoading = !_cache.isLoaded;
 

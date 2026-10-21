@@ -176,6 +176,10 @@ class FoundationMatchResult {
     required this.savedToProfile,
     required this.persistenceNotes,
     required this.catalogNotes,
+    this.referenceHex,
+    this.expectedError,
+    this.calibration = 'Approximate',
+    this.shadeRange = const [],
   });
 
   /// True when the photo could not be measured and the user must try again.
@@ -207,6 +211,18 @@ class FoundationMatchResult {
 
   /// What the catalog can and cannot discriminate — honest about its limits.
   final List<String> catalogNotes;
+
+  /// Catalog colour the shades were ranked against. Null on an older server.
+  final String? referenceHex;
+
+  /// Region spread, in ΔE. Not a clinical accuracy figure.
+  final double? expectedError;
+
+  /// "Calibrated" when a white sheet was used, otherwise "Approximate".
+  final String calibration;
+
+  /// Nearby shades. Shown in place of a single winner when confidence is low.
+  final List<FoundationMatch> shadeRange;
 
   FoundationMatch? get best => matches.isEmpty ? null : matches.first;
 
@@ -243,16 +259,27 @@ class FoundationMatchResult {
           (j['notes'] as List?)?.map((e) => e.toString()).toList() ??
               (diagnostics['notes'] as List?)?.map((e) => e.toString()).toList() ??
               const [],
+      referenceHex: j['referenceHex']?.toString(),
+      expectedError: _asDouble(j['expectedError']),
+      calibration: j['calibration']?.toString() ?? 'Approximate',
+      shadeRange: (j['shadeRange'] as List?)
+              ?.whereType<Map<String, dynamic>>()
+              .map(FoundationMatch.fromJson)
+              .toList() ??
+          const [],
     );
   }
 }
 
 /// A failure the user can act on, as opposed to a bug.
 class FoundationMatchException implements Exception {
-  const FoundationMatchException(this.message, {this.hint});
+  const FoundationMatchException(this.message, {this.hint, this.needsSignIn = false});
 
   final String message;
   final String? hint;
+
+  /// The API refused the call because there is no usable session.
+  final bool needsSignIn;
 
   @override
   String toString() => message;
@@ -274,11 +301,15 @@ class FoundationMatchService {
   /// enough that a dead tunnel does not look like a hang.
   static const Duration _timeout = Duration(seconds: 25);
 
+  /// Last request body, debug builds only. No photo — patches and illuminant.
+  static String? debugRequestJson;
+
   static Map<String, String> _headers() {
     final session = _supabase.auth.currentSession;
     if (session == null) {
       throw const FoundationMatchException(
         'Please sign in to save your shade match.',
+        needsSignIn: true,
       );
     }
     return {
@@ -301,14 +332,56 @@ class FoundationMatchService {
     String imagePath, {
     String? finishPreference,
     int limit = 5,
+    bool seekWhiteReference = false,
   }) async {
     final SkinSampleResult sampled;
     try {
-      sampled = await SkinSampler.sample(imagePath);
+      sampled = await SkinSampler.sample(
+        imagePath,
+        seekWhiteReference: seekWhiteReference,
+      );
     } on SkinSampleException catch (e) {
       throw FoundationMatchException(e.message, hint: e.hint);
     }
+    return matchSample(
+      sampled,
+      finishPreference: finishPreference,
+      limit: limit,
+    );
+  }
 
+  /// Median of several captured frames, then the same request as [matchFromPhoto].
+  static Future<FoundationMatchResult> matchFromFrames(
+    List<String> imagePaths, {
+    String? finishPreference,
+    int limit = 5,
+    bool seekWhiteReference = false,
+    Map<String, int>? whiteReference,
+  }) async {
+    final SkinSampleResult sampled;
+    try {
+      sampled = await SkinSampler.sampleFrames(
+        imagePaths,
+        seekWhiteReference: seekWhiteReference,
+      );
+    } on SkinSampleException catch (e) {
+      throw FoundationMatchException(e.message, hint: e.hint);
+    }
+    return matchSample(
+      sampled,
+      finishPreference: finishPreference,
+      limit: limit,
+      whiteReference: whiteReference,
+    );
+  }
+
+  /// Posts an already-sampled reading. [whiteReference] overrides a detected sheet.
+  static Future<FoundationMatchResult> matchSample(
+    SkinSampleResult sampled, {
+    String? finishPreference,
+    int limit = 5,
+    Map<String, int>? whiteReference,
+  }) async {
     if (sampled.patches.length < 3) {
       throw const FoundationMatchException(
         'Not enough of your skin could be measured in that photo.',
@@ -316,12 +389,17 @@ class FoundationMatchService {
       );
     }
 
+    final paper = whiteReference ?? sampled.whiteReference;
     final body = <String, dynamic>{
       'patches': sampled.patches.map((p) => p.toJson()).toList(),
-      if (sampled.illuminant != null) 'illuminant': sampled.illuminant,
-      if (finishPreference != null) 'finishPreference': finishPreference,
+      'illuminant': ?sampled.illuminant,
+      'whiteReference': ?paper,
+      'finishPreference': ?finishPreference,
       'limit': limit,
     };
+    if (kDebugMode) {
+      debugRequestJson = const JsonEncoder.withIndent('  ').convert(body);
+    }
 
     final result = await _post(body);
     await _cache(result);
@@ -341,7 +419,7 @@ class FoundationMatchService {
   }) async {
     final result = await _post({
       'skinHex': skinHex,
-      if (finishPreference != null) 'finishPreference': finishPreference,
+      'finishPreference': ?finishPreference,
       'limit': limit,
       // Do not overwrite a photo-derived reading with a re-run of itself.
       'save': false,
@@ -367,8 +445,8 @@ class FoundationMatchService {
 
     if (response.statusCode == 401) {
       throw const FoundationMatchException(
-        'Your session has expired.',
-        hint: 'Sign in again to match your shade.',
+        'Please sign in to save your shade match.',
+        needsSignIn: true,
       );
     }
 
@@ -425,8 +503,20 @@ class FoundationMatchService {
   static const String _prefsShadeKey = 'foundation_match_shade_key';
   static const String _prefsDeltaE = 'foundation_match_delta_e';
   static const String _prefsAt = 'foundation_match_at';
+  static const String _prefsReference = 'foundation_match_reference_hex';
+
+  /// A rejected photo must not replace a saved mapped colour with raw skin.
+  static bool _canSaveTryOn(FoundationMatchResult result) {
+    if (result.needsRetake || result.skin == null) return false;
+    final spread = result.expectedError;
+    if (spread != null && spread > 5) return false;
+    final reference = result.referenceHex;
+    final hasReference = reference != null && reference.isNotEmpty;
+    return hasReference || result.best != null;
+  }
 
   static Future<void> _cache(FoundationMatchResult result) async {
+    if (!_canSaveTryOn(result)) return;
     final skin = result.skin;
     if (skin == null) return;
     try {
@@ -437,7 +527,12 @@ class FoundationMatchService {
       await prefs.setInt(_prefsMonk, skin.monkScale);
       await prefs.setString(_prefsAt, DateTime.now().toIso8601String());
 
+      final reference = result.referenceHex;
       final best = result.best;
+      final tryOnHex = (reference != null && reference.isNotEmpty) ? reference : best?.shadeHex;
+      if (tryOnHex != null && tryOnHex.isNotEmpty) {
+        await prefs.setString(_prefsReference, tryOnHex);
+      }
       if (best != null) {
         await prefs.setString(_prefsShadeName, '${best.productName} · ${best.shadeName}');
         await prefs.setString(_prefsShadeHex, best.shadeHex);
@@ -461,6 +556,61 @@ class FoundationMatchService {
     } catch (_) {
       return null;
     }
+  }
+
+  /// Hex the try-on sheet should sort by: the mapped catalog colour when the
+  /// server sent one, otherwise the measured skin hex from an older server.
+  static Future<String?> cachedTryOnHex() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final reference = prefs.getString(_prefsReference);
+      if (reference != null && reference.isNotEmpty) return reference;
+      return prefs.getString(_prefsHex);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Stores a too-light / right / too-dark vote. Returns the server's note.
+  /// A missing table comes back as a sentence, not an exception.
+  static Future<String> submitFeedback(String vote) async {
+    http.Response response;
+    try {
+      response = await http
+          .post(
+            Uri.parse(_endpoint),
+            headers: _headers(),
+            body: jsonEncode({'action': 'feedback', 'vote': vote}),
+          )
+          .timeout(_timeout);
+    } on FoundationMatchException {
+      rethrow;
+    } catch (e) {
+      debugPrint('[FoundationMatchService] feedback network error: $e');
+      throw const FoundationMatchException(
+        "Couldn't save that vote.",
+        hint: 'Check your connection and try again.',
+      );
+    }
+    if (response.statusCode == 401) {
+      throw const FoundationMatchException(
+        'Please sign in to save your shade match.',
+        needsSignIn: true,
+      );
+    }
+    try {
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map && decoded['note'] is String) {
+        return decoded['note'] as String;
+      }
+    } catch (_) {}
+    if (response.statusCode == 200) {
+      return 'Thanks — that vote is saved for a later review.';
+    }
+    throw const FoundationMatchException(
+      "Couldn't save that vote.",
+      hint: 'Please try again in a moment.',
+    );
   }
 
   /// A one-line summary of the last match, for a profile tile.
@@ -503,6 +653,7 @@ class FoundationMatchService {
         _prefsShadeKey,
         _prefsDeltaE,
         _prefsAt,
+        _prefsReference,
       ]) {
         await prefs.remove(key);
       }

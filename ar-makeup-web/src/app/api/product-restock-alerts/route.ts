@@ -6,6 +6,73 @@ function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
+export async function GET() {
+  const serverClient = await createSupabaseServerClient();
+  const { data: auth } = await serverClient.auth.getUser();
+  const userId = auth.user?.id;
+  if (!userId) {
+    return NextResponse.json({ error: "Sign in to see your restock alerts." }, { status: 401 });
+  }
+
+  const admin = createSupabaseAdminClient();
+  const withDate = await admin
+    .from("product_restock_alerts")
+    .select("id, product_key, shade_key, created_at")
+    .eq("user_id", userId)
+    .is("notified_at", null)
+    .order("created_at", { ascending: false });
+
+  const fallback = withDate.error
+    ? await admin
+        .from("product_restock_alerts")
+        .select("id, product_key, shade_key")
+        .eq("user_id", userId)
+        .is("notified_at", null)
+    : null;
+  if ((fallback ?? withDate).error) {
+    return NextResponse.json({ error: "Could not load restock alerts." }, { status: 500 });
+  }
+
+  const rows = ((fallback ? fallback.data : withDate.data) ?? []) as Array<{
+    id: string;
+    product_key: string;
+    shade_key: string | null;
+    created_at?: string | null;
+  }>;
+  const productKeys = [...new Set(rows.map((row) => row.product_key).filter(Boolean))];
+  const shadeKeys = [...new Set(rows.map((row) => row.shade_key).filter(Boolean))];
+  const names = new Map<string, string>();
+  const shadeNames = new Map<string, string>();
+
+  if (productKeys.length) {
+    const { data: products } = await admin
+      .from("makeup_products")
+      .select("product_key, name")
+      .in("product_key", productKeys);
+    for (const product of products ?? []) names.set(product.product_key, product.name);
+  }
+  if (shadeKeys.length && productKeys.length) {
+    const { data: shades } = await admin
+      .from("product_shades")
+      .select("product_key, shade_key, shade_name")
+      .in("product_key", productKeys)
+      .in("shade_key", shadeKeys);
+    for (const shade of shades ?? []) {
+      if (shade.shade_name) shadeNames.set(`${shade.product_key}__${shade.shade_key}`, shade.shade_name);
+    }
+  }
+
+  return NextResponse.json({
+    alerts: rows.map((row) => ({
+      id: row.id,
+      product_key: row.product_key,
+      product_name: names.get(row.product_key) || row.product_key,
+      shade_name: row.shade_key ? shadeNames.get(`${row.product_key}__${row.shade_key}`) ?? null : null,
+      created_at: "created_at" in row ? row.created_at ?? null : null,
+    })),
+  });
+}
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();

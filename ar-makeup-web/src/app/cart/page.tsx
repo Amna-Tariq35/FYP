@@ -9,7 +9,10 @@ import {
   loadCart,
   removeFromCart,
   updateQuantity,
-  getCartSubtotal,
+  getSelectedSubtotal,
+  selectedCartItems,
+  setAllSelected,
+  setLineSelected,
 } from "@/src/store/cart";
 import { getProductImageUrl } from "@/src/lib/catalog/image";
 
@@ -30,7 +33,8 @@ export default function CartPage() {
     return () => window.removeEventListener("cart_updated", handler);
   }, []);
 
-  const subtotal = useMemo(() => getCartSubtotal({ items }), [items]);
+  const selected = useMemo(() => selectedCartItems({ items }), [items]);
+  const subtotal = useMemo(() => getSelectedSubtotal({ items }), [items]);
 
   if (items.length === 0) {
     return (
@@ -64,6 +68,32 @@ export default function CartPage() {
           Review your items before checkout.
         </p>
 
+        <div className="mt-6 flex flex-wrap items-center gap-3 text-sm">
+          <button
+            type="button"
+            className="rounded-lg border border-[var(--border-soft)] px-3 py-1.5 font-medium text-[var(--text-main)] hover:bg-black/5"
+            onClick={() => {
+              setAllSelected(true);
+              refresh();
+            }}
+          >
+            Select all
+          </button>
+          <button
+            type="button"
+            className="rounded-lg border border-[var(--border-soft)] px-3 py-1.5 font-medium text-[var(--text-main)] hover:bg-black/5"
+            onClick={() => {
+              setAllSelected(false);
+              refresh();
+            }}
+          >
+            Clear selection
+          </button>
+          <span className="text-[var(--text-muted)]">
+            {selected.length} of {items.length} selected for checkout
+          </span>
+        </div>
+
         <div className="mt-8 grid gap-6 lg:grid-cols-3">
           {/* Items list */}
           <div className="lg:col-span-2 space-y-4">
@@ -87,6 +117,22 @@ export default function CartPage() {
                   className="rounded-2xl border border-[var(--border-soft)] bg-[var(--bg-section)] p-4"
                 >
                   <div className="flex gap-4">
+                    <label className="flex items-start pt-1">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-[#C06C84]"
+                        checked={item.selected === true}
+                        onChange={(event) => {
+                          setLineSelected(
+                            item.product_key,
+                            item.shade_key ?? null,
+                            event.target.checked,
+                          );
+                          refresh();
+                        }}
+                        aria-label={`Select ${item.name ?? "product"} for checkout`}
+                      />
+                    </label>
                     {/* image */}
                     <div className="relative h-24 w-24 overflow-hidden rounded-xl bg-[var(--bg-base)]">
                       <Image
@@ -162,7 +208,11 @@ export default function CartPage() {
                               );
                               refresh();
                             }}
-                            className="h-9 w-9 rounded-full border border-[var(--rose-soft)] text-[var(--text-main)] transition hover:border-[var(--rose-primary)] hover:bg-[var(--rose-primary)]/10 flex items-center justify-center"
+                            disabled={
+                              typeof item.stock_quantity === "number" &&
+                              (item.quantity || 1) >= item.stock_quantity
+                            }
+                            className="h-9 w-9 rounded-full border border-[var(--rose-soft)] text-[var(--text-main)] transition hover:border-[var(--rose-primary)] hover:bg-[var(--rose-primary)]/10 flex items-center justify-center disabled:cursor-not-allowed disabled:opacity-40"
                             aria-label="Increase quantity"
                           >
                             +
@@ -199,6 +249,10 @@ export default function CartPage() {
               Order Summary
             </h2>
 
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              Only checked items are included.
+            </p>
+
             <div className="mt-4 flex items-center justify-between text-sm">
               <span className="text-[var(--text-muted)]">Subtotal</span>
               <span className="font-medium text-[var(--text-main)]">
@@ -218,9 +272,23 @@ export default function CartPage() {
               </span>
             </div>
 
+            {selected.length === 0 ? (
+              <p className="mt-4 text-sm text-[var(--text-muted)]">
+                Select at least one item to checkout.
+              </p>
+            ) : null}
             <Link
               href="/checkout/shipping"
-              className="mt-6 flex w-full items-center justify-center rounded-xl bg-[var(--rose-primary)] py-3 font-medium text-white hover:opacity-95 transition"
+              aria-disabled={selected.length === 0}
+              onClick={(event) => {
+                if (selected.length === 0) event.preventDefault();
+              }}
+              className={[
+                "mt-6 flex w-full items-center justify-center rounded-xl py-3 font-medium text-white transition",
+                selected.length === 0
+                  ? "cursor-not-allowed bg-[var(--rose-primary)]/40"
+                  : "bg-[var(--rose-primary)] hover:opacity-95",
+              ].join(" ")}
             >
               Proceed to checkout
             </Link>

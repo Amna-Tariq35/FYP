@@ -9,7 +9,13 @@ import { useMakeupBag } from "@/src/hooks/useMakeupBag";
 import { useSession } from "@/src/hooks/useSession";
 import { addToCart } from "@/src/store/cart";
 import type { MakeupProduct, ProductShade } from "@/src/types/catalog";
-import { bagItemKey } from "@/src/lib/makeup-bag/keys";
+import { bagItemKey, type MakeupBagSource } from "@/src/lib/makeup-bag/keys";
+
+function bagSourceLabel(source?: MakeupBagSource) {
+  if (source === "purchase") return "Added after purchase";
+  if (source === "try_on") return "Added from try-on";
+  return "Added by you";
+}
 
 const UNKNOWN_SHADE_NAME = "Shade unavailable";
 
@@ -38,12 +44,6 @@ type OwnedProductFields =
   | "is_active";
 
 type OwnedProductItem = Pick<MakeupProduct, OwnedProductFields>;
-
-function sourceLabel(source?: string) {
-  if (source === "purchase") return "From purchase";
-  if (source === "try_on") return "From try-on";
-  return "Added by you";
-}
 
 function MakeupBagContent() {
   const router = useRouter();
@@ -395,7 +395,7 @@ function MakeupBagContent() {
                     {product?.name ?? item.product_key}
                   </div>
                   <div className="text-xs text-[#C06C84]">
-                    {shadeName ? shadeName : "All shades"} · {sourceLabel(item.source)}
+                    {shadeName ? shadeName : "All shades"} · {bagSourceLabel(item.source)}
                   </div>
                 </div>
                 <button

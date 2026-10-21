@@ -12,6 +12,7 @@ import './beauty_profile_questionnaire_screen.dart';
 import './foundation_match_screen.dart';
 import './saved_looks_screen.dart';
 import 'try_on_screen.dart';
+import './notifications_inbox_screen.dart';
 import './settings_screen.dart';
 import './privacy_security_screen.dart';
 import './edit_profile_screen.dart';
@@ -29,8 +30,8 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen> {
   bool _cameraPermission = false;
-  bool _notifications = true;
   bool _isLoading = true;
+  bool _profileFetchFailed = false;
 
   String _userName = 'User';
   String _userEmail = '';
@@ -40,6 +41,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   // Beauty Profile
   UserBeautyProfile? _beautyProfile;
   bool _beautyProfileLoading = false;
+  bool _beautyProfileLoadFailed = false;
 
   /// Last foundation shade match, read from local storage. Shown on the tile so
   /// the user can see their result without a round trip or a second photo.
@@ -62,17 +64,23 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _loadBeautyProfile() async {
     if (!mounted) return;
-    setState(() => _beautyProfileLoading = true);
+    setState(() {
+      _beautyProfileLoading = true;
+      _beautyProfileLoadFailed = false;
+    });
     try {
       final profile = await BeautyProfileService.fetchProfile();
       if (mounted) {
         setState(() {
           _beautyProfile = profile;
+          _beautyProfileLoadFailed = false;
           BeautyProfileService.setCachedProfile(profile);
         });
       }
-    } catch (e) {
-      print('[ProfileScreen] Error loading beauty profile: $e');
+    } catch (_) {
+      if (mounted && _beautyProfile == null) {
+        setState(() => _beautyProfileLoadFailed = true);
+      }
     } finally {
       if (mounted) setState(() => _beautyProfileLoading = false);
     }
@@ -120,6 +128,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
         if (mounted) {
           setState(() {
+            _profileFetchFailed = false;
             _userEmail = email.isNotEmpty ? email : 'No email';
             _userName = resolvedName;
             _avatarUrl = resolvedAvatar;
@@ -127,8 +136,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
           });
         }
       }
-    } catch (e) {
-      debugPrint('ProfileScreen: error fetching user data: $e');
+    } catch (_) {
+      if (mounted) setState(() => _profileFetchFailed = true);
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -193,6 +202,48 @@ class _ProfileScreenState extends State<ProfileScreen> {
         path,
       );
 
+  /// Confirms before the website skin check. The try-on camera is a different
+  /// flow and is not part of this handoff.
+  Future<void> _openSkinAnalysis() async {
+    final continueToSite = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        content: Text(
+          'This opens the website skin check. That photo is sent to build a routine and is not a diagnosis. The try-on camera photo stays on this phone and is not uploaded.',
+          style: TextStyle(
+            color: AppColors.textMain,
+            fontSize: 14,
+            height: 1.5,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(
+              'Cancel',
+              style: TextStyle(color: AppColors.textMuted),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(
+              'Continue',
+              style: TextStyle(
+                color: AppColors.primary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (continueToSite == true && mounted) {
+      await _openOnWeb(AppConfig.skinAnalysisPath);
+    }
+  }
+
   Future<void> _handleLogout() async {
     try {
       showDialog(
@@ -240,8 +291,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   // ── Build ──────────────────────────────────────────────────────────────────
 
+  void _openNotifications() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const NotificationsInboxScreen()),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    AppColors.watch(context);
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
@@ -409,10 +468,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
         ),
         const SizedBox(height: 4),
-        Text(
-          _userEmail,
-          style: TextStyle(color: AppColors.textMuted, fontSize: 14),
-        ),
+        if (_profileFetchFailed) ...[
+          Text(
+            'Could not load your profile.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: AppColors.textMuted, fontSize: 14),
+          ),
+          TextButton(
+            onPressed: _fetchUserData,
+            child: Text(
+              'Retry',
+              style: TextStyle(
+                color: AppColors.primary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ] else
+          Text(
+            _userEmail,
+            style: TextStyle(color: AppColors.textMuted, fontSize: 14),
+          ),
         const SizedBox(height: 20),
         OutlinedButton(
           onPressed: _navigateToEditProfile,
@@ -723,17 +799,67 @@ Widget _buildMakeupBagShortcut() {
     _loadBeautyProfile();
 
     if (request != null) {
-      Navigator.pop(
-        context,
-        'tryOn:${request.productKey}:${request.shadeKey}',
-      );
+      final nav = Navigator.of(context);
+      if (nav.canPop()) {
+        nav.pop('tryOn:${request.productKey}:${request.shadeKey}');
+      }
     }
   }
 
   static String _capitalise(String s) =>
       s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
 
-  Widget _buildBeautyProfileCard() {    final isEmpty = _beautyProfile == null || _beautyProfile!.isEmpty;
+  Widget _buildBeautyProfileCard() {
+    if (_beautyProfileLoadFailed &&
+        (_beautyProfile == null || _beautyProfile!.isEmpty)) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.palette_outlined, color: AppColors.primary),
+                const SizedBox(width: 12),
+                Text(
+                  'Beauty Profile',
+                  style: TextStyle(
+                    color: AppColors.textMain,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Could not load your beauty profile.',
+              style: TextStyle(color: AppColors.textMuted, fontSize: 13),
+            ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton(
+                onPressed: _beautyProfileLoading ? null : _loadBeautyProfile,
+                child: Text(
+                  'Retry',
+                  style: TextStyle(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final isEmpty = _beautyProfile == null || _beautyProfile!.isEmpty;
 
     return GestureDetector(
       onTap: isEmpty ? _openBeautyProfileQuestionnaire : null,
@@ -771,7 +897,7 @@ Widget _buildMakeupBagShortcut() {
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    'Complete your beauty profile to get personalized product recommendations.',
+                    'This profile saves your skin type and foundation depth.',
                     style: TextStyle(
                       color: AppColors.textMuted,
                       fontSize: 13,
@@ -983,7 +1109,7 @@ Widget _buildFavouritesShortcut() {
 
         // Skin Analysis card
         GestureDetector(
-          onTap: () => _openOnWeb(AppConfig.skinAnalysisPath),
+          onTap: _openSkinAnalysis,
           child: Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -1095,7 +1221,7 @@ Widget _buildFavouritesShortcut() {
                         ),
                       ),
                       Text(
-                        'Shop products & browse saved looks',
+                        'Shop makeup on the website',
                         style: TextStyle(
                           color: AppColors.textMuted,
                           fontSize: 10,
@@ -1154,12 +1280,19 @@ Widget _buildFavouritesShortcut() {
               ),
               Divider(height: 1, color: AppColors.border),
               _buildSettingTile(
+                icon: Icons.receipt_long_outlined,
+                title: 'My orders',
+                subtitle: 'View your shop orders',
+                hasToggle: false,
+                onTap: () => _openOnWeb(AppConfig.myOrdersPath),
+              ),
+              Divider(height: 1, color: AppColors.border),
+              _buildSettingTile(
                 icon: Icons.notifications_outlined,
                 title: 'Notifications',
-                subtitle: 'Updates and saved look alerts',
-                hasToggle: true,
-                toggleValue: _notifications,
-                onToggle: (val) => setState(() => _notifications = val),
+                subtitle: 'Orders and back-in-stock',
+                hasToggle: false,
+                onTap: _openNotifications,
               ),
               Divider(height: 1, color: AppColors.border),
               _buildSettingTile(

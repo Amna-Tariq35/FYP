@@ -1,6 +1,17 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { verifyAdmin } from '@/src/lib/adminAuth';
+import { releaseAndCancelPlacedOrder } from '@/src/lib/orders/cancel-placed';
+
+const ADMIN_ORDER_STATUSES = [
+  'placed',
+  'paid',
+  'processing',
+  'shipped',
+  'delivered',
+  'cancelled',
+  'failed',
+] as const;
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -20,6 +31,18 @@ export async function POST(request: Request) {
 
     if (!order_id || !status) {
       return NextResponse.json({ error: "Missing parameters" }, { status: 400 });
+    }
+
+    if (!ADMIN_ORDER_STATUSES.includes(status)) {
+      return NextResponse.json({ error: "That status is not available." }, { status: 400 });
+    }
+
+    if (status === 'cancelled') {
+      const cancelled = await releaseAndCancelPlacedOrder(String(order_id));
+      if (!cancelled.ok) {
+        return NextResponse.json({ error: cancelled.error }, { status: cancelled.status });
+      }
+      return NextResponse.json({ success: true, status: 'cancelled' });
     }
 
     const { error } = await supabaseAdmin

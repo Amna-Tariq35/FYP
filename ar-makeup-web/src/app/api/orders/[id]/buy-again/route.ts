@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/src/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/src/lib/supabase/admin";
 
+export const dynamic = "force-dynamic";
+
 const BUYABLE_STATUSES = ["paid", "processing", "shipped", "delivered"];
 
 type OrderItem = {

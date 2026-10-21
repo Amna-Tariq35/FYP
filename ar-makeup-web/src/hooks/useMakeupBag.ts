@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "@/src/lib/supabase/client";
 import { useSession } from "@/src/hooks/useSession";
-import { bagItemKey, normalizeShadeKey } from "@/src/lib/makeup-bag/keys";
+import { bagItemKey, DEFAULT_BAG_NAME, normalizeShadeKey } from "@/src/lib/makeup-bag/keys";
 import type { MakeupBagSource } from "@/src/lib/makeup-bag/keys";
 
 const BAG_KEY = "fyp_makeup_bag";
@@ -18,8 +18,8 @@ export type MakeupBagItem = {
 
 let pendingEnsureBag: Promise<string | null> | null = null;
 
-// The "default" bag is identified by name, not a column — matching the DB schema.
-const DEFAULT_BAG_NAME = "My Everyday Bag";
+// Live bags are named "My Everyday Bag". Items include user_id and shade_key ''
+// (never null). add_item_to_bag is not defined in repo SQL, so this inserts rows.
 
 async function ensureDefaultBag(userId: string): Promise<string | null> {
   if (pendingEnsureBag) return pendingEnsureBag;
@@ -79,6 +79,11 @@ function writeLocalKeys(keys: string[]) {
   } catch {}
 }
 
+function readSource(value: unknown): MakeupBagSource | undefined {
+  if (value === "manual" || value === "purchase" || value === "try_on") return value;
+  return undefined;
+}
+
 export function useMakeupBag() {
   const [items, setItems] = useState<MakeupBagItem[]>([]);
   const [keys, setKeys] = useState<string[]>([]);
@@ -124,18 +129,32 @@ export function useMakeupBag() {
         return;
       }
 
-      const { data } = await supabase
+      const withSource = await supabase
         .from("makeup_bag_items")
         .select("id, product_key, shade_key, source, added_at")
         .eq("bag_id", id)
         .order("added_at", { ascending: false });
 
+      const loaded = withSource.error
+        ? await supabase
+            .from("makeup_bag_items")
+            .select("id, product_key, shade_key, added_at")
+            .eq("bag_id", id)
+            .order("added_at", { ascending: false })
+        : withSource;
+
       applyItems(
-        (data ?? []).map((row) => ({
+        ((loaded.data ?? []) as Array<{
+          id: string;
+          product_key: string;
+          shade_key: string | null;
+          source?: string | null;
+          added_at?: string;
+        }>).map((row) => ({
           id: row.id,
           product_key: row.product_key,
           shade_key: row.shade_key ?? "",
-          source: (row.source as MakeupBagSource) ?? "manual",
+          source: readSource(row.source),
           added_at: row.added_at,
         })),
       );
@@ -177,7 +196,7 @@ export function useMakeupBag() {
                 id: row.id,
                 product_key: row.product_key,
                 shade_key: row.shade_key ?? "",
-                source: (row.source as MakeupBagSource) ?? "manual",
+                source: readSource(row.source),
                 added_at: row.added_at,
               };
               if (exists) {
@@ -250,8 +269,7 @@ export function useMakeupBag() {
         user_id: user.id,
         bag_id: id,
         product_key: productKey,
-        shade_key: sk || null,
-        source,
+        shade_key: sk,
       });
 
       // 23505 is the PostgreSQL error code for unique_violation
@@ -296,12 +314,16 @@ export function useMakeupBag() {
       const id = bagId ?? (await ensureDefaultBag(user.id));
       if (!id) return;
 
-      await supabase
+      const removal = supabase
         .from("makeup_bag_items")
         .delete()
         .eq("bag_id", id)
-        .eq("product_key", productKey)
-        .eq("shade_key", sk);
+        .eq("product_key", productKey);
+      if (sk) {
+        await removal.eq("shade_key", sk);
+      } else {
+        await removal.or("shade_key.eq.,shade_key.is.null");
+      }
     },
     [bagId],
   );

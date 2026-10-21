@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/src/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/src/lib/supabase/admin";
 
+export const dynamic = "force-dynamic";
+
 const REPEAT_STATUSES = ["paid", "processing", "shipped", "delivered"];
 const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
 
@@ -56,14 +58,32 @@ export async function GET() {
   const candidates = [...groups.values()].filter((item) =>
     item.purchase_count >= 2 || Date.now() - new Date(item.last_ordered_at).getTime() >= THIRTY_DAYS,
   );
+  const shadeCheckKeys = [...new Set(
+    candidates
+      .filter((item) => !item.shade_key || item.shade_key === "no-shade")
+      .map((item) => item.product_key),
+  )];
+  const productsWithShades = new Set<string>();
+  if (shadeCheckKeys.length > 0) {
+    const { data: shadeRows } = await admin
+      .from("product_shades")
+      .select("product_key")
+      .in("product_key", shadeCheckKeys);
+    for (const row of shadeRows ?? []) {
+      if (typeof row.product_key === "string") productsWithShades.add(row.product_key);
+    }
+  }
+
   const repeats = await Promise.all(candidates.map(async (item) => {
     const { data: product } = await admin
       .from("makeup_products")
       .select("product_key,name,brand,image_url,price,is_active,stock_quantity")
       .eq("product_key", item.product_key)
       .maybeSingle();
+    const missingShade = !item.shade_key || item.shade_key === "no-shade";
     return {
       ...item,
+      has_shades: missingShade && productsWithShades.has(item.product_key),
       name: product?.name ?? item.product_key,
       brand: product?.brand ?? null,
       image_url: product?.image_url ?? null,

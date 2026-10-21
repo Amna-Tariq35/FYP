@@ -72,8 +72,9 @@ flutter {
 
 dependencies {
     implementation("com.google.mediapipe:tasks-vision:0.10.32")
-   
-
+    // Packages DeepAR classes and native libs. The plugin compiles against this
+    // AAR with compileOnly and must not implementation() it itself.
+    implementation(files("libs/deepar.aar"))
 }
 configurations.all {
     resolutionStrategy.eachDependency {

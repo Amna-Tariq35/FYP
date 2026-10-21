@@ -1,11 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import './utils/app_colors.dart';
 import './screens/welcome_screen.dart';
-import './screens/camera_permission_screen.dart';
-import './screens/try_on_screen.dart';
-import '../app/cache/looks_cache.dart'; // LooksCache ke liye import (apna sahi path check kar lein)
 
 
 
@@ -25,6 +21,8 @@ class _AppRootState extends State<AppRoot> {
     super.initState();
     _homeScreen = widget.initialScreen; // 🟢 turant set, no async needed
 
+    // Sign-out returns to welcome. A Google sign-in return is handled by
+    // AuthScreen's listener, not here.
     Supabase.instance.client.auth.onAuthStateChange.listen((data) {
       if (!mounted) return;
       if (data.event == AuthChangeEvent.signedOut) {
@@ -39,16 +37,37 @@ class _AppRootState extends State<AppRoot> {
   Widget build(BuildContext context) {
     return ValueListenableBuilder<ThemeMode>(
       valueListenable: AppColors.themeNotifier,
-      builder: (context, _, __) {
+      builder: (context, mode, _) {
         return MaterialApp(
           title: 'AR Makeup Try-On',
           debugShowCheckedModeBanner: false,
-          theme: ThemeData(/* same as before */),
-          home: _homeScreen, // 🟢 ?? _buildSplash() bhi hata do
+          themeMode: mode,
+          theme: _materialTheme(Brightness.light),
+          darkTheme: _materialTheme(Brightness.dark),
+          builder: (context, child) {
+            return AppThemeScope(
+              notifier: AppColors.themeNotifier,
+              child: child ?? const SizedBox.shrink(),
+            );
+          },
+          home: _homeScreen,
         );
       },
     );
   }
 
   // 🟢 _buildSplash() bhi hata sakte ho — ab use nahi hoga
+}
+
+/// Material widgets follow the same light/dark switch as [AppColors].
+/// Screens that paint with [AppColors] keep their own surfaces.
+ThemeData _materialTheme(Brightness brightness) {
+  return ThemeData(
+    useMaterial3: true,
+    brightness: brightness,
+    colorScheme: ColorScheme.fromSeed(
+      seedColor: AppColors.primary,
+      brightness: brightness,
+    ),
+  );
 }

@@ -57,8 +57,14 @@ import {
   analyseSkin,
   parseIlluminant,
   parsePatches,
+  parseWhiteReference,
+  skinChromaFloor,
+  skinLocusCheck,
+  constrainWhiteBalance,
+  whiteBalanceGains,
   skinReference,
 } from "../src/lib/foundation/analyze";
+import { mapSkinToSwatch, swatchMapIsMonotone } from "../src/lib/foundation/swatch-map";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 dotenv.config({ path: path.resolve(process.cwd(), ".env.local") });
@@ -419,7 +425,10 @@ function verifyConversions() {
     return { L: testL, a: c * Math.cos(h), b: c * Math.sin(h) };
   };
   const cases: [number, number, string][] = [
-    [-14, 1, "cool"],
+    // -18° at L* 60 lands near hue 37°, which is actually pink/cool.
+    // A smaller red shift that stays at hue ≥ 40° must not be called cool.
+    [-18, 1, "cool"],
+    [-8, 1, "neutral"],
     [0, 1, "neutral"],
     [14, 1, "warm"],
     [8, 0.7, "olive"],
@@ -433,10 +442,20 @@ function verifyConversions() {
     .filter((x) => x.got !== x.want);
   record(
     undertoneErrors.length === 0 ? "pass" : "fail",
-    "Hue rotated ±14° about the reference classifies cool / neutral / warm, muted-warm classifies olive",
+    "A pink shift classifies cool; a red–yellow reading stays neutral; yellow classifies warm; muted-warm classifies olive",
     undertoneErrors.length === 0
       ? ""
       : undertoneErrors.map((x) => `${x.off}° wanted ${x.want} got ${x.got}`).join(", ")
+  );
+
+  const redWarm = classifyUndertone(
+    { L: 50.9, a: 16.1, b: 14.7 },
+    skinReference(50.9)
+  );
+  record(
+    redWarm.undertone !== "cool" ? "pass" : "fail",
+    "L* 50.9 a* 16.1 b* 14.7 (hue ~42°) is not labelled cool",
+    `undertone ${redWarm.undertone}, hue deviation ${redWarm.hueDeviation.toFixed(1)}°`
   );
 }
 
@@ -699,6 +718,150 @@ function verifyPipeline() {
     "Illuminant validation accepts absent/valid and rejects black/out-of-range",
     illErrors.length === 0 ? "" : `Wrong for: ${illErrors.map(([l]) => l).join(", ")}`
   );
+
+  section("White-balance constraint");
+
+  // Direct call: an illuminant equal to the skin colour divides the colour out.
+  // Full strength lands near grey, outside the locus, so strength must fall.
+  const skinRgb = hexToRgb("#C68642")!;
+  const proposed = whiteBalanceGains(skinRgb);
+  const held = constrainWhiteBalance(proposed.gains, (gains) =>
+    rgbToLab({
+      r: Math.min(255, skinRgb.r * gains.r),
+      g: Math.min(255, skinRgb.g * gains.g),
+      b: Math.min(255, skinRgb.b * gains.b),
+    })
+  );
+  record(
+    held.strength < 1 && held.verdict.inside ? "pass" : "fail",
+    "constrainWhiteBalance backs off a skin-coloured illuminant",
+    `strength ${held.strength.toFixed(2)}, chroma ${held.verdict.chroma.toFixed(1)}, reason ${held.rejected?.reason ?? "none"}`
+  );
+
+  // The same inputs through the pipeline must not throw. A very strong cast is
+  // still allowed to ask for a retake; what it must not do is 500.
+  let pipelineThrew = false;
+  let pipelineDetail = "";
+  try {
+    const through = analyseSkin(fivePatches("#C68642"), {
+      r: skinRgb.r,
+      g: skinRgb.g,
+      b: skinRgb.b,
+    });
+    pipelineDetail = through.quality.ok
+      ? `accepted, strength ${through.whiteBalanceStrength}, chroma ${chroma(through.skin!.lab).toFixed(1)}`
+      : `retake: ${through.quality.retakeReason}`;
+  } catch (err) {
+    pipelineThrew = true;
+    pipelineDetail = err instanceof Error ? err.message : String(err);
+  }
+  record(
+    pipelineThrew ? "fail" : "pass",
+    "Pipeline runs on a skin-coloured illuminant without throwing",
+    pipelineDetail
+  );
+
+  // Deep and low-chroma on purpose. A mid-tone chroma floor would veto this.
+  // The reading must still be offered.
+  const deepLow = labToRgb({ L: 28, a: 2.2, b: 2.4 });
+  const deepHex = rgbToHex(deepLow);
+  const deepReading = analyseSkin(fivePatches(deepHex), NEUTRAL_LIGHT);
+  record(
+    deepReading.quality.ok && deepReading.skin !== null ? "pass" : "fail",
+    "A deep, low-chroma complexion is not refused",
+    deepReading.skin
+      ? `L* ${deepReading.skin.lab.L}, chroma ${chroma(deepReading.skin.lab).toFixed(1)}, depth ${deepReading.skin.depthLevel}`
+      : `Rejected: ${deepReading.quality.retakeReason}`
+  );
+
+  const paper = analyseSkin(fivePatches("#C68642"), { r: 180, g: 150, b: 110 }, undefined, {
+    whiteReference: { r: 236, g: 232, b: 224 },
+    debug: true,
+  });
+  record(
+    paper.quality.ok && paper.calibration === "Calibrated" && paper.debug?.rawLab
+      ? "pass"
+      : "fail",
+    "A plausible white reference calibrates and fills debug without pixels",
+    paper.skin
+      ? `calibration ${paper.calibration}, raw L* ${paper.debug?.rawLab.L}, regions ${paper.debug?.regions.length}`
+      : `Rejected: ${paper.quality.retakeReason}`
+  );
+
+  const badPaper = analyseSkin(fivePatches("#C68642"), NEUTRAL_LIGHT, undefined, {
+    whiteReference: { r: 180, g: 80, b: 40 },
+  });
+  record(
+    badPaper.quality.ok &&
+      badPaper.calibration === "Approximate" &&
+      badPaper.quality.warnings.some((w) => w.toLowerCase().includes("paper"))
+      ? "pass"
+      : "fail",
+    "An implausible white reference is ignored with a warning",
+    badPaper.quality.warnings.join(" ") || badPaper.quality.retakeReason || ""
+  );
+
+  const parsedPaper = parseWhiteReference({ r: 250, g: 250, b: 248 });
+  record(
+    "whiteReference" in parsedPaper ? "pass" : "fail",
+    "whiteReference parses when present and stays optional"
+  );
+
+  section("Swatch map prior (no volunteer photos)");
+
+  record(
+    swatchMapIsMonotone() ? "pass" : "fail",
+    "Swatch L* curve is monotone"
+  );
+
+  const anchors: [number, number, number, string][] = [
+    [72, 80, 84, "light → Natural Beige / Buff"],
+    [62, 57, 63, "medium → Honey / Golden Beige"],
+    [45, 42, 49, "tan → Caramel / Chestnut"],
+    [30, 26, 32, "deep → Cocoa / Mocha"],
+  ];
+  for (const [L, lo, hi, label] of anchors) {
+    const ref = skinReference(L);
+    const h = (ref.hue * Math.PI) / 180;
+    const lab = { L, a: ref.chroma * Math.cos(h), b: ref.chroma * Math.sin(h) };
+    const mapped = mapSkinToSwatch(lab);
+    const shiftA = Math.abs(mapped.a - lab.a);
+    const shiftB = Math.abs(mapped.b - lab.b);
+    record(
+      mapped.L >= lo && mapped.L <= hi && shiftA <= 2 && shiftB <= 2 ? "pass" : "fail",
+      `${label} (measured L* ${L} maps into ${lo}–${hi})`,
+      `mapped L* ${mapped.L.toFixed(1)}, Δa ${shiftA.toFixed(2)}, Δb ${shiftB.toFixed(2)}`
+    );
+  }
+
+  const lightLab = (() => {
+    const ref = skinReference(72);
+    const h = (ref.hue * Math.PI) / 180;
+    return { L: 72, a: ref.chroma * Math.cos(h), b: ref.chroma * Math.sin(h) };
+  })();
+  const mappedLight = mapSkinToSwatch(lightLab);
+  const sand = hexToLab("#CFA07F");
+  const beige = hexToLab("#E3BFA7");
+  const closerToBeige =
+    sand && beige && deltaE2000(mappedLight, beige) < deltaE2000(mappedLight, sand);
+  record(
+    closerToBeige ? "pass" : "fail",
+    "A light face maps nearer Natural Beige than Sand",
+    sand && beige
+      ? `ΔE beige ${deltaE2000(mappedLight, beige).toFixed(2)}, ΔE sand ${deltaE2000(mappedLight, sand).toFixed(2)}`
+      : "Could not parse the catalog chip hexes."
+  );
+
+  const band = mapSkinToSwatch({ L: 66, a: lightLab.a, b: lightLab.b });
+  const bandBeatsSand =
+    sand && beige && deltaE2000(band, beige) < deltaE2000(band, sand);
+  record(
+    band.L >= 80 && band.L <= 84 && bandBeatsSand ? "pass" : "fail",
+    "A light phone reading at L* 66 also clears Sand",
+    sand && beige
+      ? `mapped L* ${band.L.toFixed(1)}, ΔE beige ${deltaE2000(band, beige).toFixed(2)}, ΔE sand ${deltaE2000(band, sand).toFixed(2)}`
+      : ""
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -773,13 +936,15 @@ async function verifyCatalog() {
       continue;
     }
 
+    const mapped = mapSkinToSwatch(analysis.skin.lab);
     const ranked = rankFoundationShades(
       shades as ShadeRow[],
       products as ProductRow[],
       {
-        skinLab: analysis.skin.lab,
+        skinLab: mapped,
         undertone: analysis.skin.undertone,
         limit: 3,
+        confidenceLabel: analysis.confidence.label,
       }
     );
 
@@ -793,7 +958,8 @@ async function verifyCatalog() {
     if (best.deltaE > worstBest) worstBest = best.deltaE;
 
     console.log(
-      `  \x1b[1m${probe.label}\x1b[0m ${probe.hex} → ITA ${analysis.skin.ita}°, ` +
+      `  \x1b[1m${probe.label}\x1b[0m ${probe.hex} → measured L* ${analysis.skin.lab.L.toFixed(1)}, ` +
+        `mapped L* ${mapped.L.toFixed(1)}, ITA ${analysis.skin.ita}°, ` +
         `${analysis.skin.depthLevel}, ${analysis.skin.undertone}, Monk ${analysis.skin.monkScale}`
     );
     for (const m of ranked.matches) {
@@ -827,10 +993,11 @@ async function verifyCatalog() {
 
   // The honest diagnostics, printed once from a mid-range probe.
   section("What the catalog can actually discriminate");
-  const mid = analyseSkin(fivePatches(typicalSkinAt(62).hex), NEUTRAL_LIGHT);
+  const midSkin = analyseSkin(fivePatches(typicalSkinAt(62).hex), NEUTRAL_LIGHT);
+  const midMapped = mapSkinToSwatch(midSkin.skin!.lab);
   const diag = rankFoundationShades(shades as ShadeRow[], products as ProductRow[], {
-    skinLab: mid.skin!.lab,
-    undertone: mid.skin!.undertone,
+    skinLab: midMapped,
+    undertone: midSkin.skin!.undertone,
   }).diagnostics;
 
   note(`${diag.shadeRowsConsidered} rows → ${diag.distinctColours} distinct colours`);

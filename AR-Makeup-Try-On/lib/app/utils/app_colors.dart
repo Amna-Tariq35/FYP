@@ -1,9 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart'; // Ye package import karein
 
+/// Lets screens that read [AppColors] repaint when the theme switch moves,
+/// including a screen already sitting under Settings.
+class AppThemeScope extends InheritedNotifier<ValueNotifier<ThemeMode>> {
+  const AppThemeScope({
+    super.key,
+    required ValueNotifier<ThemeMode> notifier,
+    required super.child,
+  }) : super(notifier: notifier);
+}
+
 class AppColors {
   // Theme state ko globally manage karne ke liye Notifier
   static final ValueNotifier<ThemeMode> themeNotifier = ValueNotifier(ThemeMode.light);
+
+  /// Registers [context] with [AppThemeScope] so this build runs again when
+  /// [themeNotifier] changes. Call it at the start of a screen's build.
+  static void watch(BuildContext context) {
+    context.dependOnInheritedWidgetOfExactType<AppThemeScope>();
+  }
 
   // Helper method check karne ke liye ke dark mode on hai ya nahi
   static bool get isDark => themeNotifier.value == ThemeMode.dark;

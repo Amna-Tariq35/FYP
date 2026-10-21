@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Heart, Star } from "lucide-react";
 import { MakeupProduct } from "@/src/types/catalog";
 import { getProductImageUrl } from "@/src/lib/catalog/image";
+import { profileMatchLabels, type ShopperMatchProfile } from "@/src/lib/catalog/product-profile-matching";
 
 type ProductCardProps = {
   product: MakeupProduct;
@@ -11,27 +12,28 @@ type ProductCardProps = {
   onView?: (productKey: string) => void;
   favShadeKey?: string;
   userFinishPreference?: string | null;
+  matchProfile?: ShopperMatchProfile | null;
 };
 
-function StarRow({ score }: { score: number }) {
+export function StarRow({ score, size = 11 }: { score: number; size?: number }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "2px" }}>
       {[1, 2, 3, 4, 5].map((n) => {
         const filled = score >= n;
         const half = !filled && score >= n - 0.5;
-        const color = filled || half ? "#E8956D" : "#E0D5CF";
+        const base = filled ? "#E8956D" : "#E0D5CF";
         return (
           <span
             key={n}
             style={{
               position: "relative",
               display: "inline-flex",
-              width: 11,
-              height: 11,
+              width: size,
+              height: size,
               flexShrink: 0,
             }}
           >
-            <Star size={11} style={{ color, fill: color, flexShrink: 0 }} />
+            <Star size={size} style={{ color: base, fill: base, flexShrink: 0 }} />
             {half && (
               <span
                 style={{
@@ -43,7 +45,7 @@ function StarRow({ score }: { score: number }) {
                 }}
               >
                 <Star
-                  size={11}
+                  size={size}
                   style={{ color: "#E8956D", fill: "#E8956D", flexShrink: 0 }}
                 />
               </span>
@@ -62,6 +64,7 @@ export default function ProductCard({
   onView,
   favShadeKey,
   userFinishPreference,
+  matchProfile,
 }: ProductCardProps) {
   const imageUrl = getProductImageUrl(product.image_url);
   const price =
@@ -71,10 +74,9 @@ export default function ProductCard({
   const score = product.rating_average;
   const count = product.review_count;
 
-  // Check if product finish matches user preference
-  const isFinishMatch =
-    userFinishPreference &&
-    product.finish?.trim()?.toLowerCase() === userFinishPreference.toLowerCase();
+  const matchLabels = profileMatchLabels(product, matchProfile ?? (
+    userFinishPreference ? { finish: userFinishPreference, skinType: null } : null
+  ));
 
   return (
     <div
@@ -142,13 +144,23 @@ export default function ProductCard({
             {category}
           </span>
 
-          {/* Finish match badge */}
-          {isFinishMatch && (
-            <span
-              className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-semibold tracking-wide border border-green-200/50 bg-green-50/95 text-green-700"
-            >
-              <span>✓</span>
-              <span>Matches your finish</span>
+          {product.stock_quantity === 0 && (
+            <span className="absolute bottom-3 left-3 rounded-full bg-black/75 px-2.5 py-0.5 text-[10px] font-semibold text-white">
+              Out of stock
+            </span>
+          )}
+
+          {/* Finish match badge sits on the lower right so it does not cover the wishlist heart. */}
+          {matchLabels.length > 0 && (
+            <span className="absolute bottom-3 right-3 flex max-w-[70%] flex-col items-end gap-1">
+              {matchLabels.map((label) => (
+                <span
+                  key={label}
+                  className="inline-flex items-center gap-1 rounded-full border border-green-200/50 bg-green-50/95 px-2.5 py-0.5 text-[10px] font-semibold tracking-wide text-green-700"
+                >
+                  {label}
+                </span>
+              ))}
             </span>
           )}
         </div>
@@ -179,7 +191,9 @@ export default function ProductCard({
 
           {/* Rating */}
           <div className="mb-2.5 flex items-center gap-1.5">
-            {score === null || count === 0 ? (
+            {product.reviews_available === false ? (
+              <span className="text-[10.5px]" style={{ color: "var(--text-muted)" }}>Reviews unavailable</span>
+            ) : score === null || count === 0 ? (
               <span className="text-[10.5px]" style={{ color: "var(--text-muted)" }}>No reviews yet</span>
             ) : (
               <>

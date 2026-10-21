@@ -110,6 +110,28 @@ class _PrivacySecurityScreenState extends State<PrivacySecurityScreen> {
     }
   }
 
+  /// Google-only accounts have a `google` identity and no `email` identity.
+  /// Supabase exposes that on [User.identities], with `app_metadata.providers`
+  /// as a fallback when the identity list has not been loaded.
+  bool get _isGoogleOnly {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return false;
+
+    final identities = user.identities;
+    if (identities != null && identities.isNotEmpty) {
+      final providers = identities.map((identity) => identity.provider).toSet();
+      return providers.contains('google') && !providers.contains('email');
+    }
+
+    final listed = user.appMetadata['providers'];
+    if (listed is List) {
+      final providers = listed.map((provider) => provider.toString()).toSet();
+      return providers.contains('google') && !providers.contains('email');
+    }
+
+    return user.appMetadata['provider']?.toString() == 'google';
+  }
+
   void _showPasswordDialog() {
     _newPasswordController.clear();
     _obscurePassword = true;
@@ -248,6 +270,8 @@ class _PrivacySecurityScreenState extends State<PrivacySecurityScreen> {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.watch(context);
+    final googleOnly = _isGoogleOnly;
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
@@ -284,31 +308,10 @@ class _PrivacySecurityScreenState extends State<PrivacySecurityScreen> {
                   _buildOptionTile(
                     Icons.lock_outline,
                     'Change Password',
-                    'Update your login password',
-                    _showPasswordDialog,
-                  ),
-                  Divider(height: 1, color: AppColors.border),
-                  _buildOptionTile(
-                    Icons.security,
-                    'Two-Factor Authentication',
-                    'Coming soon',
-                    null,
-                    trailing: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: AppColors.primary.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Text(
-                        'Soon',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.primary,
-                        ),
-                      ),
-                    ),
+                    googleOnly
+                        ? 'This account signs in with Google'
+                        : 'Update your login password',
+                    googleOnly ? null : _showPasswordDialog,
                   ),
                 ],
               ),

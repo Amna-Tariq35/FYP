@@ -2,6 +2,7 @@ import { GoogleGenAI, Type } from "@google/genai";
 import Groq from "groq-sdk";
 import { Product, ConcernScores, SkincareRoutine } from "./recommend";
 import { getTopCandidates } from "./candidate-selector";
+import { buildDeterministicRoutine, type SafetyContext } from "./deterministic-routine";
 
 // Schema for response validation
 const routineResponseSchema = {
@@ -44,8 +45,9 @@ export async function generateFinalRoutine(
   allDbProducts: Product[],
   userSkinType: string,
   // [UPDATED] Must accept Array as well for Photo Route compatibility
-  concernScores: ConcernScores | string[] 
-): Promise<SkincareRoutine & { summary: string }> { 
+  concernScores: ConcernScores | string[],
+  safety: SafetyContext = {},
+): Promise<SkincareRoutine & { summary: string; source: "ai" | "rules" | "mixed" }> { 
   // 1. Candidate selection (Token reduction)
   const candidates = getTopCandidates(allDbProducts, userSkinType, concernScores, 3);
 
@@ -74,30 +76,30 @@ export async function generateFinalRoutine(
     lightweightPmCandidates[cat] = filterLight(items as any[]);
   }
 
-  const systemPrompt = `You are a Board-Certified Clinical Dermatologist specializing in evidence-based skincare formulations. Your goal is to select a perfectly synchronized AM & PM routine strictly from the provided candidates list based on the user's exact skin profile.
+  const systemPrompt = `You are a skincare formulation assistant. Select an AM and PM routine strictly from the provided candidates based on the user's skin profile.
 
-CRITICAL DERMATOLOGICAL DIRECTIVES:
-1. STRICT DATA TRUTH (NO HALLUCINATIONS):
-   - Base all reasoning STRICTLY on the provided 'skinType' and 'concerns'.
-   - NEVER invent or mention unlisted skin conditions (e.g., do NOT mention acne, redness, dark spots, or sensitivity unless they are explicitly present in the user's concerns list).
-   - If the profile shows "Normal" skin or basic "hydration" concerns, focus purely on skin barrier maintenance, hydration retention, and healthy radiance without diagnosing non-existent flaws.
+CRITICAL DIRECTIVES:
+1. STRICT DATA TRUTH:
+   - Base all reasoning ONLY on the provided skinType and concerns.
+   - NEVER mention a concern that is not in the user's list.
+   - This is product guidance, not a medical diagnosis.
 
-2. CATEGORY EXCLUSIVITY & SEQUENCING:
-   - Select EXACTLY 1 product per required category in strict order:
-     * AM Routine: Cleanser -> Treatment -> Eye cream -> Moisturizer -> sunscreen
-     * PM Routine: Cleanser -> Treatment -> Eye cream -> Moisturizer
-   - MUST ONLY select valid product 'id' strings present in the provided candidates data. Do NOT invent or alter IDs.
+2. CATEGORY EXCLUSIVITY:
+   - Select EXACTLY 1 product per category:
+     * AM: Cleanser -> Treatment -> Eye cream -> Moisturizer -> sunscreen
+     * PM: Cleanser -> Treatment -> Eye cream -> Moisturizer
+   - Use only product id strings from the candidates. Do not invent ids.
 
-3. FORMULA SAFETY & ACTIVE SYNERGY:
-   - Ensure AM items have 'am_safe: true' and PM items have 'pm_safe: true'.
-   - Check ingredient lists to prevent active ingredient clashes (e.g., avoiding conflicting exfoliants or harsh retinoid combinations).
+3. SAFETY:
+   - AM items must be am_safe. PM items must be pm_safe.
+   - Do not pair a retinoid with an AHA or BHA in the same routine.
 
-4. MATCH SCORES & REASONING:
-   - 'matchScore': Assign a UNIQUE integer between 85 and 99 for EACH product. NEVER duplicate a score across any AM or PM item.
-   - 'matchReason': Write 1-2 concise, scientifically grounded sentences per product explaining why its key ingredients specifically target the user's profile.
+4. REASONING:
+   - matchReason: 1-2 sentences on why the product fits this profile.
+   - matchScore: copy the candidate's existing score if present, otherwise use 80.
 
-5. AI SUMMARY:
-   - 'aiSummary': Write a 2-3 sentence empathetic, professional dermatological assessment summarizing their skin profile state and explaining how this tailored routine preserves barrier health while targeting their main goals.`;
+5. SUMMARY:
+   - aiSummary: 2-3 plain sentences describing the profile and how the routine helps. Do not claim a clinical diagnosis.`;
    const userPayload = {
     userProfile: { skinType: userSkinType, concerns: concernScores },
     amCandidates: lightweightAmCandidates,
@@ -166,27 +168,57 @@ CRITICAL DERMATOLOGICAL DIRECTIVES:
       console.log("Successfully generated routine with Groq Fallback!");
     } catch (groqError) {
       console.error("Both Gemini and Groq failed:", groqError);
-      throw new Error("AI_SERVERS_BUSY");
+      aiResult = null;
     }
   }
 
-  const assemble = (items: { id: string; matchReason: string; matchScore?: number }[]) => {
-    return items
+  const rules = buildDeterministicRoutine(allDbProducts, userSkinType, concernScores, {
+    ...safety,
+    skinType: userSkinType,
+  });
+
+  const assemble = (
+    items: { id: string; matchReason: string; matchScore?: number }[] | undefined,
+    fallback: typeof rules.amRoutine,
+  ) => {
+    const used = new Set<string>();
+    const chosen = (items || [])
       .map((item) => {
         const candidateProduct = productMap.get(item.id);
-        if (!candidateProduct) return null;
+        if (!candidateProduct || used.has(candidateProduct.category)) return null;
+        used.add(candidateProduct.category);
         return {
           ...candidateProduct,
-          matchScore: item.matchScore || candidateProduct.matchScore || 90,
-          matchReason: item.matchReason,
+          matchScore: candidateProduct.matchScore || item.matchScore || 80,
+          matchReason: item.matchReason || candidateProduct.matchReason,
         };
       })
       .filter((p): p is NonNullable<typeof p> => p !== null);
+
+    for (const item of fallback) {
+      if (!used.has(item.category)) {
+        chosen.push(item);
+        used.add(item.category);
+      }
+    }
+    return chosen;
   };
 
+  if (!aiResult) {
+    return rules;
+  }
+
+  const amRoutine = assemble(aiResult.amRoutine, rules.amRoutine);
+  const pmRoutine = assemble(aiResult.pmRoutine, rules.pmRoutine);
+  const aiFilledBoth = (aiResult.amRoutine || []).length > 0 && (aiResult.pmRoutine || []).length > 0;
+  const source = aiFilledBoth && amRoutine.length >= rules.amRoutine.length ? "ai" : "mixed";
+
   return {
-    amRoutine: assemble(aiResult?.amRoutine || []),
-    pmRoutine: assemble(aiResult?.pmRoutine || []),
-    summary: aiResult?.aiSummary || "Based on your skin profile, this routine has been tailored to target your primary concerns.",
+    amRoutine,
+    pmRoutine,
+    summary:
+      aiResult.aiSummary ||
+      rules.summary,
+    source,
   };
 }

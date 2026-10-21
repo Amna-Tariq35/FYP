@@ -1,6 +1,9 @@
 // src/app/api/orders/[id]/route.ts
 import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/src/lib/supabase/server";
+import { cancelPlacedOrderForOwner } from "@/src/lib/orders/cancel-placed";
+
+export const dynamic = "force-dynamic";
 
 function jsonError(message: string, status = 400, extra?: any) {
   return NextResponse.json({ error: message, ...extra }, { status });
@@ -32,7 +35,8 @@ export async function GET(
     .from("orders")
     .select("*")
     .eq("id", orderId)
-    .single();
+    .eq("user_id", user.id)
+    .maybeSingle();
 
   if (orderErr || !order) {
     return jsonError("Order not found.", 404, {
@@ -82,37 +86,15 @@ export async function PATCH(
   const action = String(body?.action || "").trim().toLowerCase();
   if (action !== "cancel") return jsonError("Unsupported action.");
 
-  // Load order (RLS enforces ownership)
-  const { data: existing, error: loadErr } = await supabase
-    .from("orders")
-    .select("id,status")
-    .eq("id", orderId)
-    .single();
+  const result = await cancelPlacedOrderForOwner({
+    orderId,
+    userId: user.id,
+    guestToken: null,
+  });
 
-  if (loadErr || !existing) {
-    return jsonError("Order not found", 404, loadErr?.message);
+  if (!result.ok) {
+    return jsonError(result.error, result.status);
   }
 
-  const currentStatus = String(existing.status || "").toLowerCase();
-
-  // Only allow cancel if placed (Phase 2)
-  if (currentStatus !== "placed") {
-    return jsonError("Only placed orders can be cancelled.", 409, {
-      status: existing.status,
-    });
-  }
-
-  // Update status to cancelled
-  const { data: updated, error: updErr } = await supabase
-    .from("orders")
-    .update({ status: "cancelled" })
-    .eq("id", orderId)
-    .select("*")
-    .single();
-
-  if (updErr || !updated) {
-    return jsonError("Failed to cancel order.", 500, updErr?.message);
-  }
-
-  return NextResponse.json({ order: updated }, { status: 200 });
+  return NextResponse.json({ order: result.order }, { status: 200 });
 }

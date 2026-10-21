@@ -34,6 +34,11 @@ export type ShadeRow = {
    * {@link rankFoundationShades} for why it is never trusted as a colour signal.
    */
   undertone: string | null;
+  /**
+   * Real product colour when `db/013_foundation_match_hex.sql` has been applied.
+   * Ranking uses this. `shade_hex` is left alone because AR try-on keys off it.
+   */
+  match_hex?: string | null;
 };
 
 /** A row of `makeup_products`, narrowed the same way. */
@@ -57,6 +62,8 @@ export type RankOptions = {
   finishPreference?: string | null;
   /** How many distinct colours to return. */
   limit?: number;
+  /** When "low", reason strings say the nearby shades are a range. */
+  confidenceLabel?: "high" | "moderate" | "low";
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -79,7 +86,10 @@ export type ShadeMatch = {
   deltaE: number;
   /** Plain-English band for {@link deltaE}. */
   quality: string;
+  /** The catalog AR colour (`shade_hex`). Try-on and saved looks use this. */
   shadeHex: string;
+  /** Real measured swatch when `match_hex` is set and differs from `shadeHex`. */
+  matchHex: string | null;
   shadeName: string;
   shadeKey: string;
   productKey: string;
@@ -134,6 +144,11 @@ export type RankResult = {
   /** Nearest colour deeper than the best match, if the palette has one. */
   deeperAlternate: ShadeMatch | null;
   diagnostics: PaletteDiagnostics;
+  /**
+   * Up to three shades: those within ~2.5 ΔE of the best, or the best plus the
+   * nearest lighter and deeper chip when the winner sits between two colours.
+   */
+  shadeRange: ShadeMatch[];
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -171,8 +186,14 @@ const HUE_SPAN_FLOOR = 5;
 /** Local hue span at which the penalty reaches full weight. */
 const HUE_SPAN_CEILING = 22;
 
-/** |ΔL*| below which a shade counts as level with the skin rather than off it. */
+/** |ΔL*| below which a shade counts as level with the ranking colour. */
 const LEVEL_DEPTH_TOLERANCE = 1.5;
+
+/** ΔE window that still counts as "the same neighbourhood" as the winner. */
+const RANGE_DELTA_E = 2.5;
+
+/** Never hand back more than this many shades as "the range". */
+const RANGE_CAP = 3;
 
 /**
  * ΔE gap within which two colours are treated as tied, so a weaker signal is
@@ -187,14 +208,32 @@ const TIE_BAND = 0.6;
 type Member = { shade: ShadeRow; product: ProductRow };
 
 type ColourGroup = {
+  /** Key used to collapse duplicates: `match_hex` when present, else `shade_hex`. */
   hex: string;
   lab: Lab;
   hue: number;
+  /** AR hex of the representative, filled when the match is built. */
   members: Member[];
 };
 
 function normaliseHex(hex: string): string {
   return `#${hex.trim().replace(/^#/, "").toUpperCase()}`;
+}
+
+/**
+ * Colour the ranker compares. `match_hex` wins when it parses, so two brands
+ * that share a generic `shade_hex` but have different real colours stay apart.
+ * Missing column / null / bad text falls back to `shade_hex`.
+ */
+function colourForRanking(shade: ShadeRow): { groupHex: string; lab: Lab } | null {
+  if (shade.match_hex) {
+    const matchLab = hexToLab(shade.match_hex);
+    if (matchLab) return { groupHex: normaliseHex(shade.match_hex), lab: matchLab };
+  }
+  if (!shade.shade_hex) return null;
+  const lab = hexToLab(shade.shade_hex);
+  if (!lab) return null;
+  return { groupHex: normaliseHex(shade.shade_hex), lab };
 }
 
 /**
@@ -280,7 +319,7 @@ export function rankFoundationShades(
   products: ProductRow[],
   options: RankOptions
 ): RankResult {
-  const { skinLab, undertone, finishPreference = null, limit = 5 } = options;
+  const { skinLab, undertone, finishPreference = null, limit = 5, confidenceLabel } = options;
   const productByKey = new Map(products.map((p) => [p.product_key, p]));
 
   // ── Group rows into distinct colours ──────────────────────────────────────
@@ -293,16 +332,20 @@ export function rankFoundationShades(
     // colour match is.
     if (!product || product.is_active === false) continue;
 
-    const lab = hexToLab(shade.shade_hex);
-    if (!lab) continue; // unparseable hex — drop the row, do not guess
+    const ranked = colourForRanking(shade);
+    if (!ranked) continue; // unparseable hex — drop the row, do not guess
 
     considered++;
-    const hex = normaliseHex(shade.shade_hex as string);
-    const existing = groups.get(hex);
+    const existing = groups.get(ranked.groupHex);
     if (existing) {
       existing.members.push({ shade, product });
     } else {
-      groups.set(hex, { hex, lab, hue: hueAngle(lab), members: [{ shade, product }] });
+      groups.set(ranked.groupHex, {
+        hex: ranked.groupHex,
+        lab: ranked.lab,
+        hue: hueAngle(ranked.lab),
+        members: [{ shade, product }],
+      });
     }
   }
 
@@ -365,7 +408,7 @@ export function rankFoundationShades(
   };
 
   if (allGroups.length === 0) {
-    return { matches: [], lighterAlternate: null, deeperAlternate: null, diagnostics };
+    return { matches: [], lighterAlternate: null, deeperAlternate: null, diagnostics, shadeRange: [] };
   }
 
   // ── Score every colour ───────────────────────────────────────────────────
@@ -412,11 +455,15 @@ export function rankFoundationShades(
           ? "lighter"
           : "deeper";
 
+    const arHex = normaliseHex(rep.shade.shade_hex ?? entry.group.hex);
+    const rankedHex = entry.group.hex;
+
     return {
       rank,
       deltaE: Number(entry.dE.toFixed(2)),
       quality: describeDeltaE(entry.dE),
-      shadeHex: entry.group.hex,
+      shadeHex: arHex,
+      matchHex: rankedHex.toUpperCase() === arHex.toUpperCase() ? null : rankedHex,
       shadeName: rep.shade.shade_name ?? rep.shade.shade_key,
       shadeKey: rep.shade.shade_key,
       productKey: rep.product.product_key,
@@ -439,6 +486,7 @@ export function rankFoundationShades(
         finish: rep.product.finish,
         finishPreference,
         sharedWith: others.length,
+        lowConfidence: confidenceLabel === "low",
       }),
       alsoAvailableFrom: others,
     };
@@ -459,11 +507,28 @@ export function rankFoundationShades(
     .filter((e) => e.group.lab.L < bestL - LEVEL_DEPTH_TOLERANCE)
     .sort((x, y) => y.group.lab.L - x.group.lab.L)[0];
 
+  const bestDE = scored[0].dE;
+  let rangeEntries = scored.filter((e) => e.dE <= bestDE + RANGE_DELTA_E);
+  if (rangeEntries.length < 2) {
+    const neighbours = [nearestAbove, nearestBelow].filter(
+      (e): e is (typeof scored)[number] => e != null
+    );
+    const seen = new Set(rangeEntries.map((e) => e.group.hex));
+    for (const n of neighbours) {
+      if (!seen.has(n.group.hex)) {
+        rangeEntries.push(n);
+        seen.add(n.group.hex);
+      }
+    }
+  }
+  const shadeRange = rangeEntries.slice(0, RANGE_CAP).map((e, i) => toMatch(e, i + 1));
+
   return {
     matches,
     lighterAlternate: nearestAbove ? toMatch(nearestAbove, 0) : null,
     deeperAlternate: nearestBelow ? toMatch(nearestBelow, 0) : null,
     diagnostics,
+    shadeRange,
   };
 }
 
@@ -489,16 +554,19 @@ function buildReason(input: {
   finish: string | null;
   finishPreference: string | null | undefined;
   sharedWith: number;
+  lowConfidence: boolean;
 }): string {
-  const parts: string[] = [];
+  const parts: string[] = [
+    "Closest catalog colour to this reading, not a clinical measurement",
+  ];
 
   // Depth — always meaningful, because lightness is what this palette resolves.
   if (input.depthDirection === "level") {
-    parts.push("Sits level with your measured depth");
+    parts.push("sits level with the depth used for matching");
   } else {
     const amount = Math.abs(input.deltaL);
     const size = amount < 3 ? "a touch" : amount < 7 ? "slightly" : "noticeably";
-    parts.push(`Runs ${size} ${input.depthDirection} than your measured depth`);
+    parts.push(`runs ${size} ${input.depthDirection} than the depth used for matching`);
   }
 
   // Undertone — only when the palette earned the right to an opinion.
@@ -521,6 +589,10 @@ function buildReason(input: {
 
   let sentence = `${parts.join("; ")}.`;
   sentence += ` ΔE ${input.deltaE.toFixed(1)} — ${describeDeltaE(input.deltaE).toLowerCase()}.`;
+
+  if (input.lowConfidence) {
+    sentence += " Confidence is low, so treat the nearby shades as a range rather than one certain winner.";
+  }
 
   if (input.sharedWith > 0) {
     sentence += ` This exact colour is also sold by ${input.sharedWith} other ${
@@ -566,7 +638,13 @@ export function classifyUndertone(
   if (hueDeviation > 2 && chromaRatio < 0.85) {
     return { undertone: "olive", hueDeviation, chromaRatio };
   }
-  if (hueDeviation < -6) return { undertone: "cool", hueDeviation, chromaRatio };
+  // Cool is a pink/blue shift, not "a bit redder than the reference".
+  // Hue around 42° (a* and b* both positive, still in the red–yellow sector)
+  // is a warm reading. Labelling it cool because the depth reference sits
+  // nearer yellow mislabels it.
+  if (hueDeviation < -6 && h < 40) {
+    return { undertone: "cool", hueDeviation, chromaRatio };
+  }
   if (hueDeviation > 6) return { undertone: "warm", hueDeviation, chromaRatio };
   return { undertone: "neutral", hueDeviation, chromaRatio };
 }

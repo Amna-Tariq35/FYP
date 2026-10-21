@@ -46,21 +46,21 @@ const fadeUp: Variants = {
 /* ------------------------------------------------------------------ */
 
 const trustStats = [
-  { icon: BadgeCheck, label: '100% Personalized' },
-  { icon: FlaskConical, label: 'Board-Certified Logic' },
-  { icon: ShieldCheck, label: 'Privacy Guaranteed' },
+  { icon: BadgeCheck, label: 'Matched to your profile' },
+  { icon: FlaskConical, label: 'Ingredient-aware routines' },
+  { icon: ShieldCheck, label: 'Photos are not stored' },
 ];
 
 const questionnaireHighlights = [
-  'Detailed concerns & sensitivity mapping',
-  'Lifestyle & environment factors',
-  'Exact actives synergy check',
+  'Detailed concerns and severity',
+  'Optional allergy and sensitivity notes',
+  'Routine built from your answers',
 ];
 
 const scanHighlights = [
-  'Visual pore & redness detection',
-  'Instant skin type classification',
-  'Zero-storage privacy, always',
+  'Face, lighting and blur checks',
+  'Skin-type estimate for product matching',
+  'Photo is analyzed, then discarded',
 ];
 
 const steps = [
@@ -146,7 +146,7 @@ export default function SkinAnalysisPage() {
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--rose-primary)] opacity-60" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--rose-primary)]" />
             </span>
-            AI Clinical Dermatology Engine
+            Skin profile assistant
           </motion.div>
 
           <motion.h1
@@ -161,9 +161,8 @@ export default function SkinAnalysisPage() {
             variants={fadeUp}
             className="mx-auto mt-6 max-w-2xl text-base leading-relaxed text-[var(--text-secondary)] sm:text-lg"
           >
-            Our clinical-grade AI reads your skin barrier, sensitivity, and lifestyle signals to
-            build a targeted profile — then prescribes a synchronized AM &amp; PM routine matched
-            to exactly what your skin needs.
+            Answer a short questionnaire or take a photo. We use that profile to suggest a morning
+            and evening routine from the catalog. This is product guidance, not a medical diagnosis.
           </motion.p>
 
           <motion.div

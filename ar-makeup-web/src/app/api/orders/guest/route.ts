@@ -2,6 +2,8 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
+export const dynamic = "force-dynamic";
+
 function jsonError(message: string, status = 400, extra?: any) {
   return NextResponse.json({ error: message, ...extra }, { status });
 }

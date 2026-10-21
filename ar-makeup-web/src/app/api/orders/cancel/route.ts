@@ -1,30 +1,35 @@
-import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { NextResponse } from "next/server";
+import { createSupabaseServerClient } from "@/src/lib/supabase/server";
+import { cancelPlacedOrderForOwner } from "@/src/lib/orders/cancel-placed";
 
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   try {
-    const { order_id } = await request.json();
+    const body = await request.json().catch(() => null);
+    const orderId = typeof body?.order_id === "string" ? body.order_id.trim() : "";
+    const guestToken = typeof body?.guest_token === "string" ? body.guest_token.trim() : "";
 
-    if (!order_id) {
+    if (!orderId) {
       return NextResponse.json({ error: "Missing order_id" }, { status: 400 });
     }
 
-    // Update order status to 'cancelled' in Supabase
-    const { error } = await supabaseAdmin
-      .from('orders') // Apne table ka naam check kar lein
-      .update({ status: 'cancelled' })
-      .eq('id', order_id);
+    const supabase = await createSupabaseServerClient();
+    const { data: { user } } = await supabase.auth.getUser();
 
-    if (error) throw error;
+    const result = await cancelPlacedOrderForOwner({
+      orderId,
+      userId: user?.id ?? null,
+      guestToken: guestToken || null,
+    });
 
-    return NextResponse.json({ success: true });
-  } catch (error: any) {
+    if (!result.ok) {
+      return NextResponse.json({ error: result.error }, { status: result.status });
+    }
+
+    return NextResponse.json({ success: true, order: result.order });
+  } catch (error: unknown) {
     console.error("Cancel Order Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Could not cancel the order." }, { status: 500 });
   }
 }

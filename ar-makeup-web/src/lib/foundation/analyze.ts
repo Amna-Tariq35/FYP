@@ -116,6 +116,11 @@ export type SkinPatch = {
   pixels: number;
   /** Luminance spread within the patch, 0–100 in L* units. */
   luminanceStdDev: number;
+  /**
+   * Relative trust for this region. Cheeks should weigh more than the jaw.
+   * Omitted by older apps; treated as 1.
+   */
+  regionWeight?: number;
 };
 
 /**
@@ -170,11 +175,46 @@ export type SkinMeasurement = {
   regionsUsed: SkinRegion[];
 };
 
+export type CalibrationLabel = "Calibrated" | "Approximate";
+
+/**
+ * Opt-in diagnostics. Numbers only — never pixels, never an image.
+ * `mappedLab` is filled by the route after the swatch curve runs.
+ */
+export type AnalysisDebug = {
+  regions: { region: SkinRegion; lab: Lab }[];
+  illuminant: Illuminant | null;
+  gains: Gains;
+  whiteBalanceStrength: number;
+  regionsUsed: SkinRegion[];
+  /** Skin Lab after white balance, before the catalog swatch curve. */
+  rawLab: Lab;
+  mappedLab?: Lab;
+  /** Which swatch curve produced `mappedLab`, when the route filled it. */
+  mapVersion?: string;
+};
+
+export type AnalyseOptions = {
+  /** A user-held white card or sheet, already a median RGB. */
+  whiteReference?: Rgb | null;
+  /** When true, {@link AnalysisResult.debug} is filled. */
+  debug?: boolean;
+};
+
 export type AnalysisResult = {
   quality: QualityVerdict;
   confidence: ConfidenceReport;
   /** Null only when `quality.ok` is false and no colour could be established. */
   skin: SkinMeasurement | null;
+  /**
+   * How far the kept regions sit from the group colour, as ΔE2000.
+   * This is the honest error bar, not a claim about clinical accuracy.
+   */
+  expectedError: number | null;
+  calibration: CalibrationLabel;
+  /** α from {@link constrainWhiteBalance}. 1 means the light estimate was kept. */
+  whiteBalanceStrength: number;
+  debug: AnalysisDebug | null;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -253,6 +293,15 @@ const WARN_ILLUMINANT_CAST = 1.3;
  */
 const MAX_CHROMA_DISAGREEMENT = 7;
 const WARN_CHROMA_DISAGREEMENT = 3.5;
+
+/**
+ * Worst ΔE2000 from the group colour across regions.
+ *
+ * Above this the two sides of the face do not agree, so ranking catalog chips
+ * would present a match the photo cannot support. Lightness gradient is part
+ * of that number; a retake in even daylight is the honest next step.
+ */
+const MAX_REGION_DELTA_E = 5;
 
 /** Worst |ΔL*| from the group colour that is still just facial gradient. */
 const MAX_LIGHTNESS_DISAGREEMENT = 20;
@@ -572,7 +621,12 @@ function median(values: number[]): number {
 const MAX_WEIGHT_PIXELS = 4000;
 
 function patchWeight(p: SkinPatch): number {
-  return Math.sqrt(Math.min(Math.max(p.pixels, 1), MAX_WEIGHT_PIXELS));
+  const stated = p.regionWeight;
+  const region =
+    typeof stated === "number" && Number.isFinite(stated) && stated > 0
+      ? Math.min(3, Math.max(0.25, stated))
+      : 1;
+  return Math.sqrt(Math.min(Math.max(p.pixels, 1), MAX_WEIGHT_PIXELS)) * region;
 }
 
 /**
@@ -732,7 +786,8 @@ function spreadOf(patches: SkinPatch[], lab: Lab): Spread {
 export function analyseSkin(
   patches: SkinPatch[],
   illuminant: Illuminant | null,
-  reference: (L: number) => { hue: number; chroma: number } = skinReference
+  reference: (L: number) => { hue: number; chroma: number } = skinReference,
+  options: AnalyseOptions = {}
 ): AnalysisResult {
   const warnings: string[] = [];
 
@@ -754,8 +809,8 @@ export function analyseSkin(
   }
 
   if (usable.length < MIN_USABLE_PATCHES) {
-    return {
-      quality: {
+    return unfinished(
+      {
         ok: false,
         retakeReason:
           `Only ${usable.length} of ${SKIN_REGIONS.length} skin areas could be read.`,
@@ -763,32 +818,74 @@ export function analyseSkin(
           "Hold the phone straight on, fill the frame with your face, and keep hair off your forehead and cheeks.",
         warnings,
       },
-      confidence: {
+      {
         score: 0,
         label: "low",
         factors: [
           { name: "Skin areas read", value: usable.length, note: "Need at least 3." },
         ],
-      },
-      skin: null,
-    };
+      }
+    );
   }
 
   // ── White balance ────────────────────────────────────────────────────────
-  const wb = illuminant
-    ? whiteBalanceGains(illuminant)
-    : { gains: { r: 1, g: 1, b: 1 }, cast: 1 };
+  // The illuminant proposes a von Kries correction. A white card, when the user
+  // sent one and it actually looks white, replaces that proposal. The skin
+  // locus then reduces the correction until the colour is one a face can have.
+  // It never refuses a deep complexion for having low chroma.
+  const paper = options.whiteReference ?? null;
+  const paperLab = paper ? rgbToLab(paper) : null;
+  const paperOk = paperLab !== null && paperPlausible(paperLab);
 
-  if (!illuminant) {
+  let calibration: CalibrationLabel = "Approximate";
+  let proposal = illuminant
+    ? whiteBalanceGains(illuminant)
+    : { gains: IDENTITY_GAINS, cast: 1 };
+
+  if (paper && paperOk) {
+    proposal = whiteBalanceGains(paper);
+    calibration = "Calibrated";
+  } else if (paper && !paperOk) {
+    warnings.push(
+      "The white paper didn't look white in this photo, so it was ignored. Hold a plain sheet beside your cheek in the same light and try again."
+    );
+  }
+
+  if (!illuminant && calibration !== "Calibrated") {
     warnings.push(
       "No lighting reference was sent, so the colour is taken as-is. Results are less reliable under coloured light."
     );
   }
 
-  const balanced = usable.map<SkinPatch>((p) => {
-    const c = applyGains({ r: p.r, g: p.g, b: p.b }, wb.gains);
+  const constrained = constrainWhiteBalance(proposal.gains, (gains) =>
+    rgbToLab(aggregateAt(usable, gains))
+  );
+
+  const gainsMoved =
+    Math.abs(constrained.gains.r - proposal.gains.r) > 0.02 ||
+    Math.abs(constrained.gains.g - proposal.gains.g) > 0.02 ||
+    Math.abs(constrained.gains.b - proposal.gains.b) > 0.02;
+  if (constrained.strength < 1 && gainsMoved) {
+    warnings.push(
+      "The lighting estimate was reduced so the colour stayed in a plausible skin range."
+    );
+  }
+
+  let balanced = usable.map<SkinPatch>((p) => {
+    const c = applyGains({ r: p.r, g: p.g, b: p.b }, constrained.gains);
     return { ...p, r: c.r, g: c.g, b: c.b };
   });
+
+  if (calibration === "Calibrated" && paper) {
+    const correctedPaper = applyGains(paper, constrained.gains);
+    const scale = exposureScaleFor(aggregatePatches(balanced), correctedPaper);
+    if (scale > 1.001) {
+      balanced = balanced.map((p) => {
+        const c = scaleRgb({ r: p.r, g: p.g, b: p.b }, scale);
+        return { ...p, r: c.r, g: c.g, b: c.b };
+      });
+    }
+  }
 
   // ── Discard regions that disagree with the rest, then measure ────────────
   const robust = rejectOutliers(balanced);
@@ -802,24 +899,31 @@ export function analyseSkin(
 
   const skinRgb = robust.colour;
   const skinLab = rgbToLab(skinRgb);
-  const disagreement = robust.disagreement;
+  const spread = robust.spread;
 
   const quality = assessQuality({
     lab: skinLab,
-    cast: wb.cast,
-    disagreement,
-    illuminantLightness: illuminant
-      ? rgbToLab({ r: illuminant.r, g: illuminant.g, b: illuminant.b }).L
-      : null,
+    cast: proposal.cast,
+    spread,
+    illuminantLightness: exposureLightness({
+      calibration,
+      paperLab,
+      illuminant,
+    }),
     warnings,
   });
 
-  if (!quality.ok) {
-    return {
-      quality,
-      confidence: { score: 0, label: "low", factors: [] },
-      skin: null,
-    };
+  // An uneven face still has a measured colour. Keep it so the screen can show
+  // the numbers, but do not treat the photo as good enough to rank shades.
+  const keepUnevenReading =
+    !quality.ok &&
+    (quality.retakeReason?.includes("differently across regions") ?? false);
+
+  if (!quality.ok && !keepUnevenReading) {
+    return unfinished(quality, { score: 0, label: "low", factors: [] }, {
+      calibration,
+      whiteBalanceStrength: constrained.strength,
+    });
   }
 
   // ── Classify ─────────────────────────────────────────────────────────────
@@ -846,24 +950,47 @@ export function analyseSkin(
     hueDeviation: Number(tone.hueDeviation.toFixed(1)),
     chromaRatio: Number(tone.chromaRatio.toFixed(2)),
     whiteBalanceGains: {
-      r: Number(wb.gains.r.toFixed(3)),
-      g: Number(wb.gains.g.toFixed(3)),
-      b: Number(wb.gains.b.toFixed(3)),
+      r: Number(constrained.gains.r.toFixed(3)),
+      g: Number(constrained.gains.g.toFixed(3)),
+      b: Number(constrained.gains.b.toFixed(3)),
     },
     regionsUsed: robust.kept.map((p) => p.region),
   };
 
+  const confidence = scoreConfidence({
+    patchCount: robust.kept.length,
+    spread,
+    cast: proposal.cast,
+    meanStdDev:
+      robust.kept.reduce((t, p) => t + p.luminanceStdDev, 0) / robust.kept.length,
+    hadIlluminant: illuminant !== null || calibration === "Calibrated",
+    whiteBalanceStrength: constrained.strength,
+  });
+
   return {
     quality,
-    confidence: scoreConfidence({
-      patchCount: robust.kept.length,
-      disagreement,
-      cast: wb.cast,
-      meanStdDev:
-        robust.kept.reduce((t, p) => t + p.luminanceStdDev, 0) / robust.kept.length,
-      hadIlluminant: illuminant !== null,
-    }),
+    confidence,
     skin,
+    expectedError: Number(spread.deltaE.toFixed(2)),
+    calibration,
+    whiteBalanceStrength: Number(constrained.strength.toFixed(2)),
+    debug: options.debug
+      ? {
+          regions: balanced.map((p) => ({
+            region: p.region,
+            lab: roundLab(rgbToLab({ r: p.r, g: p.g, b: p.b })),
+          })),
+          illuminant,
+          gains: {
+            r: Number(constrained.gains.r.toFixed(3)),
+            g: Number(constrained.gains.g.toFixed(3)),
+            b: Number(constrained.gains.b.toFixed(3)),
+          },
+          whiteBalanceStrength: Number(constrained.strength.toFixed(2)),
+          regionsUsed: skin.regionsUsed,
+          rawLab: skin.lab,
+        }
+      : null,
   };
 }
 
@@ -884,7 +1011,7 @@ export function analyseSkinHex(
   const quality = assessQuality({
     lab,
     cast: 1,
-    disagreement: 0,
+    spread: { deltaE: 0, chroma: 0, lightness: 0 },
     // A supplied colour carries no scene information, so the underexposure check
     // cannot run. The low confidence cap below is what accounts for that.
     illuminantLightness: null,
@@ -892,7 +1019,7 @@ export function analyseSkinHex(
   });
 
   if (!quality.ok) {
-    return { quality, confidence: { score: 0, label: "low", factors: [] }, skin: null };
+    return unfinished(quality, { score: 0, label: "low", factors: [] });
   }
 
   const ita = itaDegrees(lab);
@@ -928,6 +1055,10 @@ export function analyseSkinHex(
       whiteBalanceGains: { r: 1, g: 1, b: 1 },
       regionsUsed: [],
     },
+    expectedError: null,
+    calibration: "Approximate",
+    whiteBalanceStrength: 1,
+    debug: null,
   };
 }
 
@@ -935,10 +1066,77 @@ export function analyseSkinHex(
 // Gates and confidence
 // ─────────────────────────────────────────────────────────────────────────────
 
+function unfinished(
+  quality: QualityVerdict,
+  confidence: ConfidenceReport,
+  extra?: { calibration?: CalibrationLabel; whiteBalanceStrength?: number }
+): AnalysisResult {
+  return {
+    quality,
+    confidence,
+    skin: null,
+    expectedError: null,
+    calibration: extra?.calibration ?? "Approximate",
+    whiteBalanceStrength: extra?.whiteBalanceStrength ?? 0,
+    debug: null,
+  };
+}
+
+/** A sheet of paper: bright, and not a coloured wall. */
+function paperPlausible(lab: Lab): boolean {
+  return lab.L >= 78 && chroma(lab) <= 14;
+}
+
+function scaleRgb(rgb: Rgb, scale: number): Rgb {
+  const s = (v: number) => Math.min(255, Math.max(0, v * scale));
+  return { r: s(rgb.r), g: s(rgb.g), b: s(rgb.b) };
+}
+
+/**
+ * Nudge exposure so a white card sits nearer paper-white, without lifting skin
+ * by more than 6 L* or pushing it into the blown-out gate.
+ */
+function exposureScaleFor(skin: Rgb, paper: Rgb): number {
+  const paperL = rgbToLab(paper).L;
+  const skinL = rgbToLab(skin).L;
+  if (!(paperL > 55 && paperL < 90)) return 1;
+  const maxScale = Math.min(1.12, 92 / paperL);
+  let chosen = 1;
+  for (let s = 1.02; s <= maxScale + 1e-9; s += 0.02) {
+    const next = rgbToLab(scaleRgb(skin, s));
+    if (next.L - skinL > 6 || next.L > 90) break;
+    chosen = Math.round(s * 100) / 100;
+  }
+  return chosen;
+}
+
+function exposureLightness(input: {
+  calibration: CalibrationLabel;
+  paperLab: Lab | null;
+  illuminant: Illuminant | null;
+}): number | null {
+  if (input.calibration === "Calibrated" && input.paperLab) return input.paperLab.L;
+  if (!input.illuminant) return null;
+  return rgbToLab({
+    r: input.illuminant.r,
+    g: input.illuminant.g,
+    b: input.illuminant.b,
+  }).L;
+}
+
+function roundLab(lab: Lab): Lab {
+  return {
+    L: Number(lab.L.toFixed(2)),
+    a: Number(lab.a.toFixed(2)),
+    b: Number(lab.b.toFixed(2)),
+  };
+}
+
+
 function assessQuality(input: {
   lab: Lab;
   cast: number;
-  disagreement: number;
+  spread: Spread;
   /** L* of the scene illuminant, or null when the device did not send one. */
   illuminantLightness: number | null;
   warnings: string[];
@@ -988,11 +1186,36 @@ function assessQuality(input: {
     };
   }
 
-  if (input.disagreement > MAX_PATCH_DISAGREEMENT) {
+  // Chroma disagreement is the real "two lights" failure. A lightness gradient
+  // is mostly the shape of a face, so it has to be extreme before it refuses.
+  // Low chroma on its own is never a refusal — deep complexions are less
+  // chromatic, and the locus already stopped an over-correction from greying them.
+  if (input.spread.chroma > MAX_CHROMA_DISAGREEMENT) {
     return {
       ok: false,
-      retakeReason: "Different parts of your face measured very differently, so the lighting is uneven.",
-      retakeHint: "Face the light straight on so both cheeks are lit the same, and take it with a bare face.",
+      retakeReason:
+        "Different parts of your face have different colour, so the light is uneven.",
+      retakeHint:
+        "Face the light straight on so both cheeks are lit the same, and take it with a bare face.",
+      warnings,
+    };
+  }
+
+  if (input.spread.lightness > MAX_LIGHTNESS_DISAGREEMENT) {
+    return {
+      ok: false,
+      retakeReason: "The light falls very unevenly across your face.",
+      retakeHint: "Face the light, and keep the window in front of you rather than to one side.",
+      warnings,
+    };
+  }
+
+  if (input.spread.deltaE > MAX_REGION_DELTA_E) {
+    return {
+      ok: false,
+      retakeReason: `Your face measured up to ΔE ${input.spread.deltaE.toFixed(1)} differently across regions.`,
+      retakeHint:
+        "Retake in even daylight. Face a window, with no lamp from one side, and a bare face.",
       warnings,
     };
   }
@@ -1003,11 +1226,13 @@ function assessQuality(input: {
     );
   }
 
-  if (input.disagreement > WARN_PATCH_DISAGREEMENT) {
+  if (input.spread.chroma > WARN_CHROMA_DISAGREEMENT) {
     warnings.push(
-      `Your face measured up to ΔE ${input.disagreement.toFixed(
-        1
-      )} differently across regions, which usually means one side is lit more than the other.`
+      `Colour varies by ${input.spread.chroma.toFixed(1)} across your face, which usually means one side is lit differently from the other.`
+    );
+  } else if (input.spread.lightness > WARN_LIGHTNESS_DISAGREEMENT) {
+    warnings.push(
+      `Lightness varies by ${input.spread.lightness.toFixed(1)} L* across your face. A little of that is normal; daylight from the front tightens it.`
     );
   }
 
@@ -1024,16 +1249,18 @@ function assessQuality(input: {
  */
 function scoreConfidence(input: {
   patchCount: number;
-  disagreement: number;
+  spread: Spread;
   cast: number;
   meanStdDev: number;
   hadIlluminant: boolean;
+  whiteBalanceStrength?: number;
 }): ConfidenceReport {
   const coverage = Math.min(1, input.patchCount / SKIN_REGIONS.length);
-  const agreement = Math.max(
-    0,
-    1 - input.disagreement / MAX_PATCH_DISAGREEMENT
-  );
+  const chromaPart = Math.max(0, 1 - input.spread.chroma / MAX_CHROMA_DISAGREEMENT);
+  const lightPart = Math.max(0, 1 - input.spread.lightness / MAX_LIGHTNESS_DISAGREEMENT);
+  // Chroma is the heavier requirement. A forehead-to-jaw lightness gradient
+  // should not collapse confidence the way two different lights do.
+  const agreement = Math.pow(chromaPart, 0.7) * Math.pow(lightPart, 0.3);
   const neutrality = Math.max(
     0,
     1 - (input.cast - 1) / (MAX_ILLUMINANT_CAST - 1)
@@ -1043,6 +1270,12 @@ function scoreConfidence(input: {
   let score = coverage * agreement * neutrality * evenness;
   // Without a lighting reference the colour is uncorrected, so cap the claim.
   if (!input.hadIlluminant) score = Math.min(score, 0.5);
+  if (
+    input.whiteBalanceStrength !== undefined &&
+    input.whiteBalanceStrength < 0.5
+  ) {
+    score = Math.min(score, 0.55);
+  }
 
   return {
     score: Number(score.toFixed(2)),
@@ -1056,7 +1289,8 @@ function scoreConfidence(input: {
       {
         name: "Region agreement",
         value: Number(agreement.toFixed(2)),
-        note: `Regions differed by up to ΔE ${input.disagreement.toFixed(1)}.`,
+        note:
+          `Chroma spread ${input.spread.chroma.toFixed(1)}, lightness spread ${input.spread.lightness.toFixed(1)} L*.`,
       },
       {
         name: "Light neutrality",
@@ -1132,6 +1366,15 @@ export function parsePatches(
       return { error: `Patch ${region} must have a non-negative luminanceStdDev.` };
     }
 
+    let regionWeight = 1;
+    if (p.regionWeight !== undefined && p.regionWeight !== null) {
+      const w = p.regionWeight;
+      if (typeof w !== "number" || !Number.isFinite(w) || w <= 0 || w > 5) {
+        return { error: `Patch ${region} regionWeight must be a positive number up to 5.` };
+      }
+      regionWeight = w;
+    }
+
     patches.push({
       region: region as SkinRegion,
       r,
@@ -1139,6 +1382,7 @@ export function parsePatches(
       b,
       pixels,
       luminanceStdDev: sd,
+      regionWeight,
     });
   }
 
@@ -1170,6 +1414,31 @@ export function parseIlluminant(
     return { error: "illuminant is black, which is not a usable lighting estimate." };
   }
   return { illuminant: { r, g, b } };
+}
+
+/**
+ * Optional white card. Absent is fine. A present-but-implausible card is still
+ * parsed — {@link analyseSkin} ignores it and warns, rather than failing the
+ * whole request, so a bad tap does not throw away an otherwise usable photo.
+ */
+export function parseWhiteReference(
+  input: unknown
+): { whiteReference: Rgb | null } | { error: string } {
+  if (input === undefined || input === null) return { whiteReference: null };
+  if (typeof input !== "object") return { error: "whiteReference must be an object." };
+  const o = input as Record<string, unknown>;
+  const channel = (name: "r" | "g" | "b"): number | null => {
+    const v = o[name];
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 255) return null;
+    return v;
+  };
+  const r = channel("r");
+  const g = channel("g");
+  const b = channel("b");
+  if (r === null || g === null || b === null) {
+    return { error: "whiteReference must have numeric r/g/b in 0–255." };
+  }
+  return { whiteReference: { r, g, b } };
 }
 
 /** Re-exported so callers get the whole vocabulary from one module. */

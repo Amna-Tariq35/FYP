@@ -11,10 +11,13 @@ export type MakeupProduct = {
   is_skin_friendly: boolean | null;
   is_active: boolean | null;
   finish: string | null;
+  skin_type?: string | string[] | null;
   stock_quantity: number;
   low_stock_threshold: number;
   rating_average: number | null;
-  review_count: number;
+  review_count: number | null;
+  /** False when the review aggregate query failed. Absent or true means the count is real. */
+  reviews_available?: boolean;
 };
 
 export type ProductShade = {

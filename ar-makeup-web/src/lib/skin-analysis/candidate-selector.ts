@@ -60,14 +60,14 @@ export function getTopCandidates(
     
     // AM Candidates (Filtering using am_safe)
     amCandidates[category] = scoredProducts
-      .filter((p) => p.category === category && p.am_safe === true)
+      .filter((p) => p.category === category && p.am_safe !== false)
       .sort(smartSort)
       .slice(0, maxCandidates);
 
     // PM Candidates (Filtering using pm_safe & Excluding sunscreen)
     if (category !== "sunscreen") {
       pmCandidates[category] = scoredProducts
-        .filter((p) => p.category === category && p.pm_safe === true)
+        .filter((p) => p.category === category && p.pm_safe !== false)
         .sort(smartSort)
         .slice(0, maxCandidates);
     }

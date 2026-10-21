@@ -44,7 +44,10 @@ import {
   analyseSkinHex,
   parseIlluminant,
   parsePatches,
+  parseWhiteReference,
+  type AnalysisDebug,
   type AnalysisResult,
+  type CalibrationLabel,
 } from "@/src/lib/foundation/analyze";
 import {
   rankFoundationShades,
@@ -52,7 +55,9 @@ import {
   type ShadeRow,
   type RankResult,
 } from "@/src/lib/foundation/match";
-import { hexToRgb } from "@/src/lib/foundation/color";
+import { hexToRgb, labToRgb, rgbToHex, type Lab } from "@/src/lib/foundation/color";
+import { mapSkinToSwatch, SWATCH_MAP_VERSION } from "@/src/lib/foundation/swatch-map";
+import { clientKey, rateLimit } from "@/src/lib/skin-analysis/rate-limit";
 
 /** Catalog convention: every foundation product key starts with this. */
 const FOUNDATION_PREFIX = "fnd_";
@@ -85,6 +90,15 @@ type MatchResponse = {
   lighterAlternate: RankResult["lighterAlternate"];
   deeperAlternate: RankResult["deeperAlternate"];
   diagnostics: RankResult["diagnostics"];
+  /** Mapped catalog colour. Ranking uses this. The skin swatch stays on `skin.hex`. */
+  referenceHex: string | null;
+  /** Region spread of the reading, in ΔE2000. Not a clinical accuracy claim. */
+  expectedError: number | null;
+  calibration: CalibrationLabel;
+  /** Up to three nearby shades. Shown when confidence is low. */
+  shadeRange: RankResult["shadeRange"];
+  /** Present only when the request set `debug: true`. No pixels. */
+  debug?: AnalysisDebug | null;
   /** True when the reading was written to `user_skin_profiles`. */
   savedToProfile: boolean;
   /** Non-fatal persistence problems, surfaced instead of swallowed. */
@@ -130,6 +144,9 @@ const NO_STORE = { "Content-Type": "application/json", "Cache-Control": "no-stor
 
 export async function POST(request: NextRequest) {
   try {
+    const paced = rateLimit(`foundation:${clientKey(request)}`, 8, 60_000);
+    if (!paced.ok) return jsonError("Too many requests. Please wait a minute.", 429);
+
     const auth = await resolveRequestAuth(request);
     if (!auth) return jsonError("Unauthorized", 401);
     const { supabase, user } = auth;
@@ -189,6 +206,12 @@ export async function POST(request: NextRequest) {
 
     const save = body.save === undefined ? true : body.save === true;
 
+    if (body.action === "feedback") {
+      return handleFeedback(supabase, user.id, body);
+    }
+
+    const wantDebug = body.debug === true;
+
     // ── Measure ──────────────────────────────────────────────────────────────
     let analysis: AnalysisResult;
 
@@ -199,7 +222,13 @@ export async function POST(request: NextRequest) {
       const illuminant = parseIlluminant(body.illuminant);
       if ("error" in illuminant) return jsonError(illuminant.error);
 
-      analysis = analyseSkin(patches.patches, illuminant.illuminant);
+      const whiteReference = parseWhiteReference(body.whiteReference);
+      if ("error" in whiteReference) return jsonError(whiteReference.error);
+
+      analysis = analyseSkin(patches.patches, illuminant.illuminant, undefined, {
+        whiteReference: whiteReference.whiteReference,
+        debug: wantDebug,
+      });
     } else if (typeof body.skinHex === "string") {
       const rgb = hexToRgb(body.skinHex);
       if (!rgb) return jsonError("skinHex must be a hex colour like #E8C3A8.");
@@ -218,11 +247,16 @@ export async function POST(request: NextRequest) {
         {
           quality: analysis.quality,
           confidence: analysis.confidence,
-          skin: null,
+          skin: analysis.skin,
           matches: [],
           lighterAlternate: null,
           deeperAlternate: null,
           diagnostics: emptyDiagnostics(),
+          referenceHex: null,
+          expectedError: analysis.expectedError,
+          calibration: analysis.calibration,
+          shadeRange: [],
+          ...(wantDebug ? { debug: analysis.debug } : {}),
           savedToProfile: false,
           persistenceNotes: [],
         },
@@ -230,30 +264,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ── Rank the catalog ─────────────────────────────────────────────────────
-    const [shadeRes, productRes] = await Promise.all([
-      supabase
-        .from("product_shades")
-        .select("product_key, shade_key, shade_name, shade_hex, shade_order, undertone")
-        .like("product_key", `${FOUNDATION_PREFIX}%`),
-      supabase
-        .from("makeup_products")
-        .select(
-          "product_key, name, brand, price, image_url, finish, coverage, is_active"
-        )
-        .like("product_key", `${FOUNDATION_PREFIX}%`),
-    ]);
+    const mapped = mapSkinToSwatch(analysis.skin.lab);
+    const referenceHex = rgbToHex(labToRgb(mapped));
+    const debug = wantDebug
+      ? {
+          ...(analysis.debug ?? emptyDebug(analysis.skin.lab)),
+          mappedLab: roundLab(mapped),
+          mapVersion: SWATCH_MAP_VERSION,
+        }
+      : undefined;
 
-    if (shadeRes.error || productRes.error) {
-      console.error(
-        "[foundation-match] catalog read failed",
-        shadeRes.error ?? productRes.error
-      );
+    // ── Rank the catalog ─────────────────────────────────────────────────────
+    const catalog = await loadFoundationCatalog(supabase);
+    if (!catalog.ok) {
+      console.error("[foundation-match] catalog read failed", catalog.message);
       return jsonError("Could not read the shade catalog", 500);
     }
-
-    const shades = (shadeRes.data ?? []) as ShadeRow[];
-    const products = (productRes.data ?? []) as ProductRow[];
+    const { shades, products } = catalog;
 
     if (shades.length === 0) {
       // Not a 500: the maths worked, there is simply nothing to recommend. The
@@ -270,6 +297,11 @@ export async function POST(request: NextRequest) {
           diagnostics: emptyDiagnostics([
             "No foundation shades in the catalog to match against.",
           ]),
+          referenceHex,
+          expectedError: analysis.expectedError,
+          calibration: analysis.calibration,
+          shadeRange: [],
+          ...(debug ? { debug } : {}),
           savedToProfile: false,
           persistenceNotes: [],
         },
@@ -278,11 +310,12 @@ export async function POST(request: NextRequest) {
     }
 
     const ranked = rankFoundationShades(shades, products, {
-      skinLab: analysis.skin.lab,
+      skinLab: mapped,
       undertone: analysis.skin.undertone,
       finishPreference:
         typeof finishPreference === "string" ? finishPreference.toLowerCase() : null,
       limit,
+      confidenceLabel: analysis.confidence.label,
     });
 
     // ── Persist ──────────────────────────────────────────────────────────────
@@ -312,6 +345,11 @@ export async function POST(request: NextRequest) {
         lighterAlternate: ranked.lighterAlternate,
         deeperAlternate: ranked.deeperAlternate,
         diagnostics: ranked.diagnostics,
+        referenceHex,
+        expectedError: analysis.expectedError,
+        calibration: analysis.calibration,
+        shadeRange: ranked.shadeRange,
+        ...(debug ? { debug } : {}),
         savedToProfile,
         persistenceNotes,
       },
@@ -396,6 +434,126 @@ function emptyDiagnostics(notes: string[] = []): RankResult["diagnostics"] {
   };
 }
 
+type CatalogClient = { from: (table: string) => any };
+
+async function loadFoundationCatalog(
+  supabase: CatalogClient
+): Promise<
+  | { ok: true; shades: ShadeRow[]; products: ProductRow[] }
+  | { ok: false; message: string }
+> {
+  const productsRes = await supabase
+    .from("makeup_products")
+    .select("product_key, name, brand, price, image_url, finish, coverage, is_active")
+    .like("product_key", `${FOUNDATION_PREFIX}%`);
+  if (productsRes.error) {
+    return { ok: false, message: String(productsRes.error.message ?? productsRes.error) };
+  }
+
+  const withMatch = await supabase
+    .from("product_shades")
+    .select(
+      "product_key, shade_key, shade_name, shade_hex, shade_order, undertone, match_hex"
+    )
+    .like("product_key", `${FOUNDATION_PREFIX}%`);
+
+  if (!withMatch.error) {
+    return {
+      ok: true,
+      shades: (withMatch.data ?? []) as ShadeRow[],
+      products: (productsRes.data ?? []) as ProductRow[],
+    };
+  }
+
+  // match_hex is added by db/013. Until that file is applied the select errors
+  // and ranking continues on shade_hex, which is what older databases have.
+  const plain = await supabase
+    .from("product_shades")
+    .select("product_key, shade_key, shade_name, shade_hex, shade_order, undertone")
+    .like("product_key", `${FOUNDATION_PREFIX}%`);
+  if (plain.error) {
+    return { ok: false, message: String(plain.error.message ?? plain.error) };
+  }
+  return {
+    ok: true,
+    shades: (plain.data ?? []) as ShadeRow[],
+    products: (productsRes.data ?? []) as ProductRow[],
+  };
+}
+
+function roundLab(lab: Lab): Lab {
+  return {
+    L: Number(lab.L.toFixed(2)),
+    a: Number(lab.a.toFixed(2)),
+    b: Number(lab.b.toFixed(2)),
+  };
+}
+
+function emptyDebug(raw: Lab): AnalysisDebug {
+  return {
+    regions: [],
+    illuminant: null,
+    gains: { r: 1, g: 1, b: 1 },
+    whiteBalanceStrength: 1,
+    regionsUsed: [],
+    rawLab: roundLab(raw),
+  };
+}
+
+async function handleFeedback(
+  supabase: CatalogClient,
+  userId: string,
+  body: Record<string, unknown>
+) {
+  const vote = body.vote;
+  if (vote !== "too_light" && vote !== "right" && vote !== "too_dark") {
+    return jsonError("vote must be too_light, right, or too_dark.");
+  }
+
+  const uuid =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const logId =
+    typeof body.logId === "string" && uuid.test(body.logId) ? body.logId : null;
+
+  try {
+    const { error } = await supabase.from("foundation_match_feedback").insert({
+      user_id: userId,
+      log_id: logId,
+      vote,
+    });
+    if (error) {
+      const message = String(error.message ?? error);
+      const missing = /relation|does not exist|schema cache|could not find/i.test(message);
+      return NextResponse.json(
+        {
+          saved: false,
+          note: missing
+            ? "Feedback isn't stored on this server yet. The vote was not lost on screen, but it could not be saved."
+            : "That vote couldn't be saved. Please try again in a moment.",
+        },
+        { headers: NO_STORE }
+      );
+    }
+  } catch (err) {
+    console.error("[foundation-match] feedback insert threw", err);
+    return NextResponse.json(
+      {
+        saved: false,
+        note: "That vote couldn't be saved. Please try again in a moment.",
+      },
+      { headers: NO_STORE }
+    );
+  }
+
+  return NextResponse.json(
+    {
+      saved: true,
+      note: "Thanks — that vote is saved for a later review. It does not change today's match.",
+    },
+    { headers: NO_STORE }
+  );
+}
+
 /**
  * Writes the measured tone into the beauty profile.
  *
@@ -443,15 +601,29 @@ async function saveProfile(
 
     if (error) {
       console.error("[foundation-match] profile upsert failed", error);
-      notes.push("Your match was calculated but could not be saved to your profile.");
+      notes.push(explainProfileSaveFailure(error));
       return false;
     }
     return true;
   } catch (err) {
     console.error("[foundation-match] profile upsert threw", err);
-    notes.push("Your match was calculated but could not be saved to your profile.");
+    notes.push(explainProfileSaveFailure(err));
     return false;
   }
+}
+
+function explainProfileSaveFailure(error: unknown): string {
+  const message =
+    error && typeof error === "object" && "message" in error
+      ? String((error as { message?: unknown }).message ?? error)
+      : String(error ?? "");
+  if (/relation|does not exist|schema cache|could not find|42P01|PGRST205/i.test(message)) {
+    return "Not saved to your profile because that table is not on the server yet. The reading above still stands.";
+  }
+  if (/jwt|not authenticated|permission denied|42501|row-level|RLS/i.test(message)) {
+    return "Not saved to your profile because you are not signed in. The reading above still stands.";
+  }
+  return "Not saved to your profile because the server rejected the write. The reading above still stands.";
 }
 
 /**

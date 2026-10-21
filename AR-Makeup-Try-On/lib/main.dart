@@ -71,23 +71,28 @@ Future<void> main() async {
   
 
   await AppColors.initTheme();
+  AppColors.themeNotifier.addListener(_syncSystemUiOverlay);
 
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-  SystemChrome.setSystemUIOverlayStyle(
-    SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness:
-          AppColors.isDark ? Brightness.light : Brightness.dark,
-      systemNavigationBarColor: Colors.transparent,
-      systemNavigationBarIconBrightness:
-          AppColors.isDark ? Brightness.light : Brightness.dark,
-    ),
-  );
+  _syncSystemUiOverlay();
 
   // Remove splash as soon as possible
   FlutterNativeSplash.remove();
 
   runApp(ProviderScope(child: MyApp(initialScreen: initialScreen)));
+}
+
+void _syncSystemUiOverlay() {
+  final dark = AppColors.isDark;
+  SystemChrome.setSystemUIOverlayStyle(
+    SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      statusBarIconBrightness: dark ? Brightness.light : Brightness.dark,
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarIconBrightness:
+          dark ? Brightness.light : Brightness.dark,
+    ),
+  );
 }
 
 Future<void> _waitForInitialSession() async {

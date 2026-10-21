@@ -1,4 +1,6 @@
 // src/lib/catalog/product-profile-matching.ts
+import { asStringList } from "@/src/lib/skin-analysis/product-shape";
+
 /**
  * Beauty Profile Product Matching
  * 
@@ -118,6 +120,94 @@ export function sortByFinishMatch(
       .finishScore;
     return scoreB - scoreA; // Higher score first
   });
+}
+
+export type ShopperMatchProfile = {
+  finish: string | null;
+  skinType: string | null;
+};
+
+type ProfileReader = {
+  auth: {
+    getUser: () => Promise<{ data: { user: { id: string } | null } }>;
+  };
+  from: (table: string) => any;
+};
+
+function textOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/** Signed-in finish and skin type only. Null when signed out. Missing columns fail soft. */
+export async function loadShopperMatchProfile(
+  supabase: ProfileReader,
+): Promise<ShopperMatchProfile | null> {
+  try {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) return null;
+
+    let finish: string | null = null;
+    let skinType: string | null = null;
+
+    const profile = await supabase
+      .from("user_skin_profiles")
+      .select("finish_preference, skin_type")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (!profile.error && profile.data) {
+      finish = textOrNull(profile.data.finish_preference);
+      skinType = textOrNull(profile.data.skin_type);
+    } else {
+      const finishOnly = await supabase
+        .from("user_skin_profiles")
+        .select("finish_preference")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (!finishOnly.error && finishOnly.data) {
+        finish = textOrNull(finishOnly.data.finish_preference);
+      }
+    }
+
+    if (!skinType) {
+      const log = await supabase
+        .from("skin_analysis_logs")
+        .select("skin_type")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!log.error && log.data) skinType = textOrNull(log.data.skin_type);
+    }
+
+    return { finish, skinType };
+  } catch {
+    return null;
+  }
+}
+
+function sameText(a: string | null | undefined, b: string | null | undefined) {
+  if (!a || !b) return false;
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+/** Exact finish or skin-type lookup. No score and no undertone guess. */
+export function profileMatchLabels(
+  product: { finish?: string | null; skin_type?: unknown },
+  profile: ShopperMatchProfile | null | undefined,
+): string[] {
+  if (!profile) return [];
+  const labels: string[] = [];
+  if (sameText(product.finish, profile.finish)) labels.push("Matches your finish");
+  if (
+    profile.skinType &&
+    asStringList(product.skin_type).some((value) => sameText(value, profile.skinType))
+  ) {
+    labels.push("Matches your skin type");
+  }
+  return labels;
 }
 
 /**

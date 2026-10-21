@@ -53,7 +53,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 
   Future<void> _updateProfile() async {
-    if (_nameController.text.trim().isEmpty) return;
+    if (_nameController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Enter your name.'),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      );
+      return;
+    }
 
     setState(() => _isLoading = true);
     try {
@@ -111,6 +120,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.watch(context);
     final hasImage = _imageFile != null ||
         (_avatarUrl != null && _avatarUrl!.isNotEmpty);
 

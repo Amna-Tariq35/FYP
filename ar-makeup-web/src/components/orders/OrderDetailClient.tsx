@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import ReceiptSummary from "@/src/components/checkout/ReceiptSummary";
 import BuyAgainButton from "@/src/components/orders/BuyAgainButton";
@@ -59,6 +60,7 @@ function statusDotColor(status: string) {
 
 // Which statuses allow cancellation
 const CANCELLABLE_STATUSES = ["placed"];
+const REVIEWABLE_STATUSES = ["paid", "processing", "shipped", "delivered"];
 
 type ReceiptResponse = { order: any; items: any[] };
 
@@ -108,6 +110,11 @@ export default function OrderDetailClient({ orderId }: { orderId: string }) {
 
   const canCancel = useMemo(
     () => CANCELLABLE_STATUSES.includes(status.toLowerCase()),
+    [status]
+  );
+
+  const canReviewPurchase = useMemo(
+    () => REVIEWABLE_STATUSES.includes(status.toLowerCase()),
     [status]
   );
 
@@ -316,7 +323,17 @@ export default function OrderDetailClient({ orderId }: { orderId: string }) {
                           <p className="truncate text-sm font-medium text-[var(--text-main)]">{item.name}</p>
                           <p className="text-xs text-[var(--text-muted)]">Qty {item.quantity}{item.shade_name ? ` · ${item.shade_name}` : ""}</p>
                         </div>
-                        <BuyAgainButton orderId={orderId} itemId={item.id} label="Buy again" />
+                        <div className="flex shrink-0 items-center gap-3">
+                          {canReviewPurchase && item.product_key ? (
+                            <Link
+                              href={`/products/${encodeURIComponent(item.product_key)}#reviews`}
+                              className="text-xs font-semibold text-[#C06C84]"
+                            >
+                              Review this purchase
+                            </Link>
+                          ) : null}
+                          <BuyAgainButton orderId={orderId} itemId={item.id} label="Buy again" />
+                        </div>
                       </div>
                     ))}
                   </div>

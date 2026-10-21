@@ -1,12 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import '../config/app_config.dart';
+import '../services/web_bridge.dart';
 import '../utils/app_colors.dart';
 import '../cache/makeup_bag_cache.dart';
 import '../cache/products_cache.dart';
-
-/// Base URL of the web app. Swap for the production domain when deployed.
-const String kWebBaseUrl = 'https://ar-makeup-web.vercel.app/';
 
 class MakeupBagScreen extends StatefulWidget {
   const MakeupBagScreen({super.key});
@@ -16,29 +14,22 @@ class MakeupBagScreen extends StatefulWidget {
 }
 
 class _MakeupBagScreenState extends State<MakeupBagScreen> {
-  Future<void> _openWebUrl(Uri url) async {
-    if (await canLaunchUrl(url)) {
-      await launchUrl(url, mode: LaunchMode.externalApplication);
-    } else if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not open the web app')),
-      );
-    }
-  }
-
   void _openAddProducts() {
-    _openWebUrl(Uri.parse('$kWebBaseUrl/makeup-bag?add=1'));
+    WebBridge.openAuthenticated(context, AppConfig.makeupBagAddPath());
   }
 
   void _openRefill(String productKey, String shadeKey) {
-    final url = Uri.parse('$kWebBaseUrl/products/$productKey').replace(
-      queryParameters: shadeKey.isNotEmpty ? {'shade': shadeKey} : null,
+    WebBridge.openAuthenticated(
+      context,
+      AppConfig.productPagePath(productKey, shadeKey: shadeKey),
     );
-    _openWebUrl(url);
   }
 
   void _openProductDetails(String productKey) {
-    _openWebUrl(Uri.parse('$kWebBaseUrl/products/$productKey'));
+    WebBridge.openAuthenticated(
+      context,
+      AppConfig.productPagePath(productKey),
+    );
   }
 
   void _showItemOptions(Map<String, dynamic> item, String title) {
@@ -106,6 +97,7 @@ class _MakeupBagScreenState extends State<MakeupBagScreen> {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.watch(context);
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(

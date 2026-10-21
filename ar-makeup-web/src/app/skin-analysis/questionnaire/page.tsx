@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence, Variants } from "framer-motion";
 import { useRouter } from "next/navigation";
+import { supabase } from "@/src/lib/supabase/client";
 import {
   Droplet,
   Wind,
@@ -42,14 +43,23 @@ const DB_CONCERNS = [
   { value: "anti-aging", label: "Anti-Aging" },
 ];
 
-const MAX_CONCERNS = 5;
+const ALLERGY_OPTIONS = [
+  { id: "fragrance", label: "Fragrance" },
+  { id: "alcohol", label: "Drying alcohol" },
+  { id: "essential-oils", label: "Essential oils" },
+  { id: "retinoid", label: "Retinoids" },
+  { id: "aha-bha", label: "Acids (AHA/BHA)" },
+];
 
 const LOADING_MESSAGES = [
-  "Analyzing your profile...",
-  "Scanning 1,100+ active ingredients...",
-  "Consulting AI Dermatologist...",
-  "Crafting your perfect routine...",
+  "Saving your answers...",
+  "Matching catalog ingredients...",
+  "Checking allergy notes...",
+  "Building your routine...",
 ];
+
+const MAX_CONCERNS = 5;
+const TOTAL_STEPS = 4;
 
 function severityLabel(value: number): string {
   if (value <= 3) return "Mild";
@@ -66,6 +76,8 @@ export default function QuestionnairePage() {
   const [skinType, setSkinType] = useState<string | null>(null);
   const [selectedConcerns, setSelectedConcerns] = useState<string[]>([]);
   const [concernSeverity, setConcernSeverity] = useState<Record<string, number>>({});
+  const [allergies, setAllergies] = useState<string[]>([]);
+  const [pregnant, setPregnant] = useState(false);
 
   // Submission & Loading States
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -84,8 +96,22 @@ export default function QuestionnairePage() {
     return () => clearInterval(interval);
   }, [isSubmitting]);
 
+  useEffect(() => {
+    supabase.auth.getUser().then(async ({ data }) => {
+      if (!data.user) return;
+      const { data: profile } = await supabase
+        .from("user_skin_profiles")
+        .select("allergies")
+        .eq("user_id", data.user.id)
+        .maybeSingle();
+      if (Array.isArray(profile?.allergies)) {
+        setAllergies(profile.allergies.filter((item: unknown) => typeof item === "string"));
+      }
+    });
+  }, []);
+
   // Handlers
-  const handleNext = () => setCurrentStep((prev) => Math.min(prev + 1, 3));
+  const handleNext = () => setCurrentStep((prev) => Math.min(prev + 1, TOTAL_STEPS));
   const handleBack = () => {
     setErrorMsg(null);
     setIsAiBusy(false);
@@ -124,9 +150,11 @@ export default function QuestionnairePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           method: "questionnaire", // 👉 YE LINE MISSING THI
-          skinType: skinType,      // Match backend keys
-          mainConcerns: selectedConcerns, // Backend expects array of strings
+          skinType: skinType,
+          mainConcerns: selectedConcerns,
           concernScores: formattedScores,
+          allergies,
+          pregnant,
         }),
       });
 
@@ -135,7 +163,7 @@ export default function QuestionnairePage() {
       if (!res.ok) {
         if (data.error === "AI_BUSY") {
           setIsAiBusy(true);
-          setErrorMsg(data.message || "Our AI Dermatologists are receiving high traffic right now. Please try submitting again in a few seconds.");
+          setErrorMsg(data.message || "Analysis is busy right now. Please try again in a few seconds.");
           setIsSubmitting(false);
           return;
         }
@@ -168,11 +196,11 @@ export default function QuestionnairePage() {
               <Sparkles className="text-[var(--rose-primary)] w-6 h-6" />
               Skin Analysis
             </h1>
-            <p className="ui-muted mt-1">Let AI craft your perfect routine.</p>
+            <p className="ui-muted mt-1">Answer a few questions so we can match products. This is not a medical diagnosis.</p>
           </div>
           {!isSubmitting && (
             <span className="text-[var(--rose-primary)] font-semibold text-sm">
-              Step {currentStep} of 3
+              Step {currentStep} of {TOTAL_STEPS}
             </span>
           )}
         </div>
@@ -182,7 +210,7 @@ export default function QuestionnairePage() {
           <motion.div
             className="h-full bg-[var(--rose-primary)] rounded-full relative"
             initial={{ width: "33%" }}
-            animate={{ width: isSubmitting ? "100%" : `${(currentStep / 3) * 100}%` }}
+            animate={{ width: isSubmitting ? "100%" : `${(currentStep / TOTAL_STEPS) * 100}%` }}
             transition={{ duration: 0.5, ease: "easeInOut" }}
           >
             {isSubmitting && <div className="absolute inset-0 bg-white/30 animate-pulse"></div>}
@@ -199,7 +227,7 @@ export default function QuestionnairePage() {
             <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center mb-3 shadow-sm text-[var(--rose-primary)]">
               <Sparkles className="w-6 h-6 animate-pulse" />
             </div>
-            <h3 className="ui-h2 text-base text-[var(--text-main)] mb-1">AI Dermatologist is Busy</h3>
+            <h3 className="ui-h2 text-base text-[var(--text-main)] mb-1">Analysis is busy</h3>
             <p className="ui-muted text-sm leading-relaxed mb-5 max-w-md">
               {errorMsg}
             </p>
@@ -345,6 +373,45 @@ export default function QuestionnairePage() {
             </motion.div>
           )}
 
+          {currentStep === 4 && !isSubmitting && (
+            <motion.div key="step4" variants={stepVariants} initial="hidden" animate="visible" exit="exit" className="flex-1">
+              <h2 className="ui-h2 mb-2">Anything we should avoid?</h2>
+              <p className="ui-muted mb-6">Optional. These notes remove matching ingredients from the routine. You can skip this.</p>
+              <div className="flex flex-wrap gap-3 mb-6">
+                {ALLERGY_OPTIONS.map((option) => {
+                  const on = allergies.includes(option.id);
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() =>
+                        setAllergies((prev) =>
+                          on ? prev.filter((id) => id !== option.id) : [...prev, option.id],
+                        )
+                      }
+                      className={`text-sm px-5 py-2.5 rounded-full border ${
+                        on
+                          ? "bg-[var(--rose-primary)] border-[var(--rose-primary)] text-white"
+                          : "bg-white border-[var(--border-soft)] text-[var(--text-secondary)]"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <label className="flex items-start gap-3 text-sm text-[var(--text-secondary)]">
+                <input
+                  type="checkbox"
+                  className="mt-1 accent-[var(--rose-primary)]"
+                  checked={pregnant}
+                  onChange={(e) => setPregnant(e.target.checked)}
+                />
+                I am pregnant or nursing, so skip retinoid products.
+              </label>
+            </motion.div>
+          )}
+
           {/* ================= LOADING / SUBMITTING STATE ================= */}
           {isSubmitting && (
             <motion.div
@@ -386,7 +453,7 @@ export default function QuestionnairePage() {
                 <ChevronLeft className="w-4 h-4" /> Back
               </button>
 
-              {currentStep < 3 ? (
+              {currentStep < TOTAL_STEPS ? (
                 <button
                   onClick={handleNext}
                   disabled={(currentStep === 1 && !skinType) || (currentStep === 2 && selectedConcerns.length === 0)}

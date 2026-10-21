@@ -1,9 +1,9 @@
 "use client";
 
-import React, { Suspense, useEffect, useMemo, useState } from "react";
+import React, { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import CheckoutShell from "@/src/components/checkout/CheckoutShell";
-import { clearCart } from "@/src/store/cart";
+import { removeOrderedLines } from "@/src/store/cart";
 import { clearShippingInfo } from "@/src/store/checkoutShipping";
 import { loadAddToMakeupBag } from "@/src/store/addToMakeupBag";
 import Link from "next/link";
@@ -22,6 +22,7 @@ function CheckoutSuccessContent() {
   const orderId = params.get("order_id");
   const guestToken = params.get("guest_token");
   const sessionId = params.get("session_id"); // Stripe session ID
+  const isCod = params.get("payment") === "cod" && !sessionId;
 
   const [receipt, setReceipt] = useState<{ order: any; items: any[] } | null>(
     null,
@@ -56,15 +57,29 @@ useEffect(() => {
 
   const orderKey = `ar_makeup_checkout_success_cleaned_v1:${orderId || guestToken || "unknown"}`;
   const emailSentKey = `ar_makeup_checkout_success_email_sent_v1:${orderId || guestToken || "unknown"}`;
-  const isStripeOrder = Boolean(sessionId);
-  const paymentConfirmed = !isStripeOrder || paymentStatus === "paid";
+  const stripePhase = !sessionId
+    ? null
+    : paymentStatus === "idle"
+      ? "verifying"
+      : paymentStatus;
+  const paymentConfirmed = stripePhase === "paid";
   const hasReceipt = Boolean(receipt?.order);
+  const storedStatus = String(receipt?.order?.status || "").toLowerCase();
 
-  // const refLabel = useMemo(() => {
-  //   if (orderId) return { label: "Order ID", value: orderId };
-  //   if (guestToken) return { label: "Guest Token", value: guestToken };
-  //   return { label: "Reference", value: "" };
-  // }, [orderId, guestToken]);
+  const showGuestAccess = userEmail === null && Boolean(guestToken);
+  const trackHref = guestToken
+    ? `/order/track?guest_token=${encodeURIComponent(guestToken)}`
+    : "";
+
+  async function copyGuestValue(value: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  }
 
   // 1. Verify Stripe Payment (If session_id exists)
   useEffect(() => {
@@ -114,15 +129,15 @@ useEffect(() => {
     loadReceipt();
   }, [orderId, guestToken]);
 
-  // 3. Clear cart as soon as final order is confirmed.
+  // 3. After a paid Stripe session, remove only the lines on this order.
   useEffect(() => {
     if (!hasReceipt || !paymentConfirmed) return;
     if (sessionStorage.getItem(orderKey)) return;
 
-    clearCart();
+    removeOrderedLines(receipt?.items || []);
     clearShippingInfo();
     sessionStorage.setItem(orderKey, "1");
-  }, [hasReceipt, paymentConfirmed, orderKey]);
+  }, [hasReceipt, paymentConfirmed, orderKey, receipt]);
 
   // 3b. Fill Makeup Bag after a confirmed purchase (COD + Stripe).
   useEffect(() => {
@@ -171,13 +186,10 @@ useEffect(() => {
     });
 
     if (emailSentRef.current) return;
-    if (!hasReceipt || !paymentConfirmed) return;
+    if (!hasReceipt || !orderId) return;
+    if (!paymentConfirmed && !isCod) return;
     if (userEmail === undefined) return;
     if (sessionStorage.getItem(emailSentKey)) return;
-
-    const isCOD = !sessionId;
-    const emailTo = receipt?.order?.guest_email || userEmail;
-    if (!emailTo) return;
 
     emailSentRef.current = true;
 
@@ -185,14 +197,8 @@ useEffect(() => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        userEmail: emailTo,
-        userName: receipt?.order?.shipping_name || "Valued Customer",
-        orderDetails: {
-          order_id: orderId || guestToken,
-          payment_method: isCOD ? "cash_on_delivery" : "online",
-          items: receipt?.items,
-          total: receipt?.order?.total,
-        },
+        order_id: orderId,
+        guest_token: guestToken,
       }),
     })
       .then((res) => res.json())
@@ -210,7 +216,7 @@ useEffect(() => {
         console.error("Email send failed:", err);
         emailSentRef.current = false;
       });
-  }, [hasReceipt, paymentConfirmed, receipt, userEmail, orderId, guestToken, paymentStatus, sessionId, emailSentKey]);
+  }, [hasReceipt, paymentConfirmed, isCod, userEmail, orderId, guestToken, paymentStatus, emailSentKey]);
 
   // async function copyRef() {
   //   if (!refLabel.value) return;
@@ -226,51 +232,65 @@ useEffect(() => {
       <CheckoutShell
         step="success"
         title="Checkout"
-        subtitle="Your order has been placed successfully."
+        subtitle={
+          paymentConfirmed
+            ? "Your card payment is confirmed."
+            : isCod
+              ? "Your order is placed. Payment is still due on delivery."
+              : stripePhase === "verifying"
+                ? "Confirming your card payment."
+                : "This visit does not confirm a payment."
+        }
         left={
           <div className="space-y-5">
             <div className="ui-section p-5">
               <h2 className="ui-h2">
-                {paymentStatus === "verifying"
-                  ? "Verifying Payment ⏳"
-                  : paymentStatus === "failed"
-                    ? "Payment Failed ❌"
-                    : "Order placed 🎉"}
+                {stripePhase === "verifying"
+                  ? "Verifying payment"
+                  : paymentConfirmed
+                    ? "Payment confirmed"
+                    : stripePhase === "failed"
+                      ? "Payment not confirmed"
+                      : isCod
+                        ? "Payment due on delivery"
+                        : "Payment not completed"}
               </h2>
 
               <p className="ui-muted mt-1">
-                {paymentStatus === "verifying"
-                  ? "Please wait while we confirm your payment with Stripe..."
-                  : paymentStatus === "failed"
-                    ? "There was an issue verifying your payment. Your order is saved as 'Failed'."
-                    : "We’ve saved your order. You can continue shopping anytime."}
+                {stripePhase === "verifying"
+                  ? "Please wait while we confirm your payment with Stripe."
+                  : paymentConfirmed
+                    ? "Stripe marked this checkout paid. You can continue shopping."
+                    : stripePhase === "failed"
+                      ? `We could not confirm this payment. The stored order status is ${storedStatus || "placed"}.`
+                      : isCod
+                        ? "This order is unpaid. Payment is still due when it arrives. Your cart was not cleared, and these items were not added to your makeup bag."
+                        : "No paid Stripe session was found, so this page is not a payment receipt."}
               </p>
 
               <div className="ui-divider" />
 
-              {/* <div className="space-y-2">
-                <div className="text-sm font-semibold text-[var(--text-main)]">
-                  {refLabel.label}
+              {showGuestAccess && guestToken ? (
+                <div className="space-y-2">
+                  <div className="text-sm font-semibold text-[var(--text-main)]">
+                    Guest order reference
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="ui-chip">{shortRef(guestToken)}</span>
+                    <button type="button" className="ui-btn-ghost" onClick={() => copyGuestValue(guestToken)}>
+                      {copied ? "Copied" : "Copy token"}
+                    </button>
+                    <button
+                      type="button"
+                      className="ui-btn-ghost"
+                      onClick={() => copyGuestValue(`${window.location.origin}${trackHref}`)}
+                    >
+                      Copy track link
+                    </button>
+                  </div>
+                  <p className="ui-helper mt-2">Save this token to track your guest order later.</p>
                 </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="ui-chip">{shortRef(refLabel.value)}</span>
-
-                  <button
-                    type="button"
-                    className="ui-btn-ghost"
-                    onClick={copyRef}
-                  >
-                    {copied ? "Copied ✅" : "Copy"}
-                  </button>
-                </div>
-
-                {guestToken ? (
-                  <p className="ui-helper mt-2">
-                    Save this token to track your guest order later.
-                  </p>
-                ) : null}
-              </div> */}
+              ) : null}
 
               <div className="ui-divider" />
 
@@ -349,18 +369,23 @@ useEffect(() => {
                 Order Status
               </div>
               <ul className="mt-2 space-y-2 text-sm text-[var(--text-secondary)]">
-                {sessionId ? (
+                {paymentConfirmed ? (
                   <li>
-                    • Payment Status:{" "}
-                    <span className="font-semibold capitalize">
-                      {paymentStatus === "idle" ? "Paid" : paymentStatus}
+                    • Payment status:{" "}
+                    <span className="font-semibold">Paid</span>
+                  </li>
+                ) : isCod ? (
+                  <li>
+                    • Payment status:{" "}
+                    <span className="font-semibold">
+                      Due on delivery ({storedStatus || "placed"})
                     </span>
                   </li>
                 ) : (
                   <li>
-                    • Payment Status:{" "}
+                    • Payment status:{" "}
                     <span className="font-semibold">
-                      Cash on Delivery (Placed)
+                      {stripePhase === "verifying" ? "Verifying" : "Not paid"}
                     </span>
                   </li>
                 )}

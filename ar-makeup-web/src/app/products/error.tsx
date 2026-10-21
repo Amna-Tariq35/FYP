@@ -1,7 +1,6 @@
 "use client";
 
 export default function Error({
-  error,
   reset,
 }: {
   error: Error;
@@ -20,10 +19,10 @@ export default function Error({
             Couldn’t load products
           </h1>
           <p className="mt-2 text-[var(--text-muted)]">
-            Please check your connection or Supabase config and try again.
+            The makeup collection could not be loaded. Check your connection and try again.
           </p>
 
-          <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="mt-6">
             <button
               onClick={() => reset()}
               className="
@@ -33,11 +32,6 @@ export default function Error({
             >
               Retry
             </button>
-
-            {/* Keep message small so it doesn't look scary to users */}
-            <span className="text-xs text-[var(--text-muted)]">
-              {error.message}
-            </span>
           </div>
         </div>
       </div>

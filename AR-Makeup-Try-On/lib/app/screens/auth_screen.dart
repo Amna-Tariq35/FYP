@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../config/app_config.dart';
+import '../services/web_bridge.dart';
 import '../utils/app_colors.dart';
 import 'camera_permission_screen.dart';
 import 'dart:async';
@@ -18,10 +20,11 @@ class AuthScreen extends StatefulWidget {
 }
 
 class _AuthScreenState extends State<AuthScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late bool isSignIn;
   bool isLoading = false;
   bool isGoogleLoading = false;
+  int _googleAttempt = 0;
   bool _obscurePassword = true;
 
   final TextEditingController emailController = TextEditingController();
@@ -35,6 +38,7 @@ class _AuthScreenState extends State<AuthScreen>
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     isSignIn = widget.isLoginMode;
 
     _animController = AnimationController(
@@ -123,7 +127,26 @@ class _AuthScreenState extends State<AuthScreen>
       });
 }
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _releaseGoogleSpinnerIfCancelled();
+    }
+  }
+
+  /// The Google browser can be closed without a session. Wait briefly so a
+  /// successful redirect still reaches the signed-in listener first.
+  Future<void> _releaseGoogleSpinnerIfCancelled() async {
+    if (!isGoogleLoading) return;
+    final attempt = _googleAttempt;
+    await Future<void>.delayed(const Duration(milliseconds: 1000));
+    if (!mounted || attempt != _googleAttempt || !isGoogleLoading) return;
+    if (Supabase.instance.client.auth.currentSession != null) return;
+    setState(() => isGoogleLoading = false);
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _authStateSubscription?.cancel();
     _animController.dispose();
     emailController.dispose();
@@ -186,27 +209,30 @@ class _AuthScreenState extends State<AuthScreen>
   }
 
   Future<void> signInWithGoogle() async {
-  // ── Turant full screen loader dikhao ──────────────────────────────────
-  setState(() => isGoogleLoading = true);
-  
-  try {
-    await Supabase.instance.client.auth.signInWithOAuth(
-      OAuthProvider.google,
-      redirectTo: 'io.supabase.flutter://login-callback/',
-    );
-    // OAuth browser mein khulta hai — app background jaati hai
-    // Wapas aane pe AppRoot handle karega
-    // isGoogleLoading = true REHNE DO — screen covered rahegi
-  } on AuthException catch (error) {
-    // Sirf error pe loading hatao
-    if (mounted) setState(() => isGoogleLoading = false);
-    _showSnackBar(error.message, color: Colors.red.shade400);
-  } catch (_) {
-    if (mounted) setState(() => isGoogleLoading = false);
-    _showSnackBar('Google Sign-In failed. Please try again.');
+    final attempt = ++_googleAttempt;
+    setState(() => isGoogleLoading = true);
+
+    try {
+      final launched = await Supabase.instance.client.auth.signInWithOAuth(
+        OAuthProvider.google,
+        redirectTo: 'io.supabase.flutter://login-callback/',
+      );
+      if (!mounted || attempt != _googleAttempt) return;
+      // A successful return is handled by the signed-in listener above.
+      // AppRoot does not handle it. Keep the spinner while the browser is open.
+      // launchUrl returns false when the browser never opens.
+      if (!launched) {
+        setState(() => isGoogleLoading = false);
+        _showSnackBar('Google Sign-In failed. Please try again.');
+      }
+    } on AuthException catch (error) {
+      if (mounted) setState(() => isGoogleLoading = false);
+      _showSnackBar(error.message, color: Colors.red.shade400);
+    } catch (_) {
+      if (mounted) setState(() => isGoogleLoading = false);
+      _showSnackBar('Google Sign-In failed. Please try again.');
+    }
   }
-  // ── finally mat likho — loading state rehni chahiye ──────────────────
-}
 
   void _showSnackBar(
     String message, {
@@ -239,6 +265,7 @@ class _AuthScreenState extends State<AuthScreen>
 
   @override
   Widget build(BuildContext context) {
+    AppColors.watch(context);
    return Scaffold(
     backgroundColor: AppColors.background,
     appBar: isGoogleLoading ? null : AppBar(  // loading mein appbar bhi hatao
@@ -377,7 +404,29 @@ class _AuthScreenState extends State<AuthScreen>
                   setState(() => _obscurePassword = !_obscurePassword),
             ),
           ),
-          const SizedBox(height: 28),
+          if (isSignIn) ...[
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: () => WebBridge.openPublic(
+                  context,
+                  AppConfig.forgotPasswordPath,
+                ),
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.primary,
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: const Text(
+                  'Forgot password?',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ),
+          ],
+          const SizedBox(height: 20),
 
           // Primary CTA
           _buildPrimaryButton(),

@@ -2,6 +2,7 @@
 import { Sparkles, Clock, Tag, ImageOff, ArrowRight } from "lucide-react";
 import { SavedLook } from "@/src/types";
 import { createSupabaseServerClient } from "@/src/lib/supabase/server";
+import CopyLookLink from "@/src/components/looks/CopyLookLink";
 
 export const dynamic = "force-dynamic";
 
@@ -239,10 +240,12 @@ export default async function MyLooksPage() {
         }
         .no-tags { font-size: 11px; color: var(--text-muted); font-style: italic; }
 
+        .look-card-name-link { text-decoration: none; color: inherit; }
         .look-card-footer {
           display: flex;
-          align-items: center;
-          justify-content: flex-end;
+          align-items: flex-end;
+          justify-content: space-between;
+          gap: 8px;
           margin-top: auto;
           padding-top: 10px;
           border-top: 1px solid var(--border-soft);
@@ -337,11 +340,15 @@ export default async function MyLooksPage() {
           ) : (
             <div className="looks-grid">
               {looks.map((look) => (
-                <Link key={look.id} href={`/looks/${look.id}`} className="look-card">
-                  <LookPreview src={look.preview_image_url} alt={look.look_name ?? "Saved Look"} />
+                <article key={look.id} className="look-card">
+                  <Link href={`/looks/${look.id}`}>
+                    <LookPreview src={look.preview_image_url} alt={look.look_name ?? "Saved Look"} />
+                  </Link>
 
                   <div className="look-card-body">
-                    <h3 className="look-card-name">{look.look_name || "Untitled Look"}</h3>
+                    <Link href={`/looks/${look.id}`} className="look-card-name-link">
+                      <h3 className="look-card-name">{look.look_name || "Untitled Look"}</h3>
+                    </Link>
 
                     {look.created_at && (
                       <div className="look-card-meta">
@@ -369,12 +376,13 @@ export default async function MyLooksPage() {
                     </div>
 
                     <div className="look-card-footer">
-                      <span className="look-card-cta">
+                      <CopyLookLink lookId={look.id} />
+                      <Link href={`/looks/${look.id}`} className="look-card-cta">
                         View look <ArrowRight className="w-3.5 h-3.5" />
-                      </span>
+                      </Link>
                     </div>
                   </div>
-                </Link>
+                </article>
               ))}
             </div>
           )}

@@ -19,12 +19,8 @@ const FAQS: { q: string; a: React.ReactNode }[] = [
       <>
         The app tracks your face in real time and renders makeup onto it live —
         nothing is uploaded to render a look. Shades come from the same catalog
-        the store sells from, so what you try on is what you can buy. There is
-        also a{" "}
-        <Link href="/try-on" className="text-[#C06C84] underline-offset-2 hover:underline">
-          lighter try-on
-        </Link>{" "}
-        here on the website.
+        the store sells from, so what you try on is what you can buy. The full
+        camera is in the Android app.
       </>
     ),
   },
@@ -46,9 +42,8 @@ const FAQS: { q: string; a: React.ReactNode }[] = [
     q: "What does the skin analysis do with my photo?",
     a: (
       <>
-        Your photo is analysed to estimate skin type and flag visible concerns,
-        and the result is saved to your profile so product recommendations can
-        use it. Start one from{" "}
+        Your photo is sent for analysis and is not stored. The skin profile and
+        the routine are saved so product suggestions can use them. Start one from{" "}
         <Link
           href="/skin-analysis"
           className="text-[#C06C84] underline-offset-2 hover:underline"

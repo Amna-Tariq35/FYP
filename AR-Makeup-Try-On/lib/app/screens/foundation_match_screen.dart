@@ -26,16 +26,28 @@
 //     await is followed by a `mounted` check, and the whole result model tolerates
 //     missing fields — see `foundation_match_service.dart`.
 
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math' as math;
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../cache/makeup_bag_cache.dart';
 import '../config/app_config.dart';
 import '../services/beauty_profile_service.dart';
 import '../services/foundation_match_service.dart';
+import '../services/skin_sampler.dart';
 import '../services/web_bridge.dart';
 import '../utils/app_colors.dart';
-import '../utils/skin_color.dart';
+import '../utils/demo_looks.dart';
+import 'auth_screen.dart';
+import 'foundation_capture_screen.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Result contract
@@ -58,11 +70,53 @@ class FoundationTryOnRequest {
   final String shadeName;
 }
 
+/// Pops when the user wants the matched foundation worn with a blush and a lip.
+///
+/// The try-on screen applies it through the saved-look path. This screen does
+/// not touch the camera.
+class FoundationLookRequest {
+  const FoundationLookRequest({
+    required this.productKey,
+    required this.shadeKey,
+    required this.shadeName,
+    required this.skinHex,
+    required this.undertone,
+  });
+
+  final String productKey;
+  final String shadeKey;
+  final String shadeName;
+  final String skinHex;
+  final String undertone;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Screen
 // ─────────────────────────────────────────────────────────────────────────────
 
-enum _Stage { intake, working, retake, result }
+enum _Stage { signIn, intake, working, retake, result }
+
+/// A red–yellow skin hue (about 40° and up, with yellow still in the reading)
+/// is warm or neutral. The server used to call that cool whenever it sat a few
+/// degrees redder than the depth reference.
+String shownUndertone(SkinReading skin) {
+  if (skin.undertone != 'cool') return skin.undertone;
+  if (skin.a <= 0 || skin.b <= 0) return skin.undertone;
+  final hue = math.atan2(skin.b, skin.a) * 180 / math.pi;
+  if (hue >= 40) return 'neutral';
+  return skin.undertone;
+}
+
+String _persistenceLine(String note) {
+  if (note.contains('could not be saved to your profile') ||
+      note.contains('Not saved to your profile')) {
+    if (note.contains('table') || note.contains('signed in') || note.contains('rejected')) {
+      return note;
+    }
+    return 'Not saved to your profile: you are not signed in, or the profile table is missing. The reading above still stands.';
+  }
+  return note;
+}
 
 class FoundationMatchScreen extends StatefulWidget {
   const FoundationMatchScreen({super.key});
@@ -94,10 +148,52 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
 
   final ImagePicker _picker = ImagePicker();
 
+  /// Optional white-sheet path. Off unless the user turns it on.
+  bool _havePaper = false;
+
+  /// Gallery photos are labelled on the result so a weak reading is expected.
+  bool _fromGallery = false;
+
+  /// Names of the blush and lip the harmony helper would pair with this result.
+  String? _harmonyBlushName;
+  String? _harmonyLipName;
+  int _harmonyTicket = 0;
+
   @override
   void initState() {
     super.initState();
+    if (Supabase.instance.client.auth.currentSession == null) {
+      _stage = _Stage.signIn;
+    }
     _loadCached();
+  }
+
+  bool get _signedIn => Supabase.instance.client.auth.currentSession != null;
+
+  void _showSignInGate() {
+    setState(() {
+      _busy = false;
+      _stage = _Stage.signIn;
+      _result = null;
+      _errorMessage = null;
+      _errorHint = null;
+    });
+  }
+
+  /// Same sign-in route the profile button uses, on this navigator, so the
+  /// try-on camera stays mounted underneath.
+  Future<void> _openSignIn() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const AuthScreen(isLoginMode: true)),
+    );
+    if (!mounted) return;
+    if (_signedIn) {
+      setState(() {
+        _stage = _Stage.intake;
+        _errorMessage = null;
+        _errorHint = null;
+      });
+    }
   }
 
   Future<void> _loadCached() async {
@@ -108,47 +204,58 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
 
   // ── Run ────────────────────────────────────────────────────────────────────
 
-  Future<void> _run(ImageSource source) async {
+  Future<void> _runGallery() async {
     if (_busy) return;
-
     XFile? picked;
     try {
-      // Deliberately no `maxWidth` / `imageQuality`: both make the plugin
-      // re-encode the JPEG, which on some Android OEM builds bakes or drops the
-      // EXIF orientation tag. The sampler already caps its decode at 1440 px and
-      // checks that ML Kit and the Flutter decoder agree on orientation, so
-      // handing it the untouched original is both safer and cheaper.
-      picked = await _picker.pickImage(
-        source: source,
-        preferredCameraDevice: CameraDevice.front,
-      );
+      picked = await _picker.pickImage(source: ImageSource.gallery);
     } catch (e) {
       debugPrint('[FoundationMatch] picker failed: $e');
       if (!mounted) return;
       setState(() {
         _stage = _Stage.intake;
-        _errorMessage = source == ImageSource.camera
-            ? "Couldn't open the camera."
-            : "Couldn't open your photos.";
+        _errorMessage = "Couldn't open your photos.";
         _errorHint = 'Check the app permissions in Settings and try again.';
       });
       return;
     }
+    if (picked == null || !mounted) return;
+    await _matchPaths([picked.path], fromGallery: true);
+  }
 
-    if (picked == null) return; // Cancelled — not an error.
-    if (!mounted) return;
+  Future<void> _runCamera() async {
+    if (_busy) return;
+    final captured = await Navigator.of(context).push<FoundationCaptureResult>(
+      MaterialPageRoute(builder: (_) => const FoundationCaptureScreen()),
+    );
+    if (!mounted || captured == null) return;
+    if (captured.chooseGallery) {
+      await _runGallery();
+      return;
+    }
+    if (captured.error != null) {
+      setState(() {
+        _stage = _Stage.intake;
+        _errorMessage = captured.error;
+        _errorHint = captured.hint ?? 'You can still choose a photo from your gallery.';
+      });
+      return;
+    }
+    final paths = captured.paths;
+    if (paths == null || paths.isEmpty) return;
+    await _matchPaths(paths, fromGallery: false);
+  }
 
+  Future<void> _matchPaths(List<String> paths, {required bool fromGallery}) async {
     setState(() {
       _busy = true;
+      _fromGallery = fromGallery;
       _stage = _Stage.working;
       _errorMessage = null;
       _errorHint = null;
-      _progressLabel = 'Finding your face…';
+      _progressLabel = paths.length > 1 ? 'Reading a few frames…' : 'Finding your face…';
     });
 
-    // The sampler and the request together take a couple of seconds; the labels
-    // are timed to the actual phases rather than faked on a timer, except this
-    // one hand-off which happens too fast to observe otherwise.
     Future.delayed(const Duration(milliseconds: 700), () {
       if (mounted && _stage == _Stage.working) {
         setState(() => _progressLabel = 'Measuring your skin tone…');
@@ -161,9 +268,24 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
     });
 
     try {
-      final result = await FoundationMatchService.matchFromPhoto(
-        picked.path,
+      final sampled = await SkinSampler.sampleFrames(
+        paths,
+        seekWhiteReference: _havePaper,
+      );
+      if (!mounted) return;
+
+      Map<String, int>? paper = sampled.whiteReference;
+      if (_havePaper && paper == null) {
+        paper = await Navigator.of(context).push<Map<String, int>>(
+          MaterialPageRoute(builder: (_) => PaperTapScreen(imagePath: paths.first)),
+        );
+        if (!mounted) return;
+      }
+
+      final result = await FoundationMatchService.matchSample(
+        sampled,
         finishPreference: BeautyProfileService.getCachedProfile()?.finishPreference,
+        whiteReference: paper,
       );
 
       if (!mounted) return;
@@ -171,20 +293,27 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
       setState(() {
         _busy = false;
         _result = result;
-        _stage = result.needsRetake ? _Stage.retake : _Stage.result;
+        _stage = _shouldRetake(result) ? _Stage.retake : _Stage.result;
       });
+      _scheduleHarmonyPreview(result);
 
-      // The server wrote the measured tone into `user_skin_profiles`. Refresh the
-      // local beauty-profile cache from it, otherwise the try-on sheet keeps
-      // sorting foundation by the *old* tone until the app is restarted — the
-      // exact kind of inconsistency that makes a feature feel broken.
       if (result.savedToProfile) {
         _refreshBeautyProfileCache();
       }
-
-      // A cached result is now stale.
       _loadCached();
     } on FoundationMatchException catch (e) {
+      if (!mounted) return;
+      if (e.needsSignIn) {
+        _showSignInGate();
+        return;
+      }
+      setState(() {
+        _busy = false;
+        _stage = _Stage.intake;
+        _errorMessage = e.message;
+        _errorHint = e.hint;
+      });
+    } on SkinSampleException catch (e) {
       if (!mounted) return;
       setState(() {
         _busy = false;
@@ -193,8 +322,6 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
         _errorHint = e.hint;
       });
     } catch (e, st) {
-      // Anything reaching here is a bug, not a bad photo. It is still not allowed
-      // to take the screen down.
       debugPrint('[FoundationMatch] unexpected: $e\n$st');
       if (!mounted) return;
       setState(() {
@@ -203,6 +330,14 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
         _errorMessage = 'Something went wrong while matching your shade.';
         _errorHint = 'Please try again.';
       });
+    } finally {
+      if (!fromGallery) {
+        for (final path in paths) {
+          try {
+            await File(path).delete();
+          } catch (_) {}
+        }
+      }
     }
   }
 
@@ -219,14 +354,105 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
   // ── Actions on a match ─────────────────────────────────────────────────────
 
   void _tryInAr(FoundationMatch match) {
-    Navigator.pop(
-      context,
+    final nav = Navigator.of(context);
+    if (!nav.canPop()) return;
+    nav.pop(
       FoundationTryOnRequest(
         productKey: match.productKey,
         shadeKey: match.shadeKey,
         shadeName: '${match.productName} · ${match.shadeName}',
       ),
     );
+  }
+
+  void _wearLook(FoundationMatch match) {
+    final skin = _result?.skin;
+    final nav = Navigator.of(context);
+    if (skin == null || !nav.canPop()) return;
+    nav.pop(
+      FoundationLookRequest(
+        productKey: match.productKey,
+        shadeKey: match.shadeKey,
+        shadeName: match.shadeName,
+        skinHex: skin.hex,
+        undertone: shownUndertone(skin),
+      ),
+    );
+  }
+
+  void _scheduleHarmonyPreview(FoundationMatchResult result) {
+    final skin = result.skin;
+    final best = result.best;
+    if (skin == null || best == null || _shouldRetake(result)) {
+      _harmonyBlushName = null;
+      _harmonyLipName = null;
+      return;
+    }
+    final ticket = ++_harmonyTicket;
+    _loadHarmonyNames(skin, ticket);
+  }
+
+  Future<void> _loadHarmonyNames(SkinReading skin, int ticket) async {
+    try {
+      final shades = await _readShadeMaps();
+      if (!mounted || ticket != _harmonyTicket) return;
+      final undertone = shownUndertone(skin);
+      final blushShades = shades.where((s) => (s['product_key'] ?? '').toString().startsWith('blu_')).toList();
+      var lipShades = shades.where((s) => (s['product_key'] ?? '').toString().startsWith('lip_')).toList();
+      if (lipShades.isEmpty) {
+        lipShades = shades.where((s) => (s['product_key'] ?? '').toString().startsWith('gloss_')).toList();
+      }
+      final blush = nearestHarmonyShade(
+        shades: blushShades,
+        skinHex: skin.hex,
+        undertone: undertone,
+        lip: false,
+      );
+      final lip = nearestHarmonyShade(
+        shades: lipShades,
+        skinHex: skin.hex,
+        undertone: undertone,
+        lip: true,
+      );
+      setState(() {
+        _harmonyBlushName = blush?.shadeName;
+        _harmonyLipName = lip?.shadeName;
+      });
+    } catch (e) {
+      debugPrint('[FoundationMatch] harmony names failed: $e');
+    }
+  }
+
+  /// Read-only. Never writes shade_hex or shade_key.
+  Future<List<Map<String, dynamic>>> _readShadeMaps() async {
+    try {
+      final dir = await getApplicationSupportDirectory();
+      final file = File('${dir.path}/product_shades_cache.json');
+      if (await file.exists()) {
+        final decoded = jsonDecode(await file.readAsString());
+        if (decoded is List && decoded.isNotEmpty) {
+          return decoded
+              .whereType<Map>()
+              .map((row) => Map<String, dynamic>.from(row))
+              .toList();
+        }
+      }
+    } catch (e) {
+      debugPrint('[FoundationMatch] shade cache read failed: $e');
+    }
+    try {
+      final rows = await Supabase.instance.client
+          .from('product_shades')
+          .select('product_key,shade_key,shade_name,shade_hex')
+          .limit(2000);
+      return (rows as List)
+          .whereType<Map>()
+          .map((row) => Map<String, dynamic>.from(row))
+          .toList();
+    } catch (e) {
+      debugPrint('[FoundationMatch] shade list read failed: $e');
+      return [];
+    }
   }
 
   Future<void> _addToBag(FoundationMatch match) async {
@@ -247,10 +473,57 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
   Future<void> _buyOnWeb(FoundationMatch match) async {
     // Authenticated so the site opens signed in, and the product page can show
     // "in your bag" state consistently with the app.
+    // The catalog page ignores ?product=. The product lives at /products/{key},
+    // and that page preselects ?shade=.
     await WebBridge.openAuthenticated(
       context,
-      '${AppConfig.productsPath}?product=${Uri.encodeComponent(match.productKey)}',
+      AppConfig.productPagePath(match.productKey, shadeKey: match.shadeKey),
     );
+  }
+
+  /// Cross-region ΔE above this is an uneven photo, not a shade to wear.
+  static const double _unevenDeltaE = 5;
+
+  /// A stable reading still this far from every chip is not "your match".
+  static const double _farCatalogDeltaE = 6;
+
+  bool _shouldRetake(FoundationMatchResult result) {
+    if (result.needsRetake) return true;
+    final spread = result.expectedError;
+    return spread != null && spread > _unevenDeltaE;
+  }
+
+  Future<void> _vote(String vote) async {
+    try {
+      final note = await FoundationMatchService.submitFeedback(vote);
+      if (!mounted) return;
+      _toast(note);
+    } on FoundationMatchException catch (e) {
+      if (!mounted) return;
+      if (e.needsSignIn) {
+        _showSignInGate();
+        return;
+      }
+      _toast(e.hint == null ? e.message : '${e.message} ${e.hint}');
+    }
+  }
+
+  Future<void> _shareDebugSample() async {
+    final json = FoundationMatchService.debugRequestJson;
+    if (json == null || json.isEmpty) {
+      _toast('Take a photo first — there is no sample to copy yet.');
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: json));
+    if (!mounted) return;
+    _toast('Sample copied. It has colours only, no photo.');
+    try {
+      await SharePlus.instance.share(
+        ShareParams(text: json, subject: 'Foundation sample'),
+      );
+    } catch (e) {
+      debugPrint('[FoundationMatch] share failed: $e');
+    }
   }
 
   void _toast(String message) {
@@ -272,6 +545,7 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
 
   @override
   Widget build(BuildContext context) {
+    AppColors.watch(context);
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
@@ -280,7 +554,12 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
         elevation: 0,
         leading: IconButton(
           icon: Icon(Icons.chevron_left, color: AppColors.textMain),
-          onPressed: _busy ? null : () => Navigator.pop(context),
+          onPressed: _busy
+              ? null
+              : () {
+                  final nav = Navigator.of(context);
+                  if (nav.canPop()) nav.pop();
+                },
         ),
         title: Text(
           'Find My Shade',
@@ -311,11 +590,53 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
       body: SafeArea(
         top: false,
         child: switch (_stage) {
+          _Stage.signIn => _buildSignIn(),
           _Stage.intake => _buildIntake(),
           _Stage.working => _buildWorking(),
           _Stage.retake => _buildRetake(),
           _Stage.result => _buildResult(),
         },
+      ),
+    );
+  }
+
+  // ── Stage: sign in ─────────────────────────────────────────────────────────
+
+  Widget _buildSignIn() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(28, 36, 28, 28),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Find My Shade',
+            style: TextStyle(
+              color: AppColors.textMain,
+              fontSize: 26,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.4,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'This match is saved to your account, so you need to be signed in first.',
+            style: TextStyle(color: AppColors.textMuted, fontSize: 15.5, height: 1.45),
+          ),
+          const SizedBox(height: 28),
+          _PrimaryButton(
+            icon: Icons.login_rounded,
+            label: 'Sign in',
+            onTap: _openSignIn,
+          ),
+          const SizedBox(height: 8),
+          TextButton(
+            onPressed: () {
+              final nav = Navigator.of(context);
+              if (nav.canPop()) nav.pop();
+            },
+            child: Text('Not now', style: TextStyle(color: AppColors.textMuted)),
+          ),
+        ],
       ),
     );
   }
@@ -365,18 +686,60 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
           title: 'Face straight on, hair back',
           body: 'Forehead, both cheeks and jaw all need to be visible.',
         ),
+        const SizedBox(height: 16),
+        Text(
+          'Your photo is measured on this phone and is not uploaded. '
+          'Colour numbers are sent to match a shade, and that reading can be '
+          'saved on this phone and to your profile.',
+          style: TextStyle(color: AppColors.textMuted, fontSize: 13, height: 1.4),
+        ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton(
+            onPressed: () => WebBridge.openPublic(context, AppConfig.privacyPath),
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 0, vertical: 4),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: Text('Privacy', style: TextStyle(color: AppColors.primary)),
+          ),
+        ),
 
         const SizedBox(height: 28),
         _PrimaryButton(
           icon: Icons.photo_camera_rounded,
           label: 'Take a photo',
-          onTap: _busy ? null : () => _run(ImageSource.camera),
+          onTap: _busy ? null : _runCamera,
         ),
         const SizedBox(height: 12),
         _SecondaryButton(
           icon: Icons.photo_library_outlined,
           label: 'Choose from gallery',
-          onTap: _busy ? null : () => _run(ImageSource.gallery),
+          onTap: _busy ? null : _runGallery,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Gallery photos are less reliable. The matcher lowers confidence when it cannot see the light.',
+          style: TextStyle(color: AppColors.textMuted, fontSize: 12.5, height: 1.4),
+        ),
+        const SizedBox(height: 16),
+        CheckboxListTile(
+          value: _havePaper,
+          onChanged: _busy
+              ? null
+              : (v) => setState(() => _havePaper = v ?? false),
+          contentPadding: EdgeInsets.zero,
+          controlAffinity: ListTileControlAffinity.leading,
+          activeColor: AppColors.primary,
+          title: Text(
+            'I have a white sheet of paper',
+            style: TextStyle(color: AppColors.textMain, fontSize: 14.5, fontWeight: FontWeight.w600),
+          ),
+          subtitle: Text(
+            'Optional. Hold it beside your cheek in the same light. Skip this if you don\'t have one.',
+            style: TextStyle(color: AppColors.textMuted, fontSize: 12.5, height: 1.35),
+          ),
         ),
 
         const SizedBox(height: 24),
@@ -416,10 +779,15 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
       setState(() {
         _busy = false;
         _result = result;
-        _stage = result.needsRetake ? _Stage.retake : _Stage.result;
+        _stage = _shouldRetake(result) ? _Stage.retake : _Stage.result;
       });
+      _scheduleHarmonyPreview(result);
     } on FoundationMatchException catch (e) {
       if (!mounted) return;
+      if (e.needsSignIn) {
+        _showSignInGate();
+        return;
+      }
       setState(() {
         _busy = false;
         _stage = _Stage.intake;
@@ -481,51 +849,37 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
 
   Widget _buildRetake() {
     final result = _result;
+    final uneven = result?.expectedError != null && result!.expectedError! > _unevenDeltaE;
     return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
+      padding: const EdgeInsets.fromLTRB(24, 28, 24, 32),
       physics: const BouncingScrollPhysics(),
       children: [
-        const SizedBox(height: 12),
-        _NoticeCard(
-          icon: Icons.replay_rounded,
-          tone: _NoticeTone.warning,
-          title: result?.retakeReason ?? 'That photo could not be measured.',
-          body: result?.retakeHint ??
-              'Try again in daylight, facing a window, with bare skin.',
-        ),
-        const SizedBox(height: 8),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4),
-          child: Text(
-            // Said explicitly, because a rejection that looks like a failure of
-            // the app invites the user to distrust the result they eventually
-            // get. It is a refusal to guess, and that is the feature working.
-            'A shade matched from a photo like that would look wrong on your '
-            'skin, so it was not guessed at.',
-            style: TextStyle(
-              color: AppColors.textMuted,
-              fontSize: 13,
-              height: 1.45,
-            ),
+        Text(
+          uneven ? 'The light is uneven.' : (result?.retakeReason ?? 'That photo could not be measured.'),
+          style: TextStyle(
+            color: AppColors.textMain,
+            fontSize: 22,
+            fontWeight: FontWeight.w700,
+            letterSpacing: -0.3,
           ),
         ),
-        if (result != null && result.warnings.isNotEmpty) ...[
-          const SizedBox(height: 20),
-          _SectionLabel('What was detected'),
-          const SizedBox(height: 10),
-          ...result.warnings.map((w) => _BulletLine(w)),
-        ],
+        const SizedBox(height: 10),
+        Text(
+          uneven
+              ? "The two sides of your face don't agree, so a shade from this photo would be a guess."
+              : (result?.retakeHint ?? 'Take another photo in even daylight, facing a window.'),
+          style: TextStyle(color: AppColors.textMuted, fontSize: 15, height: 1.45),
+        ),
         const SizedBox(height: 28),
         _PrimaryButton(
           icon: Icons.photo_camera_rounded,
           label: 'Take another photo',
-          onTap: _busy ? null : () => _run(ImageSource.camera),
+          onTap: _busy ? null : _runCamera,
         ),
-        const SizedBox(height: 12),
-        _SecondaryButton(
-          icon: Icons.photo_library_outlined,
-          label: 'Choose a different photo',
-          onTap: _busy ? null : () => _run(ImageSource.gallery),
+        const SizedBox(height: 4),
+        TextButton(
+          onPressed: _busy ? null : _runGallery,
+          child: Text('Choose from gallery', style: TextStyle(color: AppColors.textMuted)),
         ),
       ],
     );
@@ -537,126 +891,160 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
     final result = _result;
     final skin = result?.skin;
     if (result == null || skin == null) {
-      // Defensive: the stage machine should make this unreachable.
       return _buildIntake();
     }
 
     final best = result.best;
-    final alternates = <FoundationMatch>[
-      if (result.lighterAlternate != null) result.lighterAlternate!,
-      if (result.deeperAlternate != null) result.deeperAlternate!,
+    final closeEnough = best != null && best.deltaE <= _farCatalogDeltaE;
+    final good = closeEnough && !_fromGallery;
+    final shown = <FoundationMatch>[
+      if (best != null && (good || (_fromGallery && closeEnough))) best,
+      if (best != null && !(good || (_fromGallery && closeEnough))) ...result.matches.take(2),
     ];
-    final more = result.matches.length > 1
-        ? result.matches.sublist(1)
-        : const <FoundationMatch>[];
+    final status = good ? 'Your closest shade.' : 'Nearest shade we have.';
+    final sentence = _fromGallery
+        ? 'A gallery photo is less reliable.'
+        : good
+            ? 'In even daylight this is usually this shade, or the one just beside it.'
+            : 'This is the closest colour in the catalog. It is not a close match, so try it in AR before you rely on it.';
+    final saveLine = (!result.savedToProfile && result.persistenceNotes.isNotEmpty)
+        ? _persistenceLine(result.persistenceNotes.first)
+        : null;
 
     return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 40),
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
       physics: const BouncingScrollPhysics(),
       children: [
-        // ── Measured skin ────────────────────────────────────────────────────
-        _SkinReadingCard(skin: skin, result: result),
-        const SizedBox(height: 20),
-
-        if (result.warnings.isNotEmpty) ...[
-          _NoticeCard(
-            icon: Icons.info_outline_rounded,
-            tone: _NoticeTone.info,
-            title: result.warnings.length == 1
-                ? result.warnings.first
-                : 'A few things about this photo',
-            body: result.warnings.length == 1
-                ? null
-                : result.warnings.map((w) => '• $w').join('\n'),
+        Text(
+          status,
+          style: TextStyle(
+            color: AppColors.textMain,
+            fontSize: 22,
+            fontWeight: FontWeight.w700,
+            letterSpacing: -0.3,
           ),
-          const SizedBox(height: 20),
-        ],
-
-        // ── The match ────────────────────────────────────────────────────────
-        if (best == null)
-          _NoticeCard(
-            icon: Icons.search_off_rounded,
-            tone: _NoticeTone.warning,
-            title: 'No foundation shades to match against yet.',
-            body: 'Your skin tone has been saved, so this will work as soon as '
-                'the catalog has foundations in it.',
-          )
-        else ...[
-          _SectionLabel('Your match'),
-          const SizedBox(height: 12),
-          _BestMatchCard(
-            match: best,
-            onTryInAr: () => _tryInAr(best),
-            onAddToBag: () => _addToBag(best),
-            onBuy: () => _buyOnWeb(best),
-          ),
-        ],
-
-        // ── Alternates ───────────────────────────────────────────────────────
-        if (alternates.isNotEmpty) ...[
-          const SizedBox(height: 28),
-          _SectionLabel('If you want to adjust'),
-          const SizedBox(height: 6),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          sentence,
+          style: TextStyle(color: AppColors.textMuted, fontSize: 14.5, height: 1.4),
+        ),
+        const SizedBox(height: 16),
+        if (shown.isEmpty)
           Text(
-            'A foundation half a step lighter reads as natural; half a step '
-            'deeper reads as warmth. Both are here on purpose.',
-            style: TextStyle(
-              color: AppColors.textMuted,
-              fontSize: 12.5,
-              height: 1.4,
-            ),
-          ),
-          const SizedBox(height: 12),
-          ...alternates.map(
-            (alt) => Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: _AlternateCard(
-                match: alt,
-                onTryInAr: () => _tryInAr(alt),
-                onAddToBag: () => _addToBag(alt),
-              ),
-            ),
-          ),
-        ],
-
-        // ── The rest of the ranking ──────────────────────────────────────────
-        if (more.isNotEmpty) ...[
-          const SizedBox(height: 28),
-          _SectionLabel('Other close shades'),
-          const SizedBox(height: 12),
-          ...more.map(
+            'No foundation shades are in the shop catalog yet, so there is no product to recommend.',
+            style: TextStyle(color: AppColors.textMain, fontSize: 15, height: 1.4),
+          )
+        else if (shown.length == 1)
+          _ShortShadeCard(
+            match: shown.first,
+            onTryInAr: () => _tryInAr(shown.first),
+            onAddToBag: () => _addToBag(shown.first),
+            onBuy: () => _buyOnWeb(shown.first),
+            onWearLook: () => _wearLook(shown.first),
+          )
+        else
+          ...shown.map(
             (m) => Padding(
               padding: const EdgeInsets.only(bottom: 10),
-              child: _AlternateCard(
+              child: _ShortShadeCard(
                 match: m,
                 onTryInAr: () => _tryInAr(m),
                 onAddToBag: () => _addToBag(m),
+                onBuy: () => _buyOnWeb(m),
+                onWearLook: () => _wearLook(m),
+                compact: true,
               ),
             ),
           ),
+        if (shown.isNotEmpty) ...[
+          if (_harmonyBlushName != null || _harmonyLipName != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              [
+                if (_harmonyBlushName != null) 'Blush: $_harmonyBlushName',
+                if (_harmonyLipName != null) 'Lip: $_harmonyLipName',
+              ].join(' · '),
+              style: TextStyle(
+                color: AppColors.textMain,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                height: 1.35,
+              ),
+            ),
+          ],
+          const SizedBox(height: 6),
+          Text(
+            harmonySuggestionNote,
+            style: TextStyle(color: AppColors.textMuted, fontSize: 12.5, height: 1.35),
+          ),
         ],
-
-        // ── Honesty section ──────────────────────────────────────────────────
-        if (result.persistenceNotes.isNotEmpty ||
-            result.catalogNotes.isNotEmpty) ...[
-          const SizedBox(height: 28),
-          _SectionLabel('Notes'),
+        if (good) ...[
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              if (result.lighterAlternate != null)
+                _NameChip(result.lighterAlternate!.shadeName),
+              if (result.deeperAlternate != null)
+                _NameChip(result.deeperAlternate!.shadeName),
+            ],
+          ),
+        ],
+        if (shown.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Text(
+            'Your vote is saved for later and does not change today\'s shade.',
+            style: TextStyle(color: AppColors.textMuted, fontSize: 12.5, height: 1.35),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(child: _VoteButton(label: 'Too light', onTap: () => _vote('too_light'))),
+              const SizedBox(width: 8),
+              Expanded(child: _VoteButton(label: 'Looks right', onTap: () => _vote('right'))),
+              const SizedBox(width: 8),
+              Expanded(child: _VoteButton(label: 'Too dark', onTap: () => _vote('too_dark'))),
+            ],
+          ),
+        ],
+        if (saveLine != null) ...[
           const SizedBox(height: 10),
-          ...result.persistenceNotes.map((n) => _BulletLine(n)),
-          ...result.catalogNotes.map((n) => _BulletLine(n)),
+          Text(
+            saveLine,
+            style: TextStyle(color: AppColors.textMuted, fontSize: 12, height: 1.35),
+          ),
         ],
-
-        const SizedBox(height: 24),
-        _SecondaryButton(
-          icon: Icons.refresh_rounded,
-          label: 'Match again',
-          onTap: _busy
-              ? null
-              : () => setState(() {
-                    _stage = _Stage.intake;
-                    _result = null;
-                  }),
+        const SizedBox(height: 4),
+        Theme(
+          data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+          child: ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            childrenPadding: const EdgeInsets.only(bottom: 8),
+            title: Text(
+              'How this was measured',
+              style: TextStyle(
+                color: AppColors.textMuted,
+                fontSize: 13.5,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            children: [
+              _SkinReadingCard(skin: skin, result: result),
+              if (result.catalogNotes.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                ...result.catalogNotes.map((n) => _BulletLine(n)),
+              ],
+            ],
+          ),
         ),
+        if (kDebugMode)
+          _SecondaryButton(
+            icon: Icons.ios_share_rounded,
+            label: 'Copy sample JSON',
+            onTap: _shareDebugSample,
+          ),
       ],
     );
   }
@@ -740,6 +1128,17 @@ class _SkinReadingCard extends StatelessWidget {
                       label: result.confidenceLabel,
                       score: result.confidence,
                     ),
+                    const SizedBox(height: 6),
+                    Text(
+                      result.calibration,
+                      style: TextStyle(
+                        color: result.calibration == 'Calibrated'
+                            ? Colors.green.shade700
+                            : AppColors.textMuted,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -752,8 +1151,8 @@ class _SkinReadingCard extends StatelessWidget {
             children: [
               if (skin.depthLevel.isNotEmpty)
                 _Chip(_titleCase(skin.depthLevel), Icons.brightness_6_outlined),
-              if (skin.undertone.isNotEmpty)
-                _Chip('${_titleCase(skin.undertone)} undertone',
+              if (shownUndertone(skin).isNotEmpty)
+                _Chip('${_titleCase(shownUndertone(skin))} undertone',
                     Icons.opacity_outlined),
               if (skin.monkScale > 0)
                 _Chip('Monk ${skin.monkScale}', Icons.straighten_rounded),
@@ -834,79 +1233,134 @@ class _SkinReadingCard extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Best-match card
+// Short shade card
 // ─────────────────────────────────────────────────────────────────────────────
 
-class _BestMatchCard extends StatelessWidget {
-  const _BestMatchCard({
+class _ShortShadeCard extends StatelessWidget {
+  const _ShortShadeCard({
     required this.match,
     required this.onTryInAr,
     required this.onAddToBag,
     required this.onBuy,
+    required this.onWearLook,
+    this.compact = false,
   });
 
   final FoundationMatch match;
   final VoidCallback onTryInAr;
   final VoidCallback onAddToBag;
   final VoidCallback onBuy;
+  final VoidCallback onWearLook;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     final swatch = Color(0xFF000000 | match.packedColour);
+    final brandLine = [
+      if (match.brand != null && match.brand!.isNotEmpty) match.brand!,
+      match.productName,
+    ].join(' · ');
+
+    if (compact) {
+      return Material(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              InkWell(
+                onTap: onTryInAr,
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(14)),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 36,
+                        height: 36,
+                        decoration: BoxDecoration(
+                          color: swatch,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppColors.neutral300),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              match.shadeName,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: AppColors.textMain,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            Text(
+                              brandLine,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(color: AppColors.textMuted, fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Add to bag',
+                        visualDensity: VisualDensity.compact,
+                        icon: Icon(Icons.add_shopping_cart_rounded, size: 19, color: AppColors.primary),
+                        onPressed: onAddToBag,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              TextButton(
+                onPressed: onWearLook,
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                  minimumSize: const Size(0, 32),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  foregroundColor: AppColors.primary,
+                  alignment: Alignment.centerLeft,
+                ),
+                child: const Text(
+                  'Wear a look with this shade',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
 
     return Container(
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.35), width: 1.5),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.primary.withValues(alpha: 0.10),
-            blurRadius: 24,
-            offset: const Offset(0, 6),
-          ),
-        ],
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Swatch banner. The shade itself is the largest thing on the card,
-          // because it is the answer.
           Container(
-            height: 96,
+            height: 84,
             decoration: BoxDecoration(
               color: swatch,
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(17)),
-            ),
-            child: Stack(
-              children: [
-                Positioned(
-                  left: 16,
-                  bottom: 12,
-                  right: 16,
-                  child: Text(
-                    match.shadeHex.toUpperCase(),
-                    style: TextStyle(
-                      // Text on an unknown colour has to pick its own contrast:
-                      // a fixed white label vanishes on a fair shade and a fixed
-                      // dark one vanishes on a deep shade.
-                      color: _onColour(match.shadeHex),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 0.6,
-                    ),
-                  ),
-                ),
-                Positioned(
-                  right: 12,
-                  top: 12,
-                  child: _DeltaEBadge(deltaE: match.deltaE, quality: match.quality),
-                ),
-              ],
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
             ),
           ),
-
           Padding(
-            padding: const EdgeInsets.all(18),
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -916,84 +1370,50 @@ class _BestMatchCard extends StatelessWidget {
                     color: AppColors.textMain,
                     fontSize: 20,
                     fontWeight: FontWeight.w700,
-                    letterSpacing: -0.4,
+                    letterSpacing: -0.3,
                   ),
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 2),
                 Text(
-                  [
-                    if (match.brand != null && match.brand!.isNotEmpty) match.brand!,
-                    match.productName,
-                  ].join(' · '),
+                  brandLine,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(color: AppColors.neutral700, fontSize: 13.5),
                 ),
-
-                const SizedBox(height: 14),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    if (match.price != null)
-                      _Chip('Rs ${match.price!.toStringAsFixed(0)}',
-                          Icons.sell_outlined),
-                    if (match.finish != null && match.finish!.isNotEmpty)
-                      _Chip(_titleCase(match.finish!), Icons.auto_awesome_outlined),
-                    if (match.coverage != null && match.coverage!.isNotEmpty)
-                      _Chip('${_titleCase(match.coverage!)} coverage',
-                          Icons.layers_outlined),
-                    if (match.alsoAvailableCount > 0)
-                      _Chip('Also in ${match.alsoAvailableCount} more',
-                          Icons.storefront_outlined),
-                  ],
-                ),
-
-                if (match.reason.isNotEmpty) ...[
-                  const SizedBox(height: 14),
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: AppColors.neutral200,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      match.reason,
-                      style: TextStyle(
-                        color: AppColors.neutral700,
-                        fontSize: 12.5,
-                        height: 1.5,
-                      ),
-                    ),
-                  ),
-                ],
-
-                const SizedBox(height: 18),
+                const SizedBox(height: 12),
                 _PrimaryButton(
                   icon: Icons.auto_awesome_rounded,
                   label: 'Try in AR',
                   onTap: onTryInAr,
                 ),
-                const SizedBox(height: 10),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _SecondaryButton(
-                        icon: Icons.shopping_bag_outlined,
-                        label: 'Add to bag',
-                        onTap: onAddToBag,
-                        dense: true,
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: _SecondaryButton(
-                        icon: Icons.open_in_new_rounded,
-                        label: 'Buy on web',
-                        onTap: onBuy,
-                        dense: true,
-                      ),
-                    ),
-                  ],
+                const SizedBox(height: 8),
+                _SecondaryButton(
+                  icon: Icons.face_retouching_natural_rounded,
+                  label: 'Wear a look with this shade',
+                  onTap: onWearLook,
+                  dense: true,
                 ),
+                const SizedBox(height: 8),
+                _SecondaryButton(
+                  icon: Icons.shopping_bag_outlined,
+                  label: 'Add to bag',
+                  onTap: onAddToBag,
+                  dense: true,
+                ),
+                if (match.productKey.isNotEmpty)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(
+                      onPressed: onBuy,
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 0),
+                        minimumSize: const Size(0, 32),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        foregroundColor: AppColors.textMuted,
+                      ),
+                      child: const Text('Buy on web', style: TextStyle(fontSize: 13)),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -1003,108 +1423,28 @@ class _BestMatchCard extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Alternate / other-shade card
-// ─────────────────────────────────────────────────────────────────────────────
+class _NameChip extends StatelessWidget {
+  const _NameChip(this.name);
 
-class _AlternateCard extends StatelessWidget {
-  const _AlternateCard({
-    required this.match,
-    required this.onTryInAr,
-    required this.onAddToBag,
-  });
-
-  final FoundationMatch match;
-  final VoidCallback onTryInAr;
-  final VoidCallback onAddToBag;
+  final String name;
 
   @override
   Widget build(BuildContext context) {
-    final swatch = Color(0xFF000000 | match.packedColour);
-    final direction = switch (match.depthDirection) {
-      'lighter' => ('Lighter', Icons.arrow_upward_rounded),
-      'deeper' => ('Deeper', Icons.arrow_downward_rounded),
-      _ => ('Level', Icons.remove_rounded),
-    };
-
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTryInAr,
-        borderRadius: BorderRadius.circular(14),
-        child: Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: AppColors.border),
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: swatch,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppColors.neutral300),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      match.shadeName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: AppColors.textMain,
-                        fontSize: 14.5,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      match.productName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: AppColors.textMuted, fontSize: 12),
-                    ),
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        Icon(direction.$2, size: 12, color: AppColors.neutral500),
-                        const SizedBox(width: 3),
-                        Text(
-                          '${direction.$1} · ΔE ${match.deltaE.toStringAsFixed(1)}',
-                          style: TextStyle(
-                            color: AppColors.neutral500,
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              IconButton(
-                tooltip: 'Add to bag',
-                visualDensity: VisualDensity.compact,
-                icon: Icon(Icons.add_shopping_cart_rounded,
-                    size: 19, color: AppColors.primary),
-                onPressed: onAddToBag,
-              ),
-            ],
-          ),
-        ),
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Text(
+        name,
+        style: TextStyle(color: AppColors.textMain, fontSize: 12.5, fontWeight: FontWeight.w600),
       ),
     );
   }
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cached-match card
@@ -1536,71 +1876,6 @@ class _ConfidencePill extends StatelessWidget {
   }
 }
 
-class _DeltaEBadge extends StatelessWidget {
-  const _DeltaEBadge({required this.deltaE, required this.quality});
-
-  final double deltaE;
-  final String quality;
-
-  @override
-  Widget build(BuildContext context) {
-    // Bands match `describeDeltaE` in skin_color.dart, so the colour and the
-    // words can never disagree.
-    final colour = deltaE < 3
-        ? const Color(0xFF2E9E5B)
-        : deltaE < 5
-            ? const Color(0xFF7FA82E)
-            : deltaE < 8
-                ? const Color(0xFFD98324)
-                : const Color(0xFFD9534F);
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.94),
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.12),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 7,
-            height: 7,
-            decoration: BoxDecoration(color: colour, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            'ΔE ${deltaE.toStringAsFixed(1)}',
-            style: const TextStyle(
-              color: Color(0xFF1F1F1F),
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          if (quality.isNotEmpty) ...[
-            const SizedBox(width: 6),
-            Text(
-              quality,
-              style: TextStyle(
-                color: colour,
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
 class _PrimaryButton extends StatelessWidget {
   const _PrimaryButton({
     required this.icon,
@@ -1675,6 +1950,28 @@ class _SecondaryButton extends StatelessWidget {
   }
 }
 
+class _VoteButton extends StatelessWidget {
+  const _VoteButton({required this.label, required this.onTap});
+
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return OutlinedButton(
+      onPressed: onTap,
+      style: OutlinedButton.styleFrom(
+        foregroundColor: AppColors.textMain,
+        side: BorderSide(color: AppColors.border),
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        textStyle: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+      ),
+      child: Text(label, textAlign: TextAlign.center),
+    );
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Utilities
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1682,20 +1979,4 @@ class _SecondaryButton extends StatelessWidget {
 String _titleCase(String s) {
   if (s.isEmpty) return s;
   return s[0].toUpperCase() + s.substring(1);
-}
-
-/// Black or white, whichever is readable on [hex].
-///
-/// Uses L* rather than the usual 0.299/0.587/0.114 luma shortcut: that formula
-/// operates on gamma-encoded values and picks white text on mid-tone shades where
-/// black is clearly more readable. The whole file already has a correct L*.
-Color _onColour(String hex) {
-  final packed = parseHexColor(hex);
-  if (packed == null) return Colors.white;
-  final l = luminanceLStar(
-    (packed >> 16) & 0xFF,
-    (packed >> 8) & 0xFF,
-    packed & 0xFF,
-  );
-  return l > 62 ? const Color(0xFF1F1F1F) : Colors.white;
 }

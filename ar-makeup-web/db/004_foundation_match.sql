@@ -177,7 +177,7 @@ create policy "foundation_match_logs: owner insert"
 select
   c.relname          as table_name,
   c.relrowsecurity   as rls_enabled,
-  count(p.polname)   as policies
+  count(p.policyname)   as policies
 from pg_class c
 left join pg_policies p
   on p.tablename = c.relname and p.schemaname = 'public'

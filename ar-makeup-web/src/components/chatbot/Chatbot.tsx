@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { addToCart } from '@/src/store/cart';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -65,15 +65,21 @@ function ProductCard({ product }: { product: Product }) {
   const [adding, setAdding] = useState(false);
   const [added, setAdded] = useState(false);
 
+  const needsShadeChoice = (product.product_shades ?? []).length > 0;
+
   const handleAddToCart = async (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (needsShadeChoice) {
+      if (!product.product_key) return;
+      router.push(`/products/${encodeURIComponent(product.product_key)}`);
+      return;
+    }
     setAdding(true);
     try {
-      const shade = product.product_shades?.[0];
       addToCart({
         product_key: product.product_key,
-        shade_key: shade?.shade_key ?? 'no-shade',
-        shade_name: shade?.shade_name ?? 'No Shade',
+        shade_key: 'no-shade',
+        shade_name: 'No Shade',
         quantity: 1,
         name: product.name,
         brand: product.brand,
@@ -93,7 +99,10 @@ function ProductCard({ product }: { product: Product }) {
 
   return (
     <div
-      onClick={() => router.push(`/products/${product.product_key || product.id}`)}
+      onClick={() => {
+        if (!product.product_key) return;
+        router.push(`/products/${encodeURIComponent(product.product_key)}`);
+      }}
       className="group flex gap-3 bg-white rounded-2xl border border-[var(--border-soft)] shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer overflow-hidden"
       style={{ borderLeft: `3px solid var(--rose-primary)` }}
     >
@@ -168,6 +177,8 @@ function ProductCard({ product }: { product: Product }) {
               <Loader2 size={10} className="animate-spin" />
             ) : added ? (
               '✓ Added!'
+            ) : needsShadeChoice ? (
+              'Choose shade'
             ) : (
               <>
                 <ShoppingCart size={10} />
@@ -207,6 +218,7 @@ function extractProductsFromParts(parts: any[]): Product[] {
 // ── Main Chatbot Component ────────────────────────────────────────────────────
 
 export default function Chatbot() {
+  const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState('');
   const [chatError, setChatError] = useState<ChatError | null>(null);
@@ -265,7 +277,8 @@ export default function Chatbot() {
       if (
         rawMsg.includes('503') ||
         rawMsg.includes('500') ||
-        rawMsg.includes('SERVER_ERROR')
+        rawMsg.includes('SERVER_ERROR') ||
+        rawMsg.includes('maintenance')
       ) {
         setChatError({
           type: 'SERVER',
@@ -348,6 +361,8 @@ export default function Chatbot() {
       </div>
     );
   };
+
+  if (pathname?.startsWith('/admin')) return null;
 
   return (
     <div className="fixed bottom-6 right-6 z-50">
@@ -470,8 +485,8 @@ export default function Chatbot() {
                       >
                         Recommended Products
                       </p>
-                      {products.map((product) => (
-                        <ProductCard key={product.id} product={product} />
+                      {products.filter((product) => product.product_key).map((product) => (
+                        <ProductCard key={product.product_key} product={product} />
                       ))}
                     </div>
                   )}

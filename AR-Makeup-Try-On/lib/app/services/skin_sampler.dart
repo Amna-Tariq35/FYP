@@ -50,6 +50,7 @@ class SkinPatchSample {
     required this.b,
     required this.pixels,
     required this.luminanceStdDev,
+    this.regionWeight = 1,
   });
 
   /// One of the five region names the API accepts.
@@ -67,6 +68,9 @@ class SkinPatchSample {
   /// Spread of L* within the patch. High means texture, hair or a shadow edge.
   final double luminanceStdDev;
 
+  /// Cheeks weigh more than the jaw. Older servers that ignore the field treat it as 1.
+  final double regionWeight;
+
   Map<String, dynamic> toJson() => {
         'region': region,
         'r': r,
@@ -74,6 +78,7 @@ class SkinPatchSample {
         'b': b,
         'pixels': pixels,
         'luminanceStdDev': double.parse(luminanceStdDev.toStringAsFixed(2)),
+        'regionWeight': double.parse(regionWeight.toStringAsFixed(2)),
       };
 
   String get hex => rgbToHex(r, g, b);
@@ -89,13 +94,17 @@ class SkinSampleResult {
     required this.faceRatio,
     required this.headYaw,
     required this.headRoll,
+    this.whiteReference,
   });
 
   final List<SkinPatchSample> patches;
 
-  /// Scene illuminant estimate, `{r, g, b}` in 0–255, or null if it could not be
-  /// computed. The server uses it for white balance and for judging exposure.
+  /// Scene illuminant from the background, or null when there wasn't enough of it.
+  /// A null value tells the server to skip white balance and cap confidence.
   final Map<String, int>? illuminant;
+
+  /// Median of a bright, low-chroma patch outside the face, when one was found.
+  final Map<String, int>? whiteReference;
 
   final int imageWidth;
   final int imageHeight;
@@ -128,19 +137,23 @@ class SkinSampleException implements Exception {
 ///
 /// Below this the patches are only a handful of pixels each and quantisation
 /// noise dominates the measurement. Asking the user to come closer is far better
-/// than returning a confident wrong colour.
-const double _minFaceRatio = 0.18;
+/// than returning a confident wrong colour. The capture preview uses the same
+/// fraction so the live gate and the still agree.
+const double skinMinFaceWidthRatio = 0.18;
+const double _minFaceRatio = skinMinFaceWidthRatio;
 
 /// Largest head turn, in degrees, that still leaves both cheeks lit comparably.
 ///
 /// Past roughly this the far cheek is in its own shadow, so the two cheek patches
 /// disagree for a reason that has nothing to do with complexion — and the
 /// server's outlier rejection would then discard a *good* patch.
-const double _maxHeadYaw = 22.0;
+const double skinMaxHeadYaw = 22.0;
+const double _maxHeadYaw = skinMaxHeadYaw;
 
 /// Largest head tilt. The sampling frame is tilt-aware, so this is generous; it
 /// exists to catch a photo taken sideways or by accident.
-const double _maxHeadRoll = 30.0;
+const double skinMaxHeadRoll = 30.0;
+const double _maxHeadRoll = skinMaxHeadRoll;
 
 /// Patch radius as a fraction of the inter-ocular distance.
 ///
@@ -162,10 +175,18 @@ const double _shadowFloorLStar = 8.0;
 /// Rejection width, in standard deviations of patch luminance.
 const double _rejectSigma = 1.5;
 
-/// Roughly how many pixels to sample for the illuminant estimate. The estimate is
-/// a whole-frame statistic, so a regular subsample of this size is
-/// indistinguishable from using every pixel and is ~20× cheaper.
+/// Roughly how many pixels to sample for the illuminant estimate.
 const int _illuminantTargetSamples = 40000;
+
+/// Cheeks carry the complexion. Forehead is next. Jaw and the nose bridge
+/// pick up beard shadow and specular more often, so they weigh less.
+const Map<String, double> _regionWeights = {
+  'left_cheek': 1.4,
+  'right_cheek': 1.4,
+  'forehead': 1.0,
+  'jaw': 0.62,
+  'nose_bridge': 0.55,
+};
 
 /// Decoded frame is capped to this on its long edge before any pixel work.
 ///
@@ -183,11 +204,14 @@ class SkinSampler {
   const SkinSampler._();
 
   /// Detects the face in [imagePath], samples five skin regions and estimates the
-  /// scene illuminant.
+  /// scene illuminant from the background, not from the face.
   ///
   /// Throws [SkinSampleException] with a message meant for the user when the photo
   /// cannot be used.
-  static Future<SkinSampleResult> sample(String imagePath) async {
+  static Future<SkinSampleResult> sample(
+    String imagePath, {
+    bool seekWhiteReference = false,
+  }) async {
     final file = File(imagePath);
     if (!await file.exists()) {
       throw const SkinSampleException(
@@ -242,11 +266,13 @@ class SkinSampler {
       );
     }
 
-    // More than one face is usually a mirror, a poster, or someone behind. The
-    // largest is the one holding the phone.
-    faces.sort((a, b) =>
-        (b.boundingBox.width * b.boundingBox.height)
-            .compareTo(a.boundingBox.width * a.boundingBox.height));
+    if (faces.length != 1) {
+      throw const SkinSampleException(
+        'One face at a time.',
+        hint: 'One face at a time.',
+      );
+    }
+
     final face = faces.first;
 
     // ── Reconcile ML Kit's coordinate space with the decoded buffer ───────────
@@ -321,6 +347,7 @@ class SkinSampler {
       patches: plan,
       contourPlan: contourPlan,
       illuminantStride: _strideFor(frame.width, frame.height),
+      seekWhiteReference: seekWhiteReference,
     );
 
     final measured = await compute(_measureInIsolate, request);
@@ -328,12 +355,78 @@ class SkinSampler {
     return SkinSampleResult(
       patches: measured.patches,
       illuminant: measured.illuminant,
+      whiteReference: measured.whiteReference,
       imageWidth: frame.width,
       imageHeight: frame.height,
       faceRatio: faceRatio,
       headYaw: yaw,
       headRoll: roll,
     );
+  }
+
+  /// Samples each path and returns the per-channel median of the frames that
+  /// succeeded. One good frame is enough when the others fail.
+  static Future<SkinSampleResult> sampleFrames(
+    List<String> imagePaths, {
+    bool seekWhiteReference = false,
+  }) async {
+    if (imagePaths.isEmpty) {
+      throw const SkinSampleException(
+        'No photo was captured.',
+        hint: 'Try the camera again, or pick one from your gallery.',
+      );
+    }
+    final results = <SkinSampleResult>[];
+    SkinSampleException? lastError;
+    for (final path in imagePaths) {
+      try {
+        results.add(await sample(path, seekWhiteReference: seekWhiteReference));
+      } on SkinSampleException catch (e) {
+        lastError = e;
+      }
+    }
+    if (results.isEmpty) {
+      throw lastError ??
+          const SkinSampleException(
+            "That photo couldn't be used.",
+            hint: 'Try again in daylight, with your face filling the oval.',
+          );
+    }
+    if (results.length == 1) return results.first;
+    return _mergeFrames(results);
+  }
+
+  /// Median colour of a small disc. [nx] and [ny] are 0–1 across the decoded frame.
+  /// Used when the user taps a sheet of paper. No image is uploaded.
+  static Future<Map<String, int>?> colorNear(
+    String imagePath,
+    double nx,
+    double ny,
+  ) async {
+    final bytes = await File(imagePath).readAsBytes();
+    final frame = await _decode(bytes);
+    final cx = (nx.clamp(0.0, 1.0) * (frame.width - 1)).round();
+    final cy = (ny.clamp(0.0, 1.0) * (frame.height - 1)).round();
+    const radius = 8;
+    final rs = <int>[];
+    final gs = <int>[];
+    final bs = <int>[];
+    for (var dy = -radius; dy <= radius; dy++) {
+      final y = cy + dy;
+      if (y < 0 || y >= frame.height) continue;
+      for (var dx = -radius; dx <= radius; dx++) {
+        if (dx * dx + dy * dy > radius * radius) continue;
+        final x = cx + dx;
+        if (x < 0 || x >= frame.width) continue;
+        final i = (y * frame.width + x) * 4;
+        if (frame.rgba[i + 3] < 250) continue;
+        rs.add(frame.rgba[i]);
+        gs.add(frame.rgba[i + 1]);
+        bs.add(frame.rgba[i + 2]);
+      }
+    }
+    if (rs.length < 5) return null;
+    return {'r': _median(rs), 'g': _median(gs), 'b': _median(bs)};
   }
 }
 
@@ -553,6 +646,11 @@ class _ContourRegionPlan {
     required this.leftEyeHole,
     required this.rightEyeHole,
     required this.mouthHole,
+    required this.leftBrowHole,
+    required this.rightBrowHole,
+    required this.nostrilCenter,
+    required this.nostrilRadius,
+    required this.foreheadTop,
     required this.bands,
     required this.faceBox,
   });
@@ -561,6 +659,12 @@ class _ContourRegionPlan {
   final List<ui.Offset> leftEyeHole;
   final List<ui.Offset> rightEyeHole;
   final List<ui.Offset> mouthHole;
+  final List<ui.Offset> leftBrowHole;
+  final List<ui.Offset> rightBrowHole;
+  final ui.Offset? nostrilCenter;
+  final double nostrilRadius;
+  /// Pixels above this are the hairline, not forehead skin.
+  final double foreheadTop;
   final _RegionBands bands;
   final ui.Rect faceBox;
 }
@@ -616,6 +720,42 @@ List<ui.Offset> _convexHull(List<ui.Offset> points) {
 List<ui.Offset> _scaledPoints(List<ui.Offset> points, double scale) =>
     points.map((p) => p * scale).toList();
 
+/// Moves each vertex toward (negative [delta]) or away from the centroid.
+List<ui.Offset> _offsetFromCentroid(List<ui.Offset> points, double delta) {
+  if (points.length < 3 || delta == 0) return points;
+  var cx = 0.0, cy = 0.0;
+  for (final p in points) {
+    cx += p.dx;
+    cy += p.dy;
+  }
+  cx /= points.length;
+  cy /= points.length;
+  final c = ui.Offset(cx, cy);
+  ui.Offset moved(ui.Offset p) {
+    final d = p - c;
+    final len = d.distance;
+    if (len < 1) return p;
+    return p + d / len * delta;
+  }
+  return [for (final p in points) moved(p)];
+}
+
+List<ui.Offset> _browHole(
+  Face face,
+  FaceContourType top,
+  FaceContourType bottom,
+  double scale,
+  double dilate,
+) {
+  final points = [
+    ..._contourPoints(face, top),
+    ..._contourPoints(face, bottom),
+  ];
+  final hull = _convexHull(points);
+  if (hull.length < 3) return const [];
+  return _offsetFromCentroid(_scaledPoints(hull, scale), dilate);
+}
+
 double _averageY(List<ui.Offset> points, double fallback) {
   if (points.isEmpty) return fallback;
   return points.map((p) => p.dy).reduce((a, b) => a + b) / points.length;
@@ -662,6 +802,24 @@ _ContourRegionPlan? _planContourRegions(
     box.right * scale,
     box.bottom * scale,
   );
+  final erode = math.max(4.0, scaledBox.width * 0.045);
+  final browDilate = math.max(3.0, scaledBox.width * 0.018);
+  final faceOval = _offsetFromCentroid(_scaledPoints(faceOvalSource, scale), -erode);
+  final leftBrow = _browHole(face, FaceContourType.leftEyebrowTop, FaceContourType.leftEyebrowBottom, scale, browDilate);
+  final rightBrow = _browHole(face, FaceContourType.rightEyebrowTop, FaceContourType.rightEyebrowBottom, scale, browDilate);
+  final nose = _scaledPoints(_contourPoints(face, FaceContourType.noseBottom), scale);
+  ui.Offset? nostrilCenter;
+  var nostrilRadius = 0.0;
+  if (nose.length >= 2) {
+    var nx = 0.0, ny = 0.0;
+    for (final p in nose) {
+      nx += p.dx;
+      ny += p.dy;
+    }
+    nostrilCenter = ui.Offset(nx / nose.length, ny / nose.length);
+    nostrilRadius = math.max(4.0, scaledBox.width * 0.045);
+  }
+
   final bands = _RegionBands(
     foreheadBottom: foreheadBottom * scale,
     noseBridgeBottom: noseBridgeBottom * scale,
@@ -670,12 +828,19 @@ _ContourRegionPlan? _planContourRegions(
     faceCenterX: faceCenterX * scale,
     centerHalfWidth: box.width * scale * 0.09,
   );
+  final ovalTop = faceOval.map((p) => p.dy).reduce(math.min);
+  final foreheadTop = ovalTop + (bands.foreheadBottom - ovalTop) * 0.34;
 
   final plan = _ContourRegionPlan(
-    faceOval: _scaledPoints(faceOvalSource, scale),
+    faceOval: faceOval,
     leftEyeHole: _scaledPoints(leftEyeSource, scale),
     rightEyeHole: _scaledPoints(rightEyeSource, scale),
     mouthHole: _scaledPoints(mouthSource, scale),
+    leftBrowHole: leftBrow,
+    rightBrowHole: rightBrow,
+    nostrilCenter: nostrilCenter,
+    nostrilRadius: nostrilRadius,
+    foreheadTop: foreheadTop,
     bands: bands,
     faceBox: scaledBox,
   );
@@ -722,6 +887,7 @@ class _SampleRequest {
     required this.patches,
     required this.contourPlan,
     required this.illuminantStride,
+    required this.seekWhiteReference,
   });
 
   final Uint8List rgba;
@@ -730,13 +896,15 @@ class _SampleRequest {
   final List<_PatchPlan> patches;
   final _ContourRegionPlan? contourPlan;
   final int illuminantStride;
+  final bool seekWhiteReference;
 }
 
 class _SampleOutcome {
-  const _SampleOutcome(this.patches, this.illuminant);
+  const _SampleOutcome(this.patches, this.illuminant, this.whiteReference);
 
   final List<SkinPatchSample> patches;
   final Map<String, int>? illuminant;
+  final Map<String, int>? whiteReference;
 }
 
 _SampleOutcome _measureInIsolate(_SampleRequest req) {
@@ -749,9 +917,27 @@ _SampleOutcome _measureInIsolate(_SampleRequest req) {
         .whereType<SkinPatchSample>()
         .toList();
   }
+  final faceBox = req.contourPlan?.faceBox ?? _boxAroundPatches(req.patches);
   return _SampleOutcome(
     patches,
-    _estimateIlluminant(req.rgba, req.width, req.height, req.illuminantStride),
+    _estimateIlluminant(
+      req.rgba,
+      req.width,
+      req.height,
+      req.illuminantStride,
+      faceBox: faceBox,
+      leftEye: req.contourPlan?.leftEyeHole,
+      rightEye: req.contourPlan?.rightEyeHole,
+    ),
+    req.seekWhiteReference
+        ? _findWhiteReference(
+            req.rgba,
+            req.width,
+            req.height,
+            faceOval: req.contourPlan?.faceOval,
+            faceBox: faceBox,
+          )
+        : null,
   );
 }
 
@@ -845,6 +1031,45 @@ SkinPatchSample? _summarizePixels(
 
   if (keptL.length < 12) return null;
 
+  final chromas = <double>[];
+  final hues = <double>[];
+  for (var i = 0; i < keptL.length; i++) {
+    final lab = rgbToLab(keptR[i], keptG[i], keptB[i]);
+    chromas.add(math.sqrt(lab.a * lab.a + lab.b * lab.b));
+    final deg = math.atan2(lab.b, lab.a) * 180 / math.pi;
+    hues.add(deg < 0 ? deg + 360 : deg);
+  }
+  final medianChroma = _medianDouble(chromas);
+  final hueR = <int>[];
+  final hueG = <int>[];
+  final hueB = <int>[];
+  final hueL = <double>[];
+  for (var i = 0; i < keptL.length; i++) {
+    final c = chromas[i];
+    // Hue is meaningless near grey. Deep skin can be low-chroma and must stay.
+    final hueOk = c < 4 || (hues[i] >= 15 && hues[i] <= 90);
+    final chromaOk = (c - medianChroma).abs() <= math.max(12.0, medianChroma * 0.85);
+    if (!hueOk || !chromaOk) continue;
+    hueR.add(keptR[i]);
+    hueG.add(keptG[i]);
+    hueB.add(keptB[i]);
+    hueL.add(keptL[i]);
+  }
+  if (hueL.length >= 12) {
+    keptR
+      ..clear()
+      ..addAll(hueR);
+    keptG
+      ..clear()
+      ..addAll(hueG);
+    keptB
+      ..clear()
+      ..addAll(hueB);
+    keptL
+      ..clear()
+      ..addAll(hueL);
+  }
+
   var keptSum = 0.0;
   for (final l in keptL) {
     keptSum += l;
@@ -863,6 +1088,7 @@ SkinPatchSample? _summarizePixels(
     b: _median(keptB),
     pixels: keptL.length,
     luminanceStdDev: math.sqrt(keptVar / keptL.length),
+    regionWeight: _regionWeights[region] ?? 1,
   );
 }
 
@@ -889,9 +1115,13 @@ List<SkinPatchSample> _measureContourRegions(
     for (var x = minX; x <= maxX; x++) {
       final point = ui.Offset(x.toDouble(), y.toDouble());
       if (!_pointInPolygon(point, plan.faceOval) ||
+          point.dy < plan.foreheadTop ||
           _pointInPolygon(point, plan.leftEyeHole) ||
           _pointInPolygon(point, plan.rightEyeHole) ||
-          _pointInPolygon(point, plan.mouthHole)) {
+          _pointInPolygon(point, plan.mouthHole) ||
+          _pointInPolygon(point, plan.leftBrowHole) ||
+          _pointInPolygon(point, plan.rightBrowHole) ||
+          _inDisc(point, plan.nostrilCenter, plan.nostrilRadius)) {
         continue;
       }
 
@@ -939,56 +1169,230 @@ int _median(List<int> values) {
   return ((values[mid - 1] + values[mid]) / 2).round();
 }
 
-/// Scene illuminant by the shades-of-grey estimator.
+/// Scene illuminant from pixels *outside* the face.
 ///
-/// Finlayson G. & Trezzi E. (2004), "Shades of gray and colour constancy",
-/// Proc. IS&T/SID Color Imaging Conference, 37–41. Per channel:
-///
-///     e_c = ( (1/N) Σ c_i^p ) ^ (1/p),  with p = 6
-///
-/// p = 1 is plain gray-world, which a large block of one colour — a red jumper, a
-/// warm wall — biases badly. p → ∞ is max-RGB, which a single blown highlight
-/// ruins. p = 6 sits between the two and is the value that paper recommends.
-///
-/// Channels are normalised to 0–1 before being raised to the sixth power. Done on
-/// raw 0–255 values, 255⁶ ≈ 2.7 × 10¹⁴ per pixel would overflow a 64-bit
-/// accumulator within a few hundred thousand pixels — a bug that would appear only
-/// on high-resolution frames.
+/// A shades-of-grey average over the face converges on skin and then divides
+/// skin by skin, which is how a reading loses its chroma. Background pixels are
+/// the light. Very dark pixels and specular pixels are left out. If there are
+/// not enough of them, a small bright low-chroma sample inside the eye contours
+/// (sclera) is tried. If that fails too, null is returned and the server skips
+/// the correction.
 Map<String, int>? _estimateIlluminant(
   Uint8List rgba,
   int width,
   int height,
-  int stride,
-) {
+  int stride, {
+  ui.Rect? faceBox,
+  List<ui.Offset>? leftEye,
+  List<ui.Offset>? rightEye,
+}) {
+  final exclusion = faceBox?.inflate(math.max(8, faceBox.width * 0.12));
+
+  final estimate = _shadesOfGrey(
+    rgba,
+    width,
+    height,
+    stride,
+    accept: (x, y, r, g, b) {
+      if (r >= _specularCeiling || g >= _specularCeiling || b >= _specularCeiling) {
+        return false;
+      }
+      if (luminanceLStar(r, g, b) < 18) return false;
+      if (exclusion != null && exclusion.contains(ui.Offset(x.toDouble(), y.toDouble()))) {
+        return false;
+      }
+      return true;
+    },
+  );
+  if (estimate != null) return estimate;
+
+  final sclera = _medianOfMask(
+    rgba,
+    width,
+    height,
+    accept: (x, y, r, g, b) {
+      final point = ui.Offset(x.toDouble(), y.toDouble());
+      final inEye = (leftEye != null && _pointInPolygon(point, leftEye)) ||
+          (rightEye != null && _pointInPolygon(point, rightEye));
+      if (!inEye) return false;
+      if (r >= _specularCeiling || g >= _specularCeiling || b >= _specularCeiling) {
+        return false;
+      }
+      final lab = rgbToLab(r, g, b);
+      final c = math.sqrt(lab.a * lab.a + lab.b * lab.b);
+      return lab.l > 58 && c < 12;
+    },
+    minimum: 12,
+  );
+  return sclera;
+}
+
+/// Bright, low-chroma pixels outside the face oval — a sheet of paper.
+Map<String, int>? _findWhiteReference(
+  Uint8List rgba,
+  int width,
+  int height, {
+  List<ui.Offset>? faceOval,
+  ui.Rect? faceBox,
+}) {
+  final stride = math.max(1, _strideFor(width, height));
+  return _medianOfMask(
+    rgba,
+    width,
+    height,
+    stride: stride,
+    accept: (x, y, r, g, b) {
+      final point = ui.Offset(x.toDouble(), y.toDouble());
+      if (faceOval != null && faceOval.length >= 3 && _pointInPolygon(point, faceOval)) {
+        return false;
+      }
+      if ((faceOval == null || faceOval.length < 3) &&
+          faceBox != null &&
+          faceBox.contains(point)) {
+        return false;
+      }
+      if (r >= 252 && g >= 252 && b >= 252) return false;
+      final lab = rgbToLab(r, g, b);
+      final c = math.sqrt(lab.a * lab.a + lab.b * lab.b);
+      return lab.l >= 82 && c <= 10;
+    },
+    minimum: 40,
+  );
+}
+
+Map<String, int>? _shadesOfGrey(
+  Uint8List rgba,
+  int width,
+  int height,
+  int stride, {
+  required bool Function(int x, int y, int r, int g, int b) accept,
+}) {
   var sr = 0.0, sg = 0.0, sb = 0.0;
   var n = 0;
-
   for (var y = 0; y < height; y += stride) {
     final rowStart = y * width;
     for (var x = 0; x < width; x += stride) {
       final i = (rowStart + x) * 4;
       if (rgba[i + 3] < 250) continue;
-      final r = rgba[i] / 255.0;
-      final g = rgba[i + 1] / 255.0;
-      final b = rgba[i + 2] / 255.0;
-      sr += r * r * r * r * r * r;
-      sg += g * g * g * g * g * g;
-      sb += b * b * b * b * b * b;
+      final r = rgba[i];
+      final g = rgba[i + 1];
+      final b = rgba[i + 2];
+      if (!accept(x, y, r, g, b)) continue;
+      final rr = r / 255.0;
+      final gg = g / 255.0;
+      final bb = b / 255.0;
+      sr += rr * rr * rr * rr * rr * rr;
+      sg += gg * gg * gg * gg * gg * gg;
+      sb += bb * bb * bb * bb * bb * bb;
       n++;
     }
   }
-
-  if (n == 0) return null;
-
+  if (n < 80) return null;
   double norm(double s) => math.pow(s / n, 1 / 6).toDouble() * 255;
-
   final r = norm(sr).round().clamp(0, 255);
   final g = norm(sg).round().clamp(0, 255);
   final b = norm(sb).round().clamp(0, 255);
-
-  // An all-black estimate carries no information; the server rejects it, so do
-  // not send it at all — a missing illuminant is handled gracefully there.
   if (r + g + b < 3) return null;
-
   return {'r': r, 'g': g, 'b': b};
+}
+
+Map<String, int>? _medianOfMask(
+  Uint8List rgba,
+  int width,
+  int height, {
+  int stride = 1,
+  required bool Function(int x, int y, int r, int g, int b) accept,
+  required int minimum,
+}) {
+  final rs = <int>[];
+  final gs = <int>[];
+  final bs = <int>[];
+  for (var y = 0; y < height; y += stride) {
+    final rowStart = y * width;
+    for (var x = 0; x < width; x += stride) {
+      final i = (rowStart + x) * 4;
+      if (rgba[i + 3] < 250) continue;
+      final r = rgba[i];
+      final g = rgba[i + 1];
+      final b = rgba[i + 2];
+      if (!accept(x, y, r, g, b)) continue;
+      rs.add(r);
+      gs.add(g);
+      bs.add(b);
+    }
+  }
+  if (rs.length < minimum) return null;
+  return {'r': _median(rs), 'g': _median(gs), 'b': _median(bs)};
+}
+
+ui.Rect? _boxAroundPatches(List<_PatchPlan> patches) {
+  if (patches.isEmpty) return null;
+  var left = patches.first.cx.toDouble();
+  var top = patches.first.cy.toDouble();
+  var right = left;
+  var bottom = top;
+  for (final p in patches) {
+    left = math.min(left, (p.cx - p.radius).toDouble());
+    top = math.min(top, (p.cy - p.radius).toDouble());
+    right = math.max(right, (p.cx + p.radius).toDouble());
+    bottom = math.max(bottom, (p.cy + p.radius).toDouble());
+  }
+  return ui.Rect.fromLTRB(left, top, right, bottom);
+}
+
+bool _inDisc(ui.Offset point, ui.Offset? center, double radius) {
+  if (center == null || radius <= 0) return false;
+  return (point - center).distance <= radius;
+}
+
+SkinSampleResult _mergeFrames(List<SkinSampleResult> frames) {
+  final byRegion = <String, List<SkinPatchSample>>{};
+  for (final frame in frames) {
+    for (final patch in frame.patches) {
+      byRegion.putIfAbsent(patch.region, () => []).add(patch);
+    }
+  }
+  final patches = <SkinPatchSample>[];
+  for (final entry in byRegion.entries) {
+    final group = entry.value;
+    patches.add(SkinPatchSample(
+      region: entry.key,
+      r: _median(group.map((p) => p.r).toList()),
+      g: _median(group.map((p) => p.g).toList()),
+      b: _median(group.map((p) => p.b).toList()),
+      pixels: _median(group.map((p) => p.pixels).toList()),
+      luminanceStdDev: _medianDouble(group.map((p) => p.luminanceStdDev).toList()),
+      regionWeight: group.first.regionWeight,
+    ));
+  }
+  final first = frames.first;
+  return SkinSampleResult(
+    patches: patches,
+    illuminant: _medianRgb(frames.map((f) => f.illuminant).whereType<Map<String, int>>().toList()),
+    whiteReference: _medianRgb(
+      frames.map((f) => f.whiteReference).whereType<Map<String, int>>().toList(),
+    ),
+    imageWidth: first.imageWidth,
+    imageHeight: first.imageHeight,
+    faceRatio: frames.map((f) => f.faceRatio).reduce(math.max),
+    headYaw: first.headYaw,
+    headRoll: first.headRoll,
+  );
+}
+
+Map<String, int>? _medianRgb(List<Map<String, int>> values) {
+  if (values.isEmpty) return null;
+  return {
+    'r': _median(values.map((v) => v['r'] ?? 0).toList()),
+    'g': _median(values.map((v) => v['g'] ?? 0).toList()),
+    'b': _median(values.map((v) => v['b'] ?? 0).toList()),
+  };
+}
+
+double _medianDouble(List<double> values) {
+  if (values.isEmpty) return 0;
+  final sorted = [...values]..sort();
+  final mid = sorted.length ~/ 2;
+  if (sorted.length.isOdd) return sorted[mid];
+  return (sorted[mid - 1] + sorted[mid]) / 2;
 }

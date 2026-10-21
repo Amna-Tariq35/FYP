@@ -1,11 +1,11 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { loadShippingInfo } from "@/src/store/checkoutShipping";
 import { loadAddToMakeupBag } from "@/src/store/addToMakeupBag";
 import type { ShippingInfo } from "@/src//types/order";
-import { loadCart, type CartState } from "@/src//store/cart";
+import { loadCart, selectedCartItems } from "@/src//store/cart";
 
 function isShippingComplete(s: ShippingInfo) {
   return (
@@ -27,9 +27,10 @@ export default function PaymentPanel() {
     loadShippingInfo(),
   );
 
-  const [selectedMethod, setSelectedMethod] = useState<"cod" | "card">("cod");
+  const [selectedMethod, setSelectedMethod] = useState<"cod" | "card">("card");
   const [isPlacing, setIsPlacing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const placingRef = useRef(false);
 
   useEffect(() => {
     const s = loadShippingInfo();
@@ -46,16 +47,17 @@ export default function PaymentPanel() {
   }, [shipping.address, shipping.city, shipping.country]);
 
   async function placeOrder() {
+    if (placingRef.current) return;
+    placingRef.current = true;
     setError(null);
     setIsPlacing(true);
 
     try {
-      const currentCart: CartState = loadCart();
-      const items = currentCart.items || [];
+      const items = selectedCartItems(loadCart());
       const currentShipping = loadShippingInfo();
 
       if (!items.length) {
-        setError("Your cart is empty. Please add items before checkout.");
+        setError("Select at least one item before checkout.");
         router.replace("/cart");
         return;
       }
@@ -76,6 +78,7 @@ export default function PaymentPanel() {
 
       const payload = {
         shipping: currentShipping,
+        payment_method: selectedMethod === "cod" ? "cash_on_delivery" as const : "card" as const,
         items: items.map((it) => ({
           product_key: it.product_key,
           shade_key: it.shade_key ?? null,
@@ -128,6 +131,7 @@ export default function PaymentPanel() {
           body: JSON.stringify({
             items,
             orderId,
+            guest_token: guestToken,
             addToMakeupBag: loadAddToMakeupBag(),
           }),
         });
@@ -153,25 +157,22 @@ export default function PaymentPanel() {
         return;
       }
 
-      // COD flow — clear cart + shipping, navigate to success
-      try {
-        localStorage.removeItem("ar_makeup_cart_v1");
-        localStorage.removeItem("ar_shipping_v1");
-      } catch {}
-
+      // Cash on delivery stays unpaid. Keep the cart and do not treat this as paid.
+      const codQuery = "payment=cod";
       if (guestToken) {
         router.replace(
-          `/checkout/success?guest_token=${encodeURIComponent(guestToken)}`,
+          `/checkout/success?${codQuery}&guest_token=${encodeURIComponent(guestToken)}&order_id=${encodeURIComponent(orderId || "")}`,
         );
         return;
       }
 
       router.replace(
-        `/checkout/success?order_id=${encodeURIComponent(orderId!)}`,
+        `/checkout/success?${codQuery}&order_id=${encodeURIComponent(orderId!)}`,
       );
     } catch (e: any) {
       setError(e?.message || "Network error. Please try again.");
     } finally {
+      placingRef.current = false;
       setIsPlacing(false);
     }
   }
@@ -328,7 +329,7 @@ export default function PaymentPanel() {
             </svg>
             <div>
               <div className="font-semibold text-sm">Cash on Delivery</div>
-              <div className="text-[10px] opacity-70">Pay when it arrives</div>
+              <div className="text-[10px] opacity-70">Unpaid until delivery</div>
             </div>
           </button>
         </div>
@@ -368,8 +369,9 @@ export default function PaymentPanel() {
       </div>
 
       <p className="ui-muted text-xs">
-        After placing the order, you'll receive a confirmation and your cart
-        will be cleared automatically.
+        {selectedMethod === "cod"
+          ? "Cash on delivery does not pay this order. Payment is still due when it arrives, the cart stays, and these items are not added to your makeup bag."
+          : "Card is the paid checkout. After Stripe confirms payment, the selected items leave your cart."}
       </p>
     </div>
   );
