@@ -4,9 +4,8 @@ import {
   getProductByKey,
   getShadesByProductKey,
 } from "@/src/lib/catalog/queries";
-import { getProductImageUrl } from "@/src/lib/catalog/image";
 import AddToCartPanel from "@/src/components/products/AddToCartPanel";
-import ProductPhoto from "@/src/components/products/ProductPhoto";
+import ProductImageFace from "@/src/components/products/ProductImageFace";
 import ProductReviews from "@/src/components/products/ProductReviews";
 import { StarRow } from "@/src/components/products/ProductCard";
 import { Suspense } from "react"; // 🆕 add karo
@@ -38,7 +37,6 @@ export default async function ProductDetailPage(props: PageProps) {
   if (!product) notFound();
 
   const shades = await getShadesByProductKey(product.product_key);
-  const imageUrl = getProductImageUrl(product.image_url);
   const department = departmentLabel(product.main_category);
   const matchProfile = await loadShopperMatchProfile(await createSupabaseServerClient());
   const matchLabels = profileMatchLabels(product, matchProfile);
@@ -57,7 +55,15 @@ export default async function ProductDetailPage(props: PageProps) {
         </nav>
         <div className="grid gap-10 md:grid-cols-2">
           <div className="relative aspect-square overflow-hidden rounded-2xl border border-[var(--border-soft)] bg-[var(--bg-section)]">
-            <ProductPhoto src={imageUrl} alt={product.name} />
+            <ProductImageFace
+              product={{
+                productKey: product.product_key,
+                name: product.name,
+                category: product.category,
+                imageUrl: product.image_url,
+              }}
+              sizes="(max-width: 768px) 100vw, 50vw"
+            />
           </div>
 
           <div>

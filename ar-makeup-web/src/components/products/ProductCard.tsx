@@ -1,8 +1,9 @@
-import Image from "next/image";
+"use client";
+
 import Link from "next/link";
 import { Heart, Star } from "lucide-react";
 import { MakeupProduct } from "@/src/types/catalog";
-import { getProductImageUrl } from "@/src/lib/catalog/image";
+import ProductImageFace from "@/src/components/products/ProductImageFace";
 import { profileMatchLabels, type ShopperMatchProfile } from "@/src/lib/catalog/product-profile-matching";
 
 type ProductCardProps = {
@@ -66,7 +67,6 @@ export default function ProductCard({
   userFinishPreference,
   matchProfile,
 }: ProductCardProps) {
-  const imageUrl = getProductImageUrl(product.image_url);
   const price =
     typeof product.price === "number" ? `$${product.price.toFixed(2)}` : "—";
   const brand = product.brand?.trim() || "—";
@@ -125,16 +125,14 @@ export default function ProductCard({
           className="relative overflow-hidden bg-[var(--bg-base)]"
           style={{ aspectRatio: "4/3", flexShrink: 0 }}
         >
-          <Image
-            src={imageUrl}
-            alt={product.name}
-            fill
-            onError={(e) => {
-              (e.target as HTMLImageElement).src =
-                "/images/product_placeholder.png";
+          <ProductImageFace
+            product={{
+              productKey: product.product_key,
+              name: product.name,
+              category: product.category,
+              imageUrl: product.image_url,
             }}
             sizes="(max-width: 480px) 100vw, (max-width: 1280px) 50vw, 33vw"
-            className="object-cover transition-transform duration-500 group-hover:scale-[1.04]"
           />
           {/* Category pill */}
           <span

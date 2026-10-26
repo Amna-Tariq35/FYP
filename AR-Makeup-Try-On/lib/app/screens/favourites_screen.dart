@@ -103,7 +103,7 @@ class _FavouritesScreenState extends State<FavouritesScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Tap the heart icon in Try-On Studio\nto save your loved shades.',
+                    'Tap the heart on the try-on screen to save a shade.',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: AppColors.textMuted, fontSize: 14),
                   ),

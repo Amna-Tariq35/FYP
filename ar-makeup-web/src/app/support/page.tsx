@@ -14,6 +14,10 @@ export const metadata: Metadata = {
 
 const FAQS: { q: string; a: React.ReactNode }[] = [
   {
+    q: "How do I save the look I am wearing?",
+    a: "Tap Save under the shutter on the try-on screen.",
+  },
+  {
     q: "How does the virtual try-on work?",
     a: (
       <>

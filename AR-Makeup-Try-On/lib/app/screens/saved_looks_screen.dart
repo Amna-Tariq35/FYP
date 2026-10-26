@@ -534,13 +534,30 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
     final topPad = MediaQuery.of(context).padding.top;
     final isLoading = !_cache.isLoaded;
 
+    final signedOut = Supabase.instance.client.auth.currentUser == null;
+
     return Scaffold(
       backgroundColor: AppColors.background,
       body: Column(
         children: [
           _buildHeader(topPad),
           Expanded(
-            child: isLoading
+            child: signedOut
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 32),
+                      child: Text(
+                        'Sign in to see your saved looks.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: AppColors.textMuted,
+                          fontSize: 15,
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                  )
+                : isLoading
                 ? _buildSkeletonGrid() // shows skeleton instead of spinner
                 : _cache.looks.isEmpty
                 ? _buildEmptyState()
@@ -817,9 +834,7 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
     final isFav = _favouriteIds.contains(lookId);
     final heartCtrl = _heartCtrl(lookId);
 
-    return GestureDetector(
-      onTap: () => _applySavedLook(lookId),
-      child: AnimatedContainer(
+    return AnimatedContainer(
         duration: const Duration(milliseconds: 260),
         curve: Curves.easeOut,
         decoration: BoxDecoration(
@@ -851,7 +866,14 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
                 children: [
                   // Image
                   Positioned.fill(
-                    child: ClipRRect(
+                    child: GestureDetector(
+                      onTap: () => _openLookViewer(
+                        lookId: lookId,
+                        lookName: lookName,
+                        imageUrl: imageUrl,
+                        dateStr: dateStr,
+                      ),
+                      child: ClipRRect(
                       borderRadius: const BorderRadius.vertical(
                         top: Radius.circular(22),
                       ),
@@ -868,6 +890,7 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
                                   _buildPlaceholder(),
                             )
                           : _buildPendingUploadPlaceholder(),
+                      ),
                     ),
                   ),
 
@@ -982,46 +1005,6 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
                       ),
                     ),
                   ),
-
-                  // "Apply" pill
-                  Positioned(
-                    bottom: 9,
-                    right: 10,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 9,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.38),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.12),
-                          width: 0.8,
-                        ),
-                      ),
-                      child: const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.auto_fix_high_rounded,
-                            color: Colors.white,
-                            size: 9,
-                          ),
-                          SizedBox(width: 4),
-                          Text(
-                            'Apply',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 9.5,
-                              fontWeight: FontWeight.w600,
-                              letterSpacing: 0.2,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
                 ],
               ),
             ),
@@ -1101,6 +1084,8 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
                       shadowColor: Colors.black.withValues(alpha: 0.12),
                       onSelected: (value) {
                         switch (value) {
+                          case 6:
+                            _applySavedLook(lookId);
                           case 0:
                             _toggleFavourite(lookId);
                           case 1:
@@ -1117,6 +1102,13 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
                         }
                       },
                       itemBuilder: (context) => [
+                        _menuItem(
+                          6,
+                          Icons.auto_fix_high_rounded,
+                          'Apply in try-on',
+                          true,
+                          AppColors.textMain,
+                        ),
                         _menuItem(
                           0,
                           isFav
@@ -1170,6 +1162,26 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
               ),
             ),
           ],
+        ),
+    );
+  }
+
+  void _openLookViewer({
+    required String lookId,
+    required String lookName,
+    required String? imageUrl,
+    required String dateStr,
+  }) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (viewerContext) => _LookViewer(
+          lookName: lookName,
+          imageUrl: imageUrl,
+          dateLabel: _formatDate(dateStr),
+          onApply: () {
+            Navigator.of(viewerContext).pop();
+            _applySavedLook(lookId);
+          },
         ),
       ),
     );
@@ -1465,6 +1477,103 @@ class _ShimmerBoxState extends State<_ShimmerBox>
           ),
         );
       },
+    );
+  }
+}
+
+class _LookViewer extends StatelessWidget {
+  const _LookViewer({
+    required this.lookName,
+    required this.imageUrl,
+    required this.dateLabel,
+    required this.onApply,
+  });
+
+  final String lookName;
+  final String? imageUrl;
+  final String dateLabel;
+  final VoidCallback onApply;
+
+  @override
+  Widget build(BuildContext context) {
+    AppColors.watch(context);
+    final hasImage = imageUrl != null && imageUrl!.isNotEmpty;
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Column(
+          children: [
+            Align(
+              alignment: Alignment.centerRight,
+              child: IconButton(
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.close_rounded, color: Colors.white, size: 28),
+              ),
+            ),
+            Expanded(
+              child: hasImage
+                  ? CachedNetworkImage(
+                      imageUrl: imageUrl!,
+                      fit: BoxFit.contain,
+                      width: double.infinity,
+                      placeholder: (_, _) => const Center(
+                        child: CircularProgressIndicator(color: Colors.white),
+                      ),
+                      errorWidget: (_, _, _) => const Icon(
+                        Icons.image_not_supported_outlined,
+                        color: Colors.white54,
+                        size: 48,
+                      ),
+                    )
+                  : const Icon(
+                      Icons.image_outlined,
+                      color: Colors.white54,
+                      size: 48,
+                    ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 16, 24, 20),
+              child: Column(
+                children: [
+                  Text(
+                    lookName,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    dateLabel,
+                    style: const TextStyle(color: Colors.white70, fontSize: 14),
+                  ),
+                  const SizedBox(height: 18),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: onApply,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                      ),
+                      child: const Text(
+                        'Apply in try-on',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

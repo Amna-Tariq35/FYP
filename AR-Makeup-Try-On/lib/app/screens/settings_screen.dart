@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../config/app_config.dart';
 import '../services/web_bridge.dart';
@@ -14,11 +15,29 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _isDarkMode = false;
+  bool _cameraOn = false;
 
   @override
   void initState() {
     super.initState();
     _loadSettings();
+    _loadCamera();
+  }
+
+  Future<void> _loadCamera() async {
+    final status = await Permission.camera.status;
+    if (mounted) setState(() => _cameraOn = status.isGranted);
+  }
+
+  Future<void> _toggleCamera(bool value) async {
+    if (value) {
+      final status = await Permission.camera.request();
+      if (mounted) setState(() => _cameraOn = status.isGranted);
+      return;
+    }
+    await openAppSettings();
+    final status = await Permission.camera.status;
+    if (mounted) setState(() => _cameraOn = status.isGranted);
   }
 
   Future<void> _loadSettings() async {
@@ -206,6 +225,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           setState(() => _isDarkMode = val);
                           _saveSetting('is_dark_mode', val);
                         },
+                      ),
+                    ),
+                    Divider(height: 1, color: AppColors.border),
+                    ListTile(
+                      leading: Icon(
+                        Icons.camera_alt_outlined,
+                        color: AppColors.textMain,
+                      ),
+                      title: Text(
+                        'Camera access',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.textMain,
+                        ),
+                      ),
+                      subtitle: Text(
+                        _cameraOn ? 'Camera is on' : 'Camera is off',
+                        style: TextStyle(fontSize: 12, color: AppColors.textMuted),
+                      ),
+                      trailing: Switch(
+                        value: _cameraOn,
+                        activeThumbColor: AppColors.primary,
+                        onChanged: _toggleCamera,
                       ),
                     ),
                     Divider(height: 1, color: AppColors.border),

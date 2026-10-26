@@ -6,6 +6,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show MethodChannel, rootBundle, SystemUiOverlayStyle;
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:deepar_flutter/deepar_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:vector_math/vector_math_64.dart' as vector;
@@ -22,6 +23,7 @@ import 'foundation_capture_screen.dart';
 import 'foundation_match_screen.dart';
 import 'saved_looks_screen.dart';
 import 'auth_screen.dart';
+import 'home_screen.dart';
 import 'profile_screen.dart';
 import '../cache/favourites_cache.dart';
 import '../cache/makeup_bag_cache.dart';
@@ -266,6 +268,9 @@ class _TryOnScreenState extends State<TryOnScreen>
 
   /// Press-and-hold bare face. Live clear only; never switchEffect or dispose.
   bool _bareHoldActive = false;
+  /// First-open coach: 0 Save, 1 Hold, 2 Compare. Null after it is dismissed.
+  int? _coachStep;
+  static const String _coachSeenKey = 'try_on_coach_seen_v1';
   int _bareToken = 0;
   bool _shadeCaptureBusy = false;
 
@@ -337,6 +342,7 @@ class _TryOnScreenState extends State<TryOnScreen>
     _loadDataFromDb();
     _processPendingSavedLooks();
     _loadMeasuredSkinTone();
+    _loadCoachMarks();
 
     // Claim the reinit cycle before the first frame. A `resumed` event often
     // arrives during startup; if it starts a second destroy/init while this
@@ -350,6 +356,75 @@ class _TryOnScreenState extends State<TryOnScreen>
       // hum ek reliable multi-frame wait use karenge
       _waitForSurfaceThenInit();
     });
+  }
+
+  Future<void> _loadCoachMarks() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted || prefs.getBool(_coachSeenKey) == true) return;
+      setState(() => _coachStep = 0);
+    } catch (e) {
+      debugPrint('coach mark load failed: $e');
+    }
+  }
+
+  Future<void> _advanceCoach() async {
+    final step = _coachStep;
+    if (step == null) return;
+    if (step < 2) {
+      setState(() => _coachStep = step + 1);
+      return;
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_coachSeenKey, true);
+    } catch (e) {
+      debugPrint('coach mark save failed: $e');
+    }
+    if (mounted) setState(() => _coachStep = null);
+  }
+
+  Future<void> _openHome() async {
+    final result = await _pushOverlay<Object>(const HomeScreen());
+    await _handleOverlayResult(result);
+  }
+
+  Future<void> _handleOverlayResult(Object? result) async {
+    if (!mounted || result == null) return;
+    if (result is List) {
+      _loadAndApplySavedLook(result);
+      return;
+    }
+    if (result == 'tryOnWithMyBag') {
+      _enableBagFilter();
+      return;
+    }
+    if (result is FoundationTryOnRequest) {
+      await _loadMeasuredSkinTone();
+      if (!mounted) return;
+      await _applyShadeRequest('tryOn:${result.productKey}:${result.shadeKey}');
+      return;
+    }
+    if (result is FoundationLookRequest) {
+      await _loadMeasuredSkinTone();
+      if (!mounted) return;
+      await _applyHarmonyLook(result);
+      return;
+    }
+    if (result is String && result.startsWith('tryOn:')) {
+      await _applyShadeRequest(result);
+    }
+  }
+
+  void _enableBagFilter() {
+    final bagHasHighlighter = MakeupBagCache.instance.items.any((item) {
+      final key = item['product_key']?.toString() ?? '';
+      return key.startsWith('hgl_');
+    });
+    setState(() => _showOnlyMyBag = true);
+    if (bagHasHighlighter) {
+      _showSnack("Highlighter isn't in this effect.");
+    }
   }
 
   /// Reads the last measured skin tone out of local storage.
@@ -2880,150 +2955,50 @@ class _TryOnScreenState extends State<TryOnScreen>
                 child: SlideTransition(
                   position: _topBarSlide,
                   child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      // Centre title pill
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(50),
-                        child: BackdropFilter(
-                          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 18,
-                              vertical: 9,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.14),
-                              borderRadius: BorderRadius.circular(50),
-                              border: Border.all(
-                                color: Colors.white.withValues(alpha: 0.22),
-                                width: 1,
-                              ),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Container(
-                                  width: 7,
-                                  height: 7,
-                                  decoration: BoxDecoration(
-                                    color: AppColors.primary,
-                                    shape: BoxShape.circle,
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: AppColors.primary.withValues(
-                                          alpha: 0.7,
-                                        ),
-                                        blurRadius: 6,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                const Text(
-                                  'Try-On Studio',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w600,
-                                    letterSpacing: 0.2,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
+                      _TopBarPill(
+                        onTap: _openHome,
+                        icon: Icons.home_outlined,
+                        label: 'Home',
                       ),
-
-                      Row(
-                        children: [
-                          _TopBarPill(
-                            onTap: isLoggedIn
-                                ? () async {
-                                    // 🆕 FIX: No teardown before navigating —
-                                    // see the note above the AuthScreen
-                                    // navigation for why the explicit
-                                    // destroy()/reinit cycle was removed
-                                    // (it was crashing bgfx natively on this
-                                    // GPU, with or without a race).
-                                    // DeepAR keeps running underneath while
-                                    // SavedLooksScreen is on top.
-                                    //
-                                    // 🆕 FIX v2: pushed onto the nested
-                                    // overlay Navigator via _pushOverlay()
-                                    // — the root Navigator/Overlay (and
-                                    // DeepAR's SurfaceView) is never
-                                    // touched.
-                                    final items = await _pushOverlay<dynamic>(
-                                      const SavedLooksScreen(),
-                                    );
-
-                                    if (items != null && items is List) {
-                                      _loadAndApplySavedLook(items);
-                                    }
-                                  }
-                                : () => _showLoginPrompt(
-                                    'Sign in to view your saved looks!',
-                                  ),
-                            icon: Icons.favorite_border_rounded,
-                            label: 'Saved',
-                          ),
-                          const SizedBox(width: 8),
-                          _TopBarButton(
-                            onTap: () async {
-                              // 🆕 FIX: No teardown before navigating — see
-                              // note above. DeepAR keeps running underneath
-                              // while ProfileScreen/AuthScreen is on top and
-                              // is instantly there when the user returns.
-                              //
-                              // 🆕 FIX v2: both branches now push via
-                              // _pushOverlay() onto the nested overlay
-                              // Navigator — the root Navigator/Overlay is
-                              // never touched, so DeepAR's SurfaceView is
-                              // never disturbed.
-                              if (isLoggedIn) {
-                                final result = await _pushOverlay<String>(const ProfileScreen());
-                                if (result == 'tryOnWithMyBag' && mounted) {
-                                  final bagHasHighlighter = MakeupBagCache
-                                      .instance
-                                      .items
-                                      .any((item) {
-                                    final key =
-                                        item['product_key']?.toString() ?? '';
-                                    return key.startsWith('hgl_');
-                                  });
-                                  setState(() => _showOnlyMyBag = true);
-                                  if (bagHasHighlighter) {
-                                    _showSnack(
-                                      "Highlighter isn't in this effect.",
-                                    );
-                                  }
-                                } else if (result != null &&
-                                    result.startsWith('tryOn:') &&
-                                    mounted) {
-                                  // Foundation shade matcher said "Try in AR".
-                                  // It could not apply the shade itself: it was
-                                  // running above the camera surface, so it pops
-                                  // its request all the way back here instead.
-                                  await _applyShadeRequest(result);
-                                }
-                              } else {
-                                await _pushOverlay<void>(
-                                  const AuthScreen(isLoginMode: true),
+                      const Spacer(),
+                      _TopBarPill(
+                        onTap: isLoggedIn
+                            ? () async {
+                                final items = await _pushOverlay<dynamic>(
+                                  const SavedLooksScreen(),
                                 );
+                                if (items != null && items is List) {
+                                  _loadAndApplySavedLook(items);
+                                }
                               }
-                              // Nothing to reinitialize — DeepAR was never
-                              // torn down.
-                            },
-                            child: Icon(
-                              isLoggedIn
-                                  ? Icons.person_outline_rounded
-                                  : Icons.login_rounded,
-                              color: Colors.white,
-                              size: 18,
-                            ),
-                          ),
-                        ],
+                            : () => _showLoginPrompt(
+                                'Sign in to view your saved looks!',
+                              ),
+                        icon: Icons.photo_library_outlined,
+                        label: 'Looks',
+                      ),
+                      const SizedBox(width: 8),
+                      _TopBarButton(
+                        onTap: () async {
+                          if (isLoggedIn) {
+                            final result = await _pushOverlay<Object>(
+                              const ProfileScreen(),
+                            );
+                            await _handleOverlayResult(result);
+                          } else {
+                            await _pushOverlay<void>(
+                              const AuthScreen(isLoginMode: true),
+                            );
+                          }
+                        },
+                        child: Icon(
+                          isLoggedIn
+                              ? Icons.person_outline_rounded
+                              : Icons.login_rounded,
+                          color: Colors.white,
+                          size: 18,
+                        ),
                       ),
                     ],
                   ),
@@ -3182,14 +3157,6 @@ class _TryOnScreenState extends State<TryOnScreen>
                                                 ),
                                               ),
                                             ),
-                                          _panelIcon(
-                                            icon: Icons.bookmark_add_outlined,
-                                            onTap: isLoggedIn
-                                                ? () => _showSaveLookDialog()
-                                                : () => _showLoginPrompt(
-                                                      'Sign in to save your look!',
-                                                    ),
-                                          ),
                                         ],
                                       ),
 
@@ -3767,62 +3734,92 @@ class _TryOnScreenState extends State<TryOnScreen>
   }
 
   Widget _buildDemoControls() {
-    final lipEntry = _currentCategory == TryOnCategory.lipstick;
+    final isLoggedIn = Supabase.instance.client.auth.currentUser != null;
+    const captions = [
+      'Tap Save to keep this look.',
+      'Press and hold to hide the makeup.',
+      'Tap Compare to see two shades.',
+    ];
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Listener(
-          onPointerDown: (_) => _beginBareHold(),
-          onPointerUp: (_) => _endBareHold(),
-          onPointerCancel: (_) => _endBareHold(),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: _bareHoldActive ? 0.62 : 0.38),
-              borderRadius: BorderRadius.circular(50),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.35)),
-            ),
-            child: Text(
-              _bareHoldActive ? 'Release to restore makeup' : 'Hold to see bare face',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 12.5,
-                fontWeight: FontWeight.w600,
+        if (_coachStep != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Material(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(16),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(14, 8, 6, 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        captions[_coachStep!],
+                        style: const TextStyle(
+                          color: Color(0xFF1F1F1F),
+                          fontSize: 14,
+                          height: 1.35,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: _advanceCoach,
+                      child: Text(
+                        _coachStep == 2 ? 'Done' : 'Next',
+                        style: TextStyle(
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
-        ),
-        const SizedBox(height: 8),
         Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             Expanded(
-              child: _DemoChip(
-                label: 'Compare two lip shades',
-                filled: true,
-                onTap: _shadeCaptureBusy
-                    ? null
-                    : () => _startShadeCompare(TryOnCategory.lipstick),
-              ),
-            ),
-            if (!lipEntry) ...[
-              const SizedBox(width: 6),
-              Expanded(
-                child: _DemoChip(
-                  label: 'Compare ${_getCategoryName(_currentCategory)}',
-                  onTap: _shadeCaptureBusy
-                      ? null
-                      : () => _startShadeCompare(_currentCategory),
+              child: Listener(
+                onPointerDown: (_) => _beginBareHold(),
+                onPointerUp: (_) => _endBareHold(),
+                onPointerCancel: (_) => _endBareHold(),
+                child: _ShutterSide(
+                  icon: _bareHoldActive
+                      ? Icons.visibility_off_outlined
+                      : Icons.visibility_outlined,
+                  label: 'Hold',
+                  active: _bareHoldActive || _coachStep == 1,
                 ),
               ),
-            ],
+            ),
+            _ShutterSave(
+              highlighted: _coachStep == 0,
+              onTap: isLoggedIn
+                  ? () => _showSaveLookDialog()
+                  : () => _showLoginPrompt('Sign in to save your look!'),
+            ),
+            Expanded(
+              child: _ShutterSide(
+                icon: Icons.vertical_split_rounded,
+                label: 'Compare',
+                active: _coachStep == 2,
+                onTap: _shadeCaptureBusy
+                    ? null
+                    : () => _startShadeCompare(_currentCategory),
+              ),
+            ),
           ],
         ),
         if (_comparePicking)
           TextButton(
             onPressed: _cancelShadeComparePick,
             child: const Text(
-              'Cancel compare',
-              style: TextStyle(color: Colors.white, fontSize: 12),
+              'Cancel',
+              style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
             ),
           ),
       ],
@@ -4093,41 +4090,112 @@ class _ErrorView extends StatelessWidget {
   }
 }
 
-class _DemoChip extends StatelessWidget {
-  const _DemoChip({required this.label, required this.onTap, this.filled = false});
-
-  final String label;
-  final VoidCallback? onTap;
-  final bool filled;
+class _ShutterSave extends StatelessWidget {
+  final bool highlighted;
+  final VoidCallback onTap;
+  const _ShutterSave({required this.highlighted, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: filled ? AppColors.primary : Colors.black.withValues(alpha: 0.42),
-      borderRadius: BorderRadius.circular(50),
-      child: InkWell(
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      child: GestureDetector(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(50),
-        child: Container(
-          height: 32,
-          alignment: Alignment.center,
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(50),
-            border: Border.all(
-              color: filled ? AppColors.primary : Colors.white.withValues(alpha: 0.35),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 78,
+              height: 78,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white,
+                border: Border.all(
+                  color: highlighted ? AppColors.primary : Colors.white,
+                  width: highlighted ? 3 : 0,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.28),
+                    blurRadius: 16,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: Center(
+                child: Container(
+                  width: 62,
+                  height: 62,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: const Color(0xFF1F1F1F), width: 2),
+                  ),
+                ),
+              ),
             ),
-          ),
-          child: Text(
-            label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 11.5,
-              fontWeight: FontWeight.w600,
+            const SizedBox(height: 6),
+            const Text(
+              'Save',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                shadows: [Shadow(blurRadius: 8, color: Colors.black54)],
+              ),
             ),
-          ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ShutterSide extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool active;
+  final VoidCallback? onTap;
+  const _ShutterSide({
+    required this.icon,
+    required this.label,
+    required this.active,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.black.withValues(alpha: active ? 0.55 : 0.32),
+                border: Border.all(
+                  color: active ? AppColors.primary : Colors.white.withValues(alpha: 0.7),
+                  width: active ? 2 : 1.2,
+                ),
+              ),
+              child: Icon(icon, color: Colors.white, size: 26),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                shadows: [Shadow(blurRadius: 8, color: Colors.black54)],
+              ),
+            ),
+          ],
         ),
       ),
     );

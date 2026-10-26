@@ -1,35 +1,26 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'package:permission_handler/permission_handler.dart';
-import '../cache/beauty_profile_model.dart';
-import '../config/app_config.dart';
+
 import '../services/beauty_profile_service.dart';
-import '../services/foundation_match_service.dart';
-import '../services/web_bridge.dart';
 import '../utils/app_colors.dart';
-import '../utils/skin_color.dart';
-import './beauty_profile_questionnaire_screen.dart';
-import './foundation_match_screen.dart';
-import './saved_looks_screen.dart';
-import 'try_on_screen.dart';
-import './notifications_inbox_screen.dart';
-import './settings_screen.dart';
-import './privacy_security_screen.dart';
-import './edit_profile_screen.dart';
-import './favourites_screen.dart';
-import './makeup_bag_screen.dart';
 import '../cache/favourites_cache.dart';
 import '../cache/makeup_bag_cache.dart';
+import 'edit_profile_screen.dart';
+import 'home_screen.dart';
+import 'privacy_security_screen.dart';
+import 'settings_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
-  const ProfileScreen({super.key});
+  const ProfileScreen({super.key, this.openedOverHome = false});
+
+  /// True when Home pushed this screen, so Home in the bar goes back.
+  final bool openedOverHome;
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  bool _cameraPermission = false;
   bool _isLoading = true;
   bool _profileFetchFailed = false;
 
@@ -38,103 +29,55 @@ class _ProfileScreenState extends State<ProfileScreen> {
   String _avatarUrl = '';
   String _initial = 'U';
 
-  // Beauty Profile
-  UserBeautyProfile? _beautyProfile;
-  bool _beautyProfileLoading = false;
-  bool _beautyProfileLoadFailed = false;
-
-  /// Last foundation shade match, read from local storage. Shown on the tile so
-  /// the user can see their result without a round trip or a second photo.
-  CachedFoundationMatch? _foundationMatch;
-
   @override
   void initState() {
     super.initState();
-    _checkPermissions();
     _fetchUserData();
-    _loadBeautyProfile();
-    _loadFoundationMatch();
-  }
-
-  Future<void> _loadFoundationMatch() async {
-    final cached = await FoundationMatchService.cachedSummary();
-    if (!mounted) return;
-    setState(() => _foundationMatch = cached);
-  }
-
-  Future<void> _loadBeautyProfile() async {
-    if (!mounted) return;
-    setState(() {
-      _beautyProfileLoading = true;
-      _beautyProfileLoadFailed = false;
-    });
-    try {
-      final profile = await BeautyProfileService.fetchProfile();
-      if (mounted) {
-        setState(() {
-          _beautyProfile = profile;
-          _beautyProfileLoadFailed = false;
-          BeautyProfileService.setCachedProfile(profile);
-        });
-      }
-    } catch (_) {
-      if (mounted && _beautyProfile == null) {
-        setState(() => _beautyProfileLoadFailed = true);
-      }
-    } finally {
-      if (mounted) setState(() => _beautyProfileLoading = false);
-    }
-  }
-
-  Future<void> _openBeautyProfileQuestionnaire() async {
-    final result = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => const BeautyProfileQuestionnaireScreen(),
-      ),
-    );
-    if (result is UserBeautyProfile) {
-      setState(() => _beautyProfile = result);
-    }
   }
 
   Future<void> _fetchUserData() async {
     try {
       final user = Supabase.instance.client.auth.currentUser;
-      if (user != null) {
-        String resolvedName = 'User';
-        String resolvedAvatar = '';
-
-        final metadata = user.userMetadata;
-        final email = user.email ?? '';
-
-        if (metadata != null && metadata['full_name'] != null) {
-          resolvedName = metadata['full_name'];
-        } else if (metadata != null && metadata['name'] != null) {
-          resolvedName = metadata['name'];
-        } else if (email.contains('@')) {
-          final namePart = email
-              .split('@')[0]
-              .replaceAll(RegExp(r'[^a-zA-Z]'), '');
-          if (namePart.isNotEmpty) {
-            resolvedName =
-                namePart[0].toUpperCase() + namePart.substring(1).toLowerCase();
-          }
-        }
-
-        if (metadata != null && metadata['avatar_url'] != null) {
-          resolvedAvatar = metadata['avatar_url'];
-        }
-
+      if (user == null) {
         if (mounted) {
           setState(() {
             _profileFetchFailed = false;
-            _userEmail = email.isNotEmpty ? email : 'No email';
-            _userName = resolvedName;
-            _avatarUrl = resolvedAvatar;
-            _initial = _userName.isNotEmpty ? _userName[0].toUpperCase() : 'U';
+            _userEmail = '';
+            _userName = '';
+            _isLoading = false;
           });
         }
+        return;
+      }
+      String resolvedName = 'User';
+      String resolvedAvatar = '';
+
+      final metadata = user.userMetadata;
+      final email = user.email ?? '';
+
+      if (metadata != null && metadata['full_name'] != null) {
+        resolvedName = metadata['full_name'].toString();
+      } else if (metadata != null && metadata['name'] != null) {
+        resolvedName = metadata['name'].toString();
+      } else if (email.contains('@')) {
+        final namePart = email.split('@')[0].replaceAll(RegExp(r'[^a-zA-Z]'), '');
+        if (namePart.isNotEmpty) {
+          resolvedName = namePart[0].toUpperCase() + namePart.substring(1).toLowerCase();
+        }
+      }
+
+      if (metadata != null && metadata['avatar_url'] != null) {
+        resolvedAvatar = metadata['avatar_url'].toString();
+      }
+
+      if (mounted) {
+        setState(() {
+          _profileFetchFailed = false;
+          _userEmail = email.isNotEmpty ? email : 'No email';
+          _userName = resolvedName;
+          _avatarUrl = resolvedAvatar;
+          _initial = _userName.isNotEmpty ? _userName[0].toUpperCase() : 'U';
+        });
       }
     } catch (_) {
       if (mounted) setState(() => _profileFetchFailed = true);
@@ -143,104 +86,46 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  void _navigateToTryOn() {
-    Navigator.pop(context);
+  void _backToCamera() {
+    Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
-  void _navigateToGallery() {
-    Navigator.push(
+  Future<void> _openHome() async {
+    if (widget.openedOverHome) {
+      Navigator.pop(context);
+      return;
+    }
+    final result = await Navigator.push<Object?>(
       context,
-      MaterialPageRoute(builder: (context) => const SavedLooksScreen()),
+      MaterialPageRoute(builder: (_) => const HomeScreen()),
     );
+    if (!mounted || result == null) return;
+    Navigator.pop(context, result);
   }
 
   Future<void> _openSettings() async {
     await Navigator.push(
       context,
-      MaterialPageRoute(builder: (context) => const SettingsScreen()),
+      MaterialPageRoute(builder: (_) => const SettingsScreen()),
     );
-    // Refresh profile data in case settings affected user state
     await _fetchUserData();
   }
 
   void _openPrivacySecurity() {
     Navigator.push(
       context,
-      MaterialPageRoute(builder: (context) => const PrivacySecurityScreen()),
+      MaterialPageRoute(builder: (_) => const PrivacySecurityScreen()),
     );
   }
 
   Future<void> _navigateToEditProfile() async {
     final result = await Navigator.push(
       context,
-      MaterialPageRoute(builder: (context) => const EditProfileScreen()),
+      MaterialPageRoute(builder: (_) => const EditProfileScreen()),
     );
     if (result == true) {
       setState(() => _isLoading = true);
       await _fetchUserData();
-    }
-  }
-
-  Future<void> _checkPermissions() async {
-    final status = await Permission.camera.status;
-    if (mounted) setState(() => _cameraPermission = status.isGranted);
-  }
-
-  Future<void> _toggleCameraPermission(bool value) async {
-    if (value) {
-      final status = await Permission.camera.request();
-      if (mounted) setState(() => _cameraPermission = status.isGranted);
-    } else {
-      await openAppSettings();
-    }
-  }
-
-  /// Opens a page on the companion website already signed in as this user.
-  /// See [WebBridge] for how the session is handed over.
-  Future<void> _openOnWeb(String path) => WebBridge.openAuthenticated(
-        context,
-        path,
-      );
-
-  /// Confirms before the website skin check. The try-on camera is a different
-  /// flow and is not part of this handoff.
-  Future<void> _openSkinAnalysis() async {
-    final continueToSite = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        content: Text(
-          'This opens the website skin check. That photo is sent to build a routine and is not a diagnosis. The try-on camera photo stays on this phone and is not uploaded.',
-          style: TextStyle(
-            color: AppColors.textMain,
-            fontSize: 14,
-            height: 1.5,
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: Text(
-              'Cancel',
-              style: TextStyle(color: AppColors.textMuted),
-            ),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: Text(
-              'Continue',
-              style: TextStyle(
-                color: AppColors.primary,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-    if (continueToSite == true && mounted) {
-      await _openOnWeb(AppConfig.skinAnalysisPath);
     }
   }
 
@@ -270,7 +155,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
           ),
         );
-        _navigateToTryOn();
+        _backToCamera();
       }
     } catch (e) {
       if (mounted) {
@@ -289,18 +174,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  // ── Build ──────────────────────────────────────────────────────────────────
-
-  void _openNotifications() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(builder: (context) => const NotificationsInboxScreen()),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     AppColors.watch(context);
+    final signedOut = Supabase.instance.client.auth.currentUser == null;
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
@@ -312,31 +189,29 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   Expanded(
                     child: SingleChildScrollView(
                       physics: const BouncingScrollPhysics(),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 24.0),
-                        child: Column(
-                          children: [
-                            const SizedBox(height: 24),
+                      padding: const EdgeInsets.symmetric(horizontal: 24),
+                      child: Column(
+                        children: [
+                          const SizedBox(height: 24),
+                          if (signedOut)
+                            Text(
+                              'Sign in to see your account.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: AppColors.textMuted,
+                                fontSize: 15,
+                                height: 1.4,
+                              ),
+                            )
+                          else ...[
                             _buildProfileInfo(),
-                            const SizedBox(height: 32),
-                            _buildBeautyProfileCard(),
-                            const SizedBox(height: 32),
-                            _buildFoundationMatchShortcut(),
-                            const SizedBox(height: 32),
-                            _buildFavouritesShortcut(),
-                            const SizedBox(height: 32),
-                            _buildMakeupBagShortcut(),
-                            const SizedBox(height: 32),
-                            _buildSavedLooksShortcut(),
-                            const SizedBox(height: 32),
-                            _buildWebIntegrations(),
-                            const SizedBox(height: 32),
-                            _buildSettings(),
-                            const SizedBox(height: 24),
+                            const SizedBox(height: 28),
+                            _buildPrivacyTile(),
+                            const SizedBox(height: 16),
                             _buildLogoutButton(),
-                            const SizedBox(height: 40),
                           ],
-                        ),
+                          const SizedBox(height: 32),
+                        ],
                       ),
                     ),
                   ),
@@ -349,7 +224,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Widget _buildHeader() {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16.0),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
@@ -377,13 +252,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
         color: AppColors.surface,
         shape: BoxShape.circle,
         border: Border.all(color: AppColors.border),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
-            blurRadius: 4,
-            offset: const Offset(0, 2),
-          ),
-        ],
       ),
       child: Material(
         color: Colors.transparent,
@@ -399,7 +267,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget _buildProfileInfo() {
     return Column(
       children: [
-        // Tapping the entire avatar area goes to edit profile
         GestureDetector(
           onTap: _navigateToEditProfile,
           child: Stack(
@@ -418,9 +285,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 child: CircleAvatar(
                   radius: 44,
                   backgroundColor: AppColors.surface,
-                  backgroundImage: _avatarUrl.isNotEmpty
-                      ? NetworkImage(_avatarUrl)
-                      : null,
+                  backgroundImage:
+                      _avatarUrl.isNotEmpty ? NetworkImage(_avatarUrl) : null,
                   child: _avatarUrl.isEmpty
                       ? Text(
                           _initial,
@@ -440,13 +306,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   color: AppColors.surface,
                   shape: BoxShape.circle,
                   border: Border.all(color: AppColors.border),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.1),
-                      blurRadius: 4,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
                 ),
                 child: Icon(
                   Icons.camera_alt_outlined,
@@ -468,12 +327,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
           ),
         ),
         const SizedBox(height: 4),
-        if (_profileFetchFailed) ...[
+        if (_profileFetchFailed)
           Text(
             'Could not load your profile.',
             textAlign: TextAlign.center,
             style: TextStyle(color: AppColors.textMuted, fontSize: 14),
+          )
+        else
+          Text(
+            _userEmail,
+            style: TextStyle(color: AppColors.textMuted, fontSize: 14),
           ),
+        if (_profileFetchFailed)
           TextButton(
             onPressed: _fetchUserData,
             child: Text(
@@ -483,11 +348,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 fontWeight: FontWeight.w600,
               ),
             ),
-          ),
-        ] else
-          Text(
-            _userEmail,
-            style: TextStyle(color: AppColors.textMuted, fontSize: 14),
           ),
         const SizedBox(height: 20),
         OutlinedButton(
@@ -500,10 +360,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ),
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
             backgroundColor: AppColors.surface,
-            elevation: 0,
           ),
           child: const Text(
-            'Edit Profile',
+            'Edit profile',
             style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
           ),
         ),
@@ -511,881 +370,34 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  Widget _buildSavedLooksShortcut() {
-    return GestureDetector(
-      onTap: _navigateToGallery,
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.border),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.03),
-              blurRadius: 20,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: AppColors.secondary.withValues(alpha: 0.3),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(Icons.image_outlined, color: AppColors.primary),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'My Saved Looks',
-                    style: TextStyle(
-                      color: AppColors.textMain,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    'View your AR try-on gallery',
-                    style: TextStyle(color: AppColors.textMuted, fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-            Icon(Icons.chevron_right, color: AppColors.textMuted),
-          ],
-        ),
-      ),
-    );
-  }
-
-
-Widget _buildMakeupBagShortcut() {
-    return GestureDetector(
-      onTap: () async {
-        final result = await Navigator.push<String>(
-          context,
-          MaterialPageRoute(builder: (context) => const MakeupBagScreen()),
-        );
-        // User tapped "Try On" inside the bag screen — pop profile too so
-        // TryOnScreen comes back to foreground, and signal it to enable My Bag.
-        if (result == 'tryOnWithMyBag' && context.mounted) {
-          Navigator.pop(context, 'tryOnWithMyBag');
-        }
-      },
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.border),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.03),
-              blurRadius: 20,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: AppColors.primary.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(Icons.shopping_bag_rounded, color: AppColors.primary),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'My Makeup Bag',
-                    style: TextStyle(
-                      color: AppColors.textMain,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    'Products you actually own',
-                    style: TextStyle(color: AppColors.textMuted, fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-            Icon(Icons.chevron_right, color: AppColors.textMuted),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// Entry point for the ΔE2000 foundation shade matcher.
-  ///
-  /// Sits directly under the Beauty Profile card because it is the measured
-  /// counterpart to the questionnaire: the quiz asks the user what their
-  /// undertone is, this measures it. Once a match exists the tile shows the
-  /// result, so the answer is one screen away rather than behind another photo.
-  Widget _buildFoundationMatchShortcut() {
-    final match = _foundationMatch;
-    final hasMatch = match != null;
-
-    return GestureDetector(
-      onTap: _openFoundationMatch,
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.border),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.03),
-              blurRadius: 20,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                // Once a tone is measured the icon *becomes* the measurement.
-                // A generic pink square would waste the one place in the app
-                // where the user's own colour is worth showing.
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    color: hasMatch
-                        ? Color(0xFF000000 | match.packedSkinColour)
-                        : AppColors.primary.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(12),
-                    border: hasMatch
-                        ? Border.all(color: AppColors.neutral300)
-                        : null,
-                  ),
-                  child: hasMatch
-                      ? null
-                      : Icon(Icons.colorize_rounded, color: AppColors.primary),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Find My Foundation Shade',
-                        style: TextStyle(
-                          color: AppColors.textMain,
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        hasMatch
-                            ? 'Matched ${match.skinHex.toUpperCase()}'
-                            : 'One photo, measured and matched',
-                        style: TextStyle(
-                          color: AppColors.textMuted,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(Icons.chevron_right, color: AppColors.textMuted),
-              ],
-            ),
-            if (hasMatch) ...[
-              const SizedBox(height: 14),
-              Divider(color: AppColors.border, height: 1),
-              const SizedBox(height: 12),
-              if (match.shadeLabel != null)
-                Row(
-                  children: [
-                    if (match.shadeHex != null)
-                      Container(
-                        width: 16,
-                        height: 16,
-                        margin: const EdgeInsets.only(right: 8),
-                        decoration: BoxDecoration(
-                          color: Color(
-                            0xFF000000 |
-                                (parseHexColor(match.shadeHex) ?? 0x808080),
-                          ),
-                          shape: BoxShape.circle,
-                          border: Border.all(color: AppColors.neutral300),
-                        ),
-                      ),
-                    Expanded(
-                      child: Text(
-                        match.shadeLabel!,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: AppColors.textMain,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                    if (match.deltaE != null)
-                      Text(
-                        'ΔE ${match.deltaE!.toStringAsFixed(1)}',
-                        style: TextStyle(
-                          color: AppColors.textMuted,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                  ],
-                ),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  if (match.depthLevel != null && match.depthLevel!.isNotEmpty)
-                    _buildProfileChip(_capitalise(match.depthLevel!)),
-                  if (match.undertone != null && match.undertone!.isNotEmpty)
-                    _buildProfileChip(
-                      '${_capitalise(match.undertone!)} undertone',
-                    ),
-                  if (match.monkScale != null && match.monkScale! > 0)
-                    _buildProfileChip('Monk ${match.monkScale}'),
-                ],
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// Opens the matcher and relays a "Try in AR" request back to [TryOnScreen].
-  ///
-  /// The profile screen is itself a route pushed by the try-on screen's *overlay*
-  /// navigator, so it cannot apply a shade to the live camera — it has to get out
-  /// of the way first. It pops with `tryOn:<productKey>:<shadeKey>`, extending the
-  /// same string protocol already used by `tryOnWithMyBag` above.
-  Future<void> _openFoundationMatch() async {
-    final request = await Navigator.push<FoundationTryOnRequest>(
-      context,
-      MaterialPageRoute(builder: (context) => const FoundationMatchScreen()),
-    );
-
-    if (!mounted) return;
-
-    // The run may have written a new tone into the profile. Refresh both the tile
-    // and the beauty profile so the two never disagree on screen.
-    _loadFoundationMatch();
-    _loadBeautyProfile();
-
-    if (request != null) {
-      final nav = Navigator.of(context);
-      if (nav.canPop()) {
-        nav.pop('tryOn:${request.productKey}:${request.shadeKey}');
-      }
-    }
-  }
-
-  static String _capitalise(String s) =>
-      s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
-
-  Widget _buildBeautyProfileCard() {
-    if (_beautyProfileLoadFailed &&
-        (_beautyProfile == null || _beautyProfile!.isEmpty)) {
-      return Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.border),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.palette_outlined, color: AppColors.primary),
-                const SizedBox(width: 12),
-                Text(
-                  'Beauty Profile',
-                  style: TextStyle(
-                    color: AppColors.textMain,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Text(
-              'Could not load your beauty profile.',
-              style: TextStyle(color: AppColors.textMuted, fontSize: 13),
-            ),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton(
-                onPressed: _beautyProfileLoading ? null : _loadBeautyProfile,
-                child: Text(
-                  'Retry',
-                  style: TextStyle(
-                    color: AppColors.primary,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    final isEmpty = _beautyProfile == null || _beautyProfile!.isEmpty;
-
-    return GestureDetector(
-      onTap: isEmpty ? _openBeautyProfileQuestionnaire : null,
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.border),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.03),
-              blurRadius: 20,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: isEmpty
-            ? Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.palette_outlined, color: AppColors.primary),
-                      const SizedBox(width: 12),
-                      Text(
-                        'Beauty Profile',
-                        style: TextStyle(
-                          color: AppColors.textMain,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    'This profile saves your skin type and foundation depth.',
-                    style: TextStyle(
-                      color: AppColors.textMuted,
-                      fontSize: 13,
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: _openBeautyProfileQuestionnaire,
-                      child: const Text('Take Questionnaire'),
-                    ),
-                  ),
-                ],
-              )
-            : Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Row(
-                        children: [
-                          Icon(Icons.palette, color: AppColors.accentPink),
-                          const SizedBox(width: 12),
-                          Text(
-                            'Beauty Profile',
-                            style: TextStyle(
-                              color: AppColors.textMain,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      ),
-                      Material(
-                        color: Colors.transparent,
-                        child: InkWell(
-                          onTap: _openBeautyProfileQuestionnaire,
-                          child: Icon(
-                            Icons.edit_outlined,
-                            color: AppColors.primary,
-                            size: 20,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      if (_beautyProfile!.skinType != null)
-                        _buildProfileChip(_beautyProfile!.skinType!),
-                      if (_beautyProfile!.undertone != null)
-                        _buildProfileChip(
-                          '${_beautyProfile!.undertone![0].toUpperCase()}${_beautyProfile!.undertone!.substring(1)} undertone',
-                        ),
-                      if (_beautyProfile!.depthLevel != null)
-                        _buildProfileChip(_beautyProfile!.depthLevel!),
-                      if (_beautyProfile!.concerns != null &&
-                          _beautyProfile!.concerns!.isNotEmpty)
-                        ..._beautyProfile!.concerns!
-                            .take(2)
-                            .map((c) => _buildProfileChip(c)),
-                      if (_beautyProfile!.concerns != null &&
-                          _beautyProfile!.concerns!.length > 2)
-                        _buildProfileChip(
-                          '+${_beautyProfile!.concerns!.length - 2} more',
-                        ),
-                    ],
-                  ),
-                  if (_beautyProfile!.updatedAt != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 12),
-                      child: Text(
-                        'Updated ${_beautyProfile!.updatedAgoText}',
-                        style: TextStyle(
-                          color: AppColors.textMuted,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ),
-                  if (_beautyProfile!.source == 'analysis' ||
-                      _beautyProfile!.source == 'both')
-                    Padding(
-                      padding: const EdgeInsets.only(top: 12),
-                      child: Row(
-                        children: [
-                          Icon(Icons.info_outline,
-                              color: Colors.blue.shade600, size: 16),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'From your AI Skin Analysis on Web',
-                              style: TextStyle(
-                                color: Colors.blue.shade600,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                ],
-              ),
-      ),
-    );
-  }
-
-  Widget _buildProfileChip(String label) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: AppColors.accentPink.withOpacity(0.1),
-        border: Border.all(color: AppColors.accentPink.withOpacity(0.3)),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: AppColors.accentPink,
-          fontSize: 12,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-    );
-  }
-
-Widget _buildFavouritesShortcut() {
-    return GestureDetector(
-      onTap: () {
-        Navigator.push(
-          context,
-          MaterialPageRoute(builder: (context) => const FavouritesScreen()),
-        );
-      },
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        margin: const EdgeInsets.only(top: 16), // Spacing between shortcuts
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.border),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.03),
-              blurRadius: 20,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: AppColors.primary.withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(Icons.favorite_rounded, color: AppColors.primary),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'My Favourites',
-                    style: TextStyle(
-                      color: AppColors.textMain,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    'Products & shades you love',
-                    style: TextStyle(color: AppColors.textMuted, fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-            Icon(Icons.chevron_right, color: AppColors.textMuted),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildWebIntegrations() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(left: 4, bottom: 12),
-          child: Text(
-            'EXPLORE ON WEB',
-            style: TextStyle(
-              color: AppColors.textMuted,
-              fontSize: 11,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 1.2,
-            ),
-          ),
-        ),
-
-        // Skin Analysis card
-        GestureDetector(
-          onTap: _openSkinAnalysis,
-          child: Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [AppColors.primary, const Color(0xFFD88A9F)],
-              ),
-              borderRadius: BorderRadius.circular(16),
-              boxShadow: [
-                BoxShadow(
-                  color: AppColors.primary.withValues(alpha: 0.3),
-                  blurRadius: 10,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.2),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    Icons.auto_awesome,
-                    color: Colors.white,
-                    size: 20,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'AI Skin Analysis',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      Text(
-                        'Get personalized skincare routines',
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.8),
-                          fontSize: 10,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(
-                  Icons.open_in_new,
-                  color: Colors.white.withValues(alpha: 0.8),
-                  size: 16,
-                ),
-              ],
-            ),
-          ),
-        ),
-
-        const SizedBox(height: 12),
-
-        // Web Store card
-        GestureDetector(
-          onTap: () => _openOnWeb(AppConfig.productsPath),
-          child: Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AppColors.border),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.03),
-                  blurRadius: 20,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: AppColors.background,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(
-                    Icons.shopping_bag_outlined,
-                    color: AppColors.primary,
-                    size: 20,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Web Store',
-                        style: TextStyle(
-                          color: AppColors.textMain,
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      Text(
-                        'Shop makeup on the website',
-                        style: TextStyle(
-                          color: AppColors.textMuted,
-                          fontSize: 10,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(Icons.open_in_new, color: AppColors.textMuted, size: 16),
-              ],
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildSettings() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.only(left: 4, bottom: 12),
-          child: Text(
-            'APP SETTINGS',
-            style: TextStyle(
-              color: AppColors.textMuted,
-              fontSize: 11,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 1.2,
-            ),
-          ),
-        ),
-        Container(
+  Widget _buildPrivacyTile() {
+    return Material(
+      color: AppColors.surface,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: _openPrivacySecurity,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            color: AppColors.surface,
             borderRadius: BorderRadius.circular(16),
             border: Border.all(color: AppColors.border),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.03),
-                blurRadius: 20,
-                offset: const Offset(0, 4),
-              ),
-            ],
           ),
-          child: Column(
+          child: Row(
             children: [
-              _buildSettingTile(
-                icon: Icons.camera_alt_outlined,
-                title: 'Camera Access',
-                subtitle: 'Required for AR Try-On',
-                hasToggle: true,
-                toggleValue: _cameraPermission,
-                onToggle: _toggleCameraPermission,
-              ),
-              Divider(height: 1, color: AppColors.border),
-              _buildSettingTile(
-                icon: Icons.receipt_long_outlined,
-                title: 'My orders',
-                subtitle: 'View your shop orders',
-                hasToggle: false,
-                onTap: () => _openOnWeb(AppConfig.myOrdersPath),
-              ),
-              Divider(height: 1, color: AppColors.border),
-              _buildSettingTile(
-                icon: Icons.notifications_outlined,
-                title: 'Notifications',
-                subtitle: 'Orders and back-in-stock',
-                hasToggle: false,
-                onTap: _openNotifications,
-              ),
-              Divider(height: 1, color: AppColors.border),
-              _buildSettingTile(
-                icon: Icons.shield_outlined,
-                title: 'Privacy & Security',
-                hasToggle: false,
-                onTap: _openPrivacySecurity,
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildSettingTile({
-    required IconData icon,
-    required String title,
-    String? subtitle,
-    required bool hasToggle,
-    bool toggleValue = false,
-    ValueChanged<bool>? onToggle,
-    VoidCallback? onTap,
-  }) {
-    return InkWell(
-      onTap: hasToggle ? null : onTap,
-      borderRadius: BorderRadius.circular(16),
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Row(
-          children: [
-            Icon(icon, color: AppColors.textMuted, size: 20),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title,
-                    style: TextStyle(
-                      color: AppColors.textMain,
-                      fontSize: 14,
-                      fontWeight: FontWeight.w600,
-                    ),
+              Icon(Icons.shield_outlined, color: AppColors.textMuted, size: 20),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Privacy and security',
+                  style: TextStyle(
+                    color: AppColors.textMain,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
                   ),
-                  if (subtitle != null) ...[
-                    const SizedBox(height: 2),
-                    Text(
-                      subtitle,
-                      style: TextStyle(
-                        color: AppColors.textMuted,
-                        fontSize: 10,
-                      ),
-                    ),
-                  ],
-                ],
+                ),
               ),
-            ),
-            if (hasToggle)
-              _buildCustomToggle(toggleValue, onToggle!)
-            else
               Icon(Icons.chevron_right, color: AppColors.textMuted, size: 20),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCustomToggle(bool value, ValueChanged<bool> onChanged) {
-    return GestureDetector(
-      onTap: () => onChanged(!value),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 250),
-        width: 44,
-        height: 24,
-        padding: const EdgeInsets.all(2),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          color: value ? AppColors.primary : Colors.grey.shade300,
-        ),
-        alignment: value ? Alignment.centerRight : Alignment.centerLeft,
-        child: Container(
-          width: 20,
-          height: 20,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: Colors.white,
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.1),
-                blurRadius: 2,
-                offset: const Offset(0, 1),
-              ),
             ],
           ),
         ),
@@ -1400,7 +412,7 @@ Widget _buildFavouritesShortcut() {
         onPressed: _handleLogout,
         icon: Icon(Icons.logout, size: 18, color: AppColors.primary),
         label: Text(
-          'Sign Out',
+          'Sign out',
           style: TextStyle(
             color: AppColors.primary,
             fontWeight: FontWeight.w600,
@@ -1423,7 +435,7 @@ Widget _buildFavouritesShortcut() {
 
   Widget _buildBottomNav() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
       decoration: BoxDecoration(
         color: AppColors.surface,
         border: Border(top: BorderSide(color: AppColors.border)),
@@ -1431,50 +443,32 @@ Widget _buildFavouritesShortcut() {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          _buildNavItem(
-            Icons.camera_alt_outlined,
-            'Try-On',
-            false,
-            _navigateToTryOn,
-          ),
-          _buildNavItem(
-            Icons.image_outlined,
-            'Gallery',
-            false,
-            _navigateToGallery,
-          ),
-          _buildNavItem(Icons.person_outline, 'Profile', true, () {}),
+          _navItem(Icons.camera_alt_outlined, 'Try-On', false, _backToCamera),
+          _navItem(Icons.home_outlined, 'Home', false, _openHome),
+          _navItem(Icons.person_outline, 'Profile', true, () {}),
         ],
       ),
     );
   }
 
-  Widget _buildNavItem(
-    IconData icon,
-    String label,
-    bool isActive,
-    VoidCallback onTap,
-  ) {
+  Widget _navItem(IconData icon, String label, bool active, VoidCallback onTap) {
+    final color = active ? AppColors.primary : AppColors.textMuted;
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(12),
       child: Padding(
-        padding: const EdgeInsets.all(8.0),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              icon,
-              color: isActive ? AppColors.primary : AppColors.textMuted,
-              size: 24,
-            ),
+            Icon(icon, color: color, size: 24),
             const SizedBox(height: 4),
             Text(
               label,
               style: TextStyle(
-                color: isActive ? AppColors.primary : AppColors.textMuted,
-                fontSize: 10,
-                fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
+                color: color,
+                fontSize: 12,
+                fontWeight: active ? FontWeight.w600 : FontWeight.w500,
               ),
             ),
           ],
