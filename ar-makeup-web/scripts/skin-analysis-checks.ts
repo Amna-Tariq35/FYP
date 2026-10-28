@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import { calculateMatchScore } from "../src/lib/skin-analysis/scoring";
 import { normalizeConcernScores } from "../src/lib/skin-analysis/contract";
 import { mapFaceppSkinResult } from "../src/lib/skin-analysis/facepp-mapper";
+import { getTopCandidates } from "../src/lib/skin-analysis/candidate-selector";
 import { buildDeterministicRoutine, isProductSafe } from "../src/lib/skin-analysis/deterministic-routine";
+import { buildGroqRoutineMessages, estimateGroqTokens } from "../src/lib/skin-analysis/groq-payload";
 import { normalizeCatalogProduct } from "../src/lib/skin-analysis/product-shape";
-import type { Product } from "../src/lib/skin-analysis/recommend";
+import { generateFinalRoutine } from "../src/lib/skin-analysis/ai-engine";
+import { CHAT_FAILURE_MESSAGE, friendlyChatError } from "../src/lib/chat/public-error";
+import type { ExactCategory, Product } from "../src/lib/skin-analysis/recommend";
 
 function product(partial: Partial<Product> & Pick<Product, "id" | "category">): Product {
   return {
@@ -134,4 +138,103 @@ const fromCatalog = buildDeterministicRoutine(
 );
 assert.equal(fromCatalog.amRoutine.some((item) => item.id === "db-1"), true);
 
-console.log("skin-analysis unit checks passed");
+const ingredientBlob = "aqua, glycerin, niacinamide, ".repeat(800);
+const steps: ExactCategory[] = ["Cleanser", "Treatment", "Eye cream", "Moisturizer", "sunscreen"];
+const bloated: Product[] = [];
+for (const category of steps) {
+  for (let i = 0; i < 3; i++) {
+    bloated.push(
+      product({
+        id: `${category}-${i}`,
+        name: `${category} option ${i}`,
+        category,
+        tags: ["acne", "oil-free", "soothing"],
+        skin_type: ["Oily"],
+        ingredients: ingredientBlob,
+      }),
+    );
+  }
+}
+const shortlist = getTopCandidates(bloated, "Oily", { acne: 0.9 }, 3);
+const groq = buildGroqRoutineMessages({
+  skinType: "Oily",
+  concerns: { acne: 0.9 },
+  am: shortlist.amCandidates,
+  pm: shortlist.pmCandidates,
+});
+assert.ok(estimateGroqTokens(groq) < 6000);
+assert.equal(groq.user.includes("niacinamide"), false);
+assert.equal(groq.user.includes("ingredients"), false);
+const packed = JSON.parse(groq.user.slice("JSON: ".length)) as {
+  am: Record<string, { key: string; name: string; category: string; reason: string }[]>;
+  pm: Record<string, { key: string }[]>;
+};
+assert.equal(packed.pm.sunscreen, undefined);
+assert.equal(Object.keys(packed.pm).length, 4);
+for (const step of steps) {
+  assert.equal(packed.am[step].length, 1);
+  assert.deepEqual(Object.keys(packed.am[step][0]).sort(), ["category", "key", "name", "reason"]);
+  assert.equal(packed.am[step][0].key, `${step}-0`);
+}
+assert.ok(packed.am.Cleanser[0].reason.length <= 72);
+
+void (async () => {
+  const catalog = [
+    product({ id: "c", category: "Cleanser", tags: ["acne"], skin_type: ["Oily"], ingredients: "water" }),
+    product({ id: "t", category: "Treatment", tags: ["acne"], skin_type: ["Oily"], ingredients: "niacinamide" }),
+    product({ id: "m", category: "Moisturizer", tags: ["oil-free"], skin_type: ["Oily"], ingredients: "glycerin" }),
+  ];
+
+  let geminiCalls = 0;
+  const busy = await generateFinalRoutine(catalog, "Oily", { acne: 0.9 }, { skinType: "Oily" }, {
+    gemini: async () => {
+      geminiCalls += 1;
+      throw Object.assign(new Error("503 Service Unavailable"), { status: 503 });
+    },
+    groq: async () => {
+      throw Object.assign(
+        new Error('413 {"error":{"message":"Request too large"}} ApiError limit reached'),
+        { status: 413 },
+      );
+    },
+  });
+  assert.equal(geminiCalls, 2);
+  assert.equal(busy.source, "rules");
+  assert.ok(busy.amRoutine.length > 0);
+  assert.equal(busy.amRoutine.some((item) => item.id === "c"), true);
+
+  let quotaCalls = 0;
+  const emptyThenRules = await generateFinalRoutine(
+    catalog,
+    "Oily",
+    { acne: 0.9 },
+    { skinType: "Oily" },
+    {
+      gemini: async () => {
+        quotaCalls += 1;
+        throw Object.assign(new Error("429 limit reached"), { status: 429 });
+      },
+      groq: async () => ({}),
+    },
+  );
+  assert.equal(quotaCalls, 1);
+  assert.equal(emptyThenRules.source, "rules");
+  assert.ok(emptyThenRules.amRoutine.length > 0);
+
+  const leaked = [
+    new Error("ApiError: 429 limit reached\n    at Groq (node_modules/groq/index.js:10:1)"),
+    { status: 413, message: '{"error":{"message":"Request too large"}}' },
+    "503 Service Unavailable",
+  ];
+  for (const sample of leaked) {
+    const text = friendlyChatError(sample);
+    assert.equal(text, CHAT_FAILURE_MESSAGE);
+    assert.equal(/apierror|429|413|503|limit reached|groq|node_modules/i.test(text), false);
+  }
+
+  console.log("skin-analysis unit checks passed");
+})().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : "check failed";
+  console.error(message);
+  process.exit(1);
+});

@@ -10,7 +10,7 @@ const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PU
 const serpApiKey = process.env.SERPAPI_KEY || '';
 
 if (!supabaseUrl || !supabaseKey || !serpApiKey) {
-  console.error('❌ Error: Supabase credentials ya SERPAPI_KEY missing hai!');
+  console.error('Error: Supabase credentials or SERPAPI_KEY are missing.');
   process.exit(1);
 }
 
@@ -18,86 +18,152 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function fetchGoogleProductImage(query: string): Promise<string | null> {
-  try {
-    const searchUrl = `https://serpapi.com/search.json?engine=google_images&q=${encodeURIComponent(
-      query + ' product'
-    )}&api_key=${serpApiKey}&num=1`;
+async function getAvailableSearches(): Promise<number> {
+  const accountUrl = new URL('https://serpapi.com/account.json');
+  accountUrl.searchParams.set('api_key', serpApiKey);
 
-    const response = await fetch(searchUrl);
-    const data = await response.json();
+  const response = await fetch(accountUrl);
+  const data = await response.json();
 
-    if (data.error) {
-      console.error(`⚠️ SerpAPI Error: ${data.error}`);
-      return null;
-    }
-
-    if (data.images_results && data.images_results.length > 0) {
-      return data.images_results[0].original;
-    }
-  } catch (error) {
-    console.error(`❌ Image search error for "${query}":`, error);
+  if (!response.ok || data.error) {
+    throw new Error(`SerpAPI account check failed: ${data.error || response.statusText}`);
   }
-  return null;
+
+  const availableSearches = Number(data.total_searches_left);
+  if (!Number.isFinite(availableSearches) || availableSearches < 0) {
+    throw new Error('SerpAPI did not return a valid remaining-search count.');
+  }
+
+  return availableSearches;
 }
 
-async function updateRealImagesInLoop() {
-  console.log('🚀 Automated Image Fetcher Started...\n');
+async function fetchGoogleProductImage(query: string): Promise<string | null> {
+  const searchUrl = new URL('https://serpapi.com/search.json');
+  searchUrl.searchParams.set('engine', 'google_images');
+  searchUrl.searchParams.set('q', `${query} product`);
+  searchUrl.searchParams.set('api_key', serpApiKey);
+  searchUrl.searchParams.set('num', '1');
 
-  let hasMore = true;
-  let totalProcessed = 0;
-  const BATCH_SIZE = 20; // 20-20 karke fetch karega taaki progress dikhti rahe
+  const response = await fetch(searchUrl);
+  const data = await response.json();
 
-  while (hasMore) {
-    // Select next batch of products where image_url is missing
-    const { data: products, error } = await supabase
+  if (!response.ok || data.error) {
+    throw new Error(`SerpAPI image search failed for "${query}": ${data.error || response.statusText}`);
+  }
+
+  return data.images_results?.[0]?.original ?? null;
+}
+
+async function getProductsWithoutImages() {
+  const products = [];
+  const PAGE_SIZE = 1000;
+  let offset = 0;
+
+  while (true) {
+    const { data, error } = await supabase
       .from('makeup_products')
       .select('id, brand, name, image_url')
-      .is('image_url', null)
-      .limit(BATCH_SIZE);
+      .or('image_url.is.null,image_url.eq.')
+      .range(offset, offset + PAGE_SIZE - 1);
 
     if (error) {
-      console.error('❌ DB Error:', error.message);
-      break;
+      throw new Error(`Supabase product lookup failed: ${error.message}`);
     }
 
-    if (!products || products.length === 0) {
-      console.log('🎉 PERFECT! Saare products ki images update ho chuki hain! Ab koi product bina image ke nahi bacha.');
-      hasMore = false;
-      break;
+    products.push(...(data ?? []));
+    if (!data || data.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
+
+  return products;
+}
+
+async function updateRealImages() {
+  console.log('Starting product image fetch...\n');
+
+  const [availableSearches, products] = await Promise.all([
+    getAvailableSearches(),
+    getProductsWithoutImages(),
+  ]);
+
+  console.log(`SerpAPI searches remaining: ${availableSearches}`);
+  console.log(`Products missing images: ${products.length}`);
+
+  const productsToProcess = products.slice(0, availableSearches);
+  if (productsToProcess.length < products.length) {
+    console.log(`Quota limit: processing ${productsToProcess.length} of ${products.length} products.`);
+  }
+
+  let updated = 0;
+  let notFound = 0;
+  let updateFailed = 0;
+  let searchFailed = 0;
+  const DISPLAY_BATCH_SIZE = 20;
+  const SEARCH_CONCURRENCY = 4;
+
+  for (let start = 0; start < productsToProcess.length; start += SEARCH_CONCURRENCY) {
+    const batch = productsToProcess.slice(start, start + SEARCH_CONCURRENCY);
+    if (start % DISPLAY_BATCH_SIZE === 0) {
+      console.log(`\nProcessing products ${start + 1}-${Math.min(start + DISPLAY_BATCH_SIZE, productsToProcess.length)} of ${productsToProcess.length}...`);
     }
 
-    console.log(`\n📦 Batch Processing: ${products.length} products (Total processed so far: ${totalProcessed})...`);
+    const results = await Promise.allSettled(
+      batch.map((product) => {
+        const searchQuery = `${product.brand} ${product.name}`;
+        console.log(`Searching: "${searchQuery}"`);
+        return fetchGoogleProductImage(searchQuery);
+      })
+    );
 
-    for (const product of products) {
-      const searchQuery = `${product.brand} ${product.name}`;
-      console.log(`🔍 Searching: "${searchQuery}"`);
-
-      const imageUrl = await fetchGoogleProductImage(searchQuery);
-
-      if (imageUrl) {
-        const { error: updateError } = await supabase
-          .from('makeup_products')
-          .update({ image_url: imageUrl })
-          .eq('id', product.id);
-
-        if (!updateError) {
-          console.log(`   ✅ Saved!`);
-          totalProcessed++;
-        } else {
-          console.error(`   ❌ DB Update Failed:`, updateError.message);
+    let fatalSearchError = false;
+    for (let index = 0; index < batch.length; index++) {
+      const result = results[index];
+      if (result.status === 'rejected') {
+        console.error(`   Image search failed for "${batch[index].name}":`, result.reason);
+        searchFailed++;
+        if (/quota|out of searches|limit exceeded|rate limit|invalid api key|unauthorized/i.test(String(result.reason))) {
+          fatalSearchError = true;
         }
-      } else {
-        console.log(`   ⚠️ Image nahi mili ya SerpAPI limit khatam ho gayi. Skipping.`);
-        // Agar image na mile ya limit khatam ho jaye, toh break/stop kar dein taaki infinite loop na bane
+        continue;
       }
 
-      // Safe Delay (800ms) to respect SerpAPI rate limits
+      if (!result.value) {
+        console.log(`   No image found for "${batch[index].name}"; skipping.`);
+        notFound++;
+      } else {
+        const { error } = await supabase
+          .from('makeup_products')
+          .update({ image_url: result.value })
+          .eq('id', batch[index].id);
+
+        if (error) {
+          console.error(`   Database update failed for "${batch[index].name}": ${error.message}`);
+          updateFailed++;
+        } else {
+          console.log(`   Image saved for "${batch[index].name}".`);
+          updated++;
+        }
+      }
+    }
+
+    if (fatalSearchError) {
+      throw new Error('SerpAPI reported a quota, rate-limit, or authorization error; stopping further searches.');
+    }
+
+    if (start + SEARCH_CONCURRENCY < productsToProcess.length) {
       await sleep(800);
     }
   }
 
-  console.log(`\n🏁 Process Complete! Total ${totalProcessed} products updated with Google Images!`);
+  console.log('\nImage fetch complete.');
+  console.log(`Updated: ${updated}`);
+  console.log(`No image found: ${notFound}`);
+  console.log(`Image searches failed: ${searchFailed}`);
+  console.log(`Database update failed: ${updateFailed}`);
+  console.log(`Not searched because of quota: ${products.length - productsToProcess.length}`);
 }
 
-updateRealImagesInLoop();
+updateRealImages().catch((error) => {
+  console.error('Image fetch stopped:', error);
+  process.exitCode = 1;
+});

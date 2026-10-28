@@ -15,7 +15,6 @@ import {
   Camera,
   FileText,
   Activity,
-  ShieldAlert,
   Droplets,
   Award,
   Layers,
@@ -156,7 +155,7 @@ function ResultsContent({
         }
       } catch (err: any) {
         console.error("Fetch Error:", err);
-        setError("Could not load your skin analysis report. Please try again.");
+        setError("Could not load this report. Please try again.");
       } finally {
         setLoading(false);
       }
@@ -175,20 +174,26 @@ function ResultsContent({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ analysisId: record.id }),
       });
-      const resData = await response.json();
-      if (!response.ok || !resData?.data) throw new Error(resData.error || "Failed to generate routine");
+      const resData = await response.json().catch(() => null);
+      const amRoutine = Array.isArray(resData?.data?.amRoutine) ? resData.data.amRoutine : [];
+      const pmRoutine = Array.isArray(resData?.data?.pmRoutine) ? resData.data.pmRoutine : [];
+      if (!response.ok || !resData?.data || (amRoutine.length === 0 && pmRoutine.length === 0)) {
+        setRoutineError("The routine could not be built. You can try again.");
+        return;
+      }
 
       setLogData((prev: any) => ({
         ...prev,
         routine_snapshot: {
-          amRoutine: resData.data.amRoutine,
-          pmRoutine: resData.data.pmRoutine,
+          amRoutine,
+          pmRoutine,
           source: resData.data.source,
         },
         ai_summary: resData.data.summary || prev?.ai_summary,
       }));
-    } catch (apiErr) {
-      console.error("Failed to generate routine dynamically:", apiErr);
+      setRoutineError(null);
+    } catch {
+      console.error("Failed to generate routine dynamically");
       setRoutineError("The routine could not be built. You can try again.");
     } finally {
       setIsGeneratingRoutine(false);
@@ -232,8 +237,8 @@ function ResultsContent({
         skin_type: "Dry",
         routine_snapshot: null,
       });
-    } catch (err) {
-      console.error("Confirmation API Error:", err);
+    } catch {
+      console.error("Confirmation API failed");
       setRoutineError("The skin type could not be updated. You can try again.");
     } finally {
       setIsConfirming(false);
@@ -310,7 +315,7 @@ function ResultsContent({
       <div className="min-h-screen flex flex-col items-center justify-center bg-[var(--bg-base)] gap-4">
         <Sparkles className="w-10 h-10 animate-spin text-[var(--rose-primary)]" />
         <p className="text-[var(--text-secondary)] font-medium text-sm animate-pulse">
-          Analyzing your skin diagnostics and compiling personalized routine...
+          Matching products to your skin profile...
         </p>
       </div>
     );
@@ -319,15 +324,11 @@ function ResultsContent({
   if (error || !logData) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-[var(--bg-base)] p-4 text-center">
-        <ShieldAlert className="w-12 h-12 text-red-500 mb-3" />
-        <h2 className="text-xl font-bold text-gray-900 mb-2">
-          Report Generation Failed
-        </h2>
-        <p className="text-gray-600 mb-6 max-w-md">
-          {error || "Could not retrieve skin profile."}
+        <p className="text-sm text-[var(--text-secondary)] mb-6 max-w-md">
+          Could not load this report. Please try again.
         </p>
         <Link href="/skin-analysis/scan" className="ui-btn">
-          Start New Analysis
+          Try again
         </Link>
       </div>
     );
@@ -559,8 +560,11 @@ function ResultsContent({
           </div>
         )}
 
-        {routineError && !isGeneratingRoutine && (
-          <div className="mb-6 rounded-2xl border border-[#FEE4E2] bg-[#FEF3F2] p-4 text-sm text-[#B42318]">
+        {routineError &&
+          !isGeneratingRoutine &&
+          (am.length === 0 && pm.length === 0 ||
+            routineError === "The skin type could not be updated. You can try again.") && (
+          <div className="mb-6 rounded-2xl border border-[var(--border-soft)] bg-white p-4 text-sm text-[var(--text-secondary)]">
             <p>{routineError}</p>
             <button type="button" className="mt-3 underline" onClick={() => generateRoutineOnTheFly(logData)}>
               Try again
@@ -670,7 +674,7 @@ function ResultsContent({
         )}
 
         {/* EMPTY ROUTINE FALLBACK */}
-        {!isGeneratingRoutine && currentRoutine.length === 0 && (
+        {!isGeneratingRoutine && currentRoutine.length === 0 && (am.length > 0 || pm.length > 0) && (
           <div className="text-center py-16 bg-white rounded-3xl border border-[var(--border-soft)]">
             <Layers className="w-12 h-12 text-gray-300 mx-auto mb-3" />
             <h3 className="text-lg font-bold text-gray-700">

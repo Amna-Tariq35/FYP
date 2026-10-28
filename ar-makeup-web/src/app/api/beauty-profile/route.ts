@@ -60,6 +60,83 @@ function jsonError(message: string, status = 400) {
   );
 }
 
+function missingColumnName(error: { message?: string; code?: string } | null): string | null {
+  if (!error) return null;
+  const message = error.message ?? "";
+  const code = error.code ?? "";
+  const missing =
+    code === "PGRST204" ||
+    code === "42703" ||
+    /schema cache/i.test(message) ||
+    /column .* does not exist/i.test(message);
+  if (!missing) return null;
+  const quoted = message.match(/'([a-z0-9_]+)' column/i);
+  if (quoted) return quoted[1];
+  const plain = message.match(/column "([a-z0-9_]+)"/i);
+  return plain?.[1] ?? null;
+}
+
+function honestProfileError(message: string | undefined): string {
+  const text = (message ?? "").replace(/\s+/g, " ").trim();
+  if (!text || text.length > 180) return "Could not save your beauty profile.";
+  return text;
+}
+
+/**
+ * Update the caller's row, or insert one. PostgREST `.upsert({ onConflict: "user_id" })`
+ * fails the whole save when `user_id` is not a unique column, which this table's
+ * tracked SQL never declares. Bookkeeping columns (`updated_at`, `source`) are
+ * dropped and retried only when the database says that exact column is missing.
+ * Skin type, undertone, depth, and concerns stay in the write.
+ */
+async function writeBeautyProfile(
+  supabase: { from: (table: string) => any },
+  row: Record<string, unknown>,
+): Promise<{ data: unknown; error: { message?: string; code?: string } | null }> {
+  let payload = { ...row };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const userId = payload.user_id;
+    const existing = await supabase
+      .from("user_skin_profiles")
+      .select("user_id")
+      .eq("user_id", userId)
+      .limit(1);
+    if (existing.error) return { data: null, error: existing.error };
+
+    const hasRow = Array.isArray(existing.data) && existing.data.length > 0;
+    const result = hasRow
+      ? await supabase
+          .from("user_skin_profiles")
+          .update(withoutKey(payload, "user_id"))
+          .eq("user_id", userId)
+          .select()
+      : await supabase.from("user_skin_profiles").insert(payload).select();
+
+    if (!result.error) {
+      const data = Array.isArray(result.data) ? result.data[0] ?? null : result.data;
+      if (!data) {
+        return { data: null, error: { message: "Could not save your beauty profile." } };
+      }
+      return { data, error: null };
+    }
+
+    const missing = missingColumnName(result.error);
+    if (missing === "updated_at" || missing === "source") {
+      if (!(missing in payload)) return { data: null, error: result.error };
+      payload = withoutKey(payload, missing);
+      continue;
+    }
+    return { data: null, error: result.error };
+  }
+  return { data: null, error: { message: "Could not save your beauty profile." } };
+}
+
+function withoutKey(row: Record<string, unknown>, key: string) {
+  const next = { ...row };
+  delete next[key];
+  return next;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /api/beauty-profile
 // ─────────────────────────────────────────────────────────────────────────────
@@ -233,27 +310,28 @@ export async function POST(request: NextRequest) {
 
     // `source` records where the values came from and is merged, not replaced: a
     // profile that was measured and then edited by hand is 'both'.
-    const { data: existing } = await supabase
+    const priorRead = await supabase
       .from("user_skin_profiles")
       .select("source")
       .eq("user_id", user.id)
-      .maybeSingle();
-
+      .limit(1);
+    const priorRow = Array.isArray(priorRead.data) ? priorRead.data[0] : null;
+    const prior =
+      !priorRead.error && priorRow && typeof priorRow.source === "string"
+        ? priorRow.source
+        : null;
     const incoming = payload.source || "manual";
-    const prior = existing?.source ?? null;
-    update.source =
-      prior && prior !== incoming && prior !== "both" ? "both" : incoming;
+    if (!(priorRead.error && missingColumnName(priorRead.error) === "source")) {
+      update.source =
+        prior && prior !== incoming && prior !== "both" ? "both" : incoming;
+    }
     update.updated_at = new Date().toISOString();
 
-    const { data, error } = await supabase
-      .from("user_skin_profiles")
-      .upsert(update, { onConflict: "user_id" })
-      .select()
-      .single();
+    const { data, error } = await writeBeautyProfile(supabase, update);
 
     if (error) {
-      console.error("[beauty-profile POST upsert error]", error);
-      return jsonError("Failed to save profile", 500);
+      console.error("[beauty-profile POST write error]", error.message);
+      return jsonError(honestProfileError(error.message), 500);
     }
 
     return NextResponse.json(

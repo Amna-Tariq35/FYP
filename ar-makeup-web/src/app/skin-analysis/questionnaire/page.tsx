@@ -161,20 +161,21 @@ export default function QuestionnairePage() {
       const data = await res.json();
 
       if (!res.ok) {
-        if (data.error === "AI_BUSY") {
-          setIsAiBusy(true);
-          setErrorMsg(data.message || "Analysis is busy right now. Please try again in a few seconds.");
-          setIsSubmitting(false);
-          return;
-        }
-        throw new Error(data.message || data.error || "Failed to generate routine");
+        setIsAiBusy(data?.error === "AI_BUSY");
+        setErrorMsg(
+          data?.error === "AI_BUSY"
+            ? "Analysis is busy right now. Please try again in a few seconds."
+            : "Something went wrong. Please try again.",
+        );
+        setIsSubmitting(false);
+        return;
       }
 
       // Success! Redirect to dynamic results page with the DB log ID
       router.push(`/skin-analysis/results/${data.sessionId}`);
-    } catch (err: any) {
-      console.error("Submission Error:", err);
-      setErrorMsg(err.message || "Something went wrong. Please try again.");
+    } catch {
+      console.error("Submission failed");
+      setErrorMsg("Something went wrong. Please try again.");
       setIsSubmitting(false);
     }
   };

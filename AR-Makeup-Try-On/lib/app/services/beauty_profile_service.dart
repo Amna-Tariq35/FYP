@@ -81,33 +81,114 @@ class BeautyProfileService {
 
   // ── SAVE ───────────────────────────────────────────────────────────────────
 
-  /// Save beauty profile to backend.
-  /// Creates new record if doesn't exist, updates if it does.
+  /// Last save failure, one sentence, safe to show in the questionnaire.
+  static String? lastSaveError;
+
+  /// Save beauty profile for the signed-in user.
+  ///
+  /// Writes `user_skin_profiles` with the app session. The hosted
+  /// `/api/beauty-profile` route answered every failure with
+  /// "Failed to save profile", and that route's upsert requires a unique
+  /// `user_id` the tracked SQL never creates. Update-or-insert does not.
   static Future<bool> saveProfile(UserBeautyProfile profile) async {
+    lastSaveError = null;
     try {
-      final headers = await _authHeaders;
-      final payload = profile.toJson();
-
-      final response = await http.post(
-        Uri.parse(_apiUrl),
-        headers: headers,
-        body: jsonEncode(payload),
-      ).timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) {
-        final json = jsonDecode(response.body) as Map<String, dynamic>;
-        if (json.containsKey('profile')) {
-          return true;
-        }
-      } else if (response.statusCode == 401) {
-        throw Exception('Unauthorized');
+      final user = supabase.auth.currentUser;
+      if (user == null) {
+        lastSaveError = 'Sign in again, then save your beauty profile.';
+        return false;
       }
 
+      final row = <String, dynamic>{
+        'user_id': user.id,
+        ...profile.toJson(),
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      };
+      await _mergeSource(row, user.id);
+      await _writeProfile(row, user.id);
+      return true;
+    } on PostgrestException catch (e) {
+      lastSaveError = _publicSaveError(e.message);
+      print('[BeautyProfileService] saveProfile error: ${e.message}');
       return false;
     } catch (e) {
+      lastSaveError = 'Could not save your beauty profile.';
       print('[BeautyProfileService] saveProfile error: $e');
       return false;
     }
+  }
+
+  static Future<void> _mergeSource(Map<String, dynamic> row, String userId) async {
+    final incoming = row['source'] as String? ?? 'manual';
+    try {
+      final prior = await supabase
+          .from('user_skin_profiles')
+          .select('source')
+          .eq('user_id', userId)
+          .limit(1);
+      final rows = List<Map<String, dynamic>>.from(prior as List);
+      final old = rows.isEmpty ? null : rows.first['source'];
+      if (old is String && old != incoming && old != 'both') {
+        row['source'] = 'both';
+      }
+    } on PostgrestException catch (e) {
+      if (_missingColumn(e.message) == 'source') {
+        row.remove('source');
+        return;
+      }
+      rethrow;
+    }
+  }
+
+  static Future<void> _writeProfile(Map<String, dynamic> row, String userId) async {
+    var payload = Map<String, dynamic>.from(row);
+    // One drop per missing column, then one extra attempt. Stops when the
+    // error is not a single absent column, or when that column is user_id.
+    final maxAttempts = payload.length + 1;
+    PostgrestException? last;
+    for (var attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        final existing = await supabase
+            .from('user_skin_profiles')
+            .select('user_id')
+            .eq('user_id', userId)
+            .limit(1);
+        final hasRow = (existing as List).isNotEmpty;
+        if (hasRow) {
+          final patch = Map<String, dynamic>.from(payload)..remove('user_id');
+          await supabase.from('user_skin_profiles').update(patch).eq('user_id', userId);
+        } else {
+          await supabase.from('user_skin_profiles').insert(payload);
+        }
+        return;
+      } on PostgrestException catch (e) {
+        last = e;
+        final missing = _missingColumn(e.message);
+        if (missing == null || missing == 'user_id' || !payload.containsKey(missing)) {
+          rethrow;
+        }
+        payload.remove(missing);
+        print('[BeautyProfileService] schema cache has no $missing; retrying without it');
+      }
+    }
+    if (last != null) throw last;
+  }
+
+  static String? _missingColumn(String message) {
+    final schema = message.contains('schema cache') || message.contains('does not exist');
+    if (!schema) return null;
+    final quoted = RegExp("'([a-z0-9_]+)' column", caseSensitive: false).firstMatch(message);
+    if (quoted != null) return quoted.group(1);
+    final plain = RegExp(r'column "([a-z0-9_]+)"', caseSensitive: false).firstMatch(message);
+    return plain?.group(1);
+  }
+
+  static String _publicSaveError(String message) {
+    final text = message.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (text.isEmpty || text.length > 180) {
+      return 'Could not save your beauty profile.';
+    }
+    return text;
   }
 
   // ── UNDERTONE CALCULATION ──────────────────────────────────────────────────

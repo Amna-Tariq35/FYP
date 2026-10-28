@@ -9,17 +9,12 @@ import {
   Loader2,
   ShoppingCart,
   ChevronRight,
-  AlertTriangle,
-  WifiOff,
-  ServerOff,
-  AlertCircle,
-  RefreshCw,
-  Clock,
 } from 'lucide-react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
 import { usePathname, useRouter } from 'next/navigation';
 import { addToCart } from '@/src/store/cart';
+import { friendlyChatError } from '@/src/lib/chat/public-error';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -48,14 +43,6 @@ interface Product {
   item_form?: string;
   description?: string;
   product_shades?: ProductShade[];
-}
-
-type ErrorType = 'RATE_LIMIT' | 'NETWORK' | 'SERVER' | 'GENERIC';
-
-interface ChatError {
-  type: ErrorType;
-  title: string;
-  message: string;
 }
 
 // ── Product Card Component ────────────────────────────────────────────────────
@@ -221,83 +208,18 @@ export default function Chatbot() {
   const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState('');
-  const [chatError, setChatError] = useState<ChatError | null>(null);
-  const [cooldown, setCooldown] = useState<number>(0);
+  const [chatError, setChatError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Auto Countdown Timer Effect for Rate Limits
-  useEffect(() => {
-    if (cooldown <= 0) return;
-    const interval = setInterval(() => {
-      setCooldown((prev) => {
-        if (prev <= 1) {
-          clearInterval(interval);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [cooldown]);
-
-  const { messages, sendMessage, status, regenerate } = useChat({
+  const { messages, sendMessage, status } = useChat({
     transport: new DefaultChatTransport({ api: '/api/chat' }),
     onError: (error) => {
-      console.error('Chat error:', error);
-
-      // 1. Offline / Network Error Check
-      if (typeof window !== 'undefined' && !navigator.onLine) {
-        setChatError({
-          type: 'NETWORK',
-          title: 'Connection Lost',
-          message: 'You are currently offline. Please check your internet connection.',
-        });
-        return;
-      }
-
-      const rawMsg = error?.message || '';
-
-      // 2. Rate Limit (429) Check
-      if (
-        rawMsg.includes('429') ||
-        rawMsg.includes('Quota') ||
-        rawMsg.includes('RATE_LIMIT') ||
-        rawMsg.includes('traffic')
-      ) {
-        setCooldown(10);
-        setChatError({
-          type: 'RATE_LIMIT',
-          title: 'System Busy',
-          message: 'High traffic detected. Please wait for the cooldown timer before retrying.',
-        });
-        return;
-      }
-
-      // 3. Server Maintenance (503 / 500) Check
-      if (
-        rawMsg.includes('503') ||
-        rawMsg.includes('500') ||
-        rawMsg.includes('SERVER_ERROR') ||
-        rawMsg.includes('maintenance')
-      ) {
-        setChatError({
-          type: 'SERVER',
-          title: 'Service Maintenance',
-          message: 'Our AI engine is undergoing quick maintenance. Try again in a moment.',
-        });
-        return;
-      }
-
-      // 4. Fallback Generic Error
-      setChatError({
-        type: 'GENERIC',
-        title: 'Unable to Respond',
-        message: 'Something went wrong while fetching recommendations. Please try again.',
-      });
+      console.error('Chat request failed');
+      setChatError(friendlyChatError(error));
     },
   });
 
-  const isLoading = status !== 'ready';
+  const isLoading = status === 'submitted' || status === 'streaming';
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -305,61 +227,11 @@ export default function Chatbot() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (input.trim() && !isLoading && cooldown === 0) {
+    if (input.trim() && !isLoading) {
       setChatError(null);
       sendMessage({ text: input });
       setInput('');
     }
-  };
-
-  // Error Card Visual Styling Helper
-  const renderErrorCard = () => {
-    if (!chatError) return null;
-
-    let bgClass = 'bg-amber-50 border-amber-200 text-amber-900';
-    let icon = <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />;
-
-    if (chatError.type === 'NETWORK') {
-      bgClass = 'bg-slate-50 border-slate-200 text-slate-800';
-      icon = <WifiOff className="w-4 h-4 text-slate-600 shrink-0 mt-0.5" />;
-    } else if (chatError.type === 'SERVER') {
-      bgClass = 'bg-rose-50 border-rose-200 text-rose-900';
-      icon = <ServerOff className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />;
-    } else if (chatError.type === 'GENERIC') {
-      bgClass = 'bg-gray-50 border-gray-200 text-gray-800';
-      icon = <AlertCircle className="w-4 h-4 text-gray-600 shrink-0 mt-0.5" />;
-    }
-
-    return (
-      <div className={`border rounded-2xl p-3 flex items-start gap-2.5 text-xs shadow-sm transition-all animate-in fade-in ${bgClass}`}>
-        {icon}
-        <div className="flex-1">
-          <p className="font-semibold text-[11px] uppercase tracking-wide opacity-90">
-            {chatError.title}
-          </p>
-          <p className="mt-0.5 leading-relaxed">{chatError.message}</p>
-
-          <div className="mt-2.5 flex items-center gap-3">
-            {cooldown > 0 ? (
-              <span className="flex items-center gap-1.5 text-[11px] font-semibold text-amber-700 bg-amber-100 px-2.5 py-1 rounded-full">
-                <Clock size={12} className="animate-spin" />
-                Retry in {cooldown}s
-              </span>
-            ) : (
-              <button
-                onClick={() => {
-                  setChatError(null);
-                  regenerate();
-                }}
-                className="flex items-center gap-1 text-[11px] font-semibold underline hover:opacity-80 transition-opacity"
-              >
-                <RefreshCw size={11} /> Try Again
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-    );
   };
 
   if (pathname?.startsWith('/admin')) return null;
@@ -413,7 +285,6 @@ export default function Chatbot() {
                   ].map((suggestion) => (
                     <button
                       key={suggestion}
-                      disabled={cooldown > 0}
                       onClick={() => {
                         setChatError(null);
                         sendMessage({ text: suggestion.replace(/^[^\w]+/, '') });
@@ -508,7 +379,21 @@ export default function Chatbot() {
             )}
 
             {/* Structured Error Card */}
-            {renderErrorCard()}
+            {chatError && (
+              <div className="flex items-start">
+                <div
+                  className="p-3 rounded-2xl max-w-[85%] text-sm shadow-sm"
+                  style={{
+                    background: 'white',
+                    color: 'var(--text-main)',
+                    borderRadius: '18px 18px 18px 4px',
+                    border: '1px solid var(--border-soft)',
+                  }}
+                >
+                  {chatError}
+                </div>
+              </div>
+            )}
 
             <div ref={messagesEndRef} />
           </div>
@@ -524,13 +409,8 @@ export default function Chatbot() {
           >
             <input
               value={input}
-              disabled={cooldown > 0}
               onChange={(e) => setInput(e.target.value)}
-              placeholder={
-                cooldown > 0
-                  ? `Please wait ${cooldown}s before retrying...`
-                  : 'Ask for beauty recommendations...'
-              }
+              placeholder="Ask for beauty recommendations..."
               className="flex-1 rounded-full px-4 py-2.5 text-sm transition-all focus:outline-none disabled:bg-gray-100 disabled:text-gray-400"
               style={{
                 background: 'var(--bg-base)',
@@ -548,7 +428,7 @@ export default function Chatbot() {
             />
             <button
               type="submit"
-              disabled={isLoading || !input.trim() || cooldown > 0}
+              disabled={isLoading || !input.trim()}
               className="text-white p-2.5 rounded-full transition-all flex items-center justify-center shadow-md disabled:opacity-50"
               style={{ background: 'var(--rose-primary)' }}
             >

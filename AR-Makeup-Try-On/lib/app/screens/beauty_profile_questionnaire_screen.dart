@@ -210,7 +210,8 @@ class _BeautyProfileQuestionnaireScreenState
           }
         });
       } else {
-        setState(() => _errorMessage = 'Failed to save profile. Try again.');
+        setState(() => _errorMessage = BeautyProfileService.lastSaveError ??
+            'Could not save your beauty profile.');
       }
     } catch (_) {
       setState(() {

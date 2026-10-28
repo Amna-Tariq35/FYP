@@ -112,13 +112,18 @@ export default function ScanPage() {
       if (!apiResponse.ok) {
         if (apiResult.error === "API_QUOTA_EXCEEDED") {
           setIsQuotaError(true);
-          throw new Error(apiResult.message);
+          return;
         }
         if (apiResult.error === "PHOTO_ANALYSIS_UNAVAILABLE") {
-          setUnavailableError({ message: apiResult.message });
-          throw new Error(apiResult.message);
+          setUnavailableError({
+            message:
+              "Photo analysis is busy right now. You can try again in a moment, or answer the short questionnaire for a result that does not depend on the photo service.",
+          });
+          return;
         }
-        throw new Error(apiResult.error || apiResult.details || "API Analysis failed");
+        setValidationError("The photo could not be read. Please try again.");
+        setPreviewImage(null);
+        return;
       }
 
       // Stage 8: Redirect to Analysis Result Page
@@ -131,11 +136,9 @@ export default function ScanPage() {
       
       router.push(redirectUrl);
 
-    } catch (error: any) {
-      console.error("Scan Processing Error:", error);
-      if (!isQuotaError && !unavailableError) {
-        setValidationError(error.message || "Failed to complete skin analysis. Please try again.");
-      }
+    } catch {
+      console.error("Scan processing failed");
+      setValidationError("The photo could not be read. Please try again.");
       setPreviewImage(null);
     } finally {
       if (objectUrl) {

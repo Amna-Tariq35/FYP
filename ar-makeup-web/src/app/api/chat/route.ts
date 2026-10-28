@@ -1,4 +1,6 @@
 import {
+  createUIMessageStream,
+  createUIMessageStreamResponse,
   streamText,
   tool,
   UIMessage,
@@ -12,9 +14,9 @@ import { createSupabaseServerClient } from "@/src/lib/supabase/server";
 import { clientKey, rateLimit } from "@/src/lib/skin-analysis/rate-limit";
 import { loadShopperMatchProfile } from "@/src/lib/catalog/product-profile-matching";
 import { asStringList } from "@/src/lib/skin-analysis/product-shape";
+import { CHAT_FAILURE_MESSAGE, CHAT_WAIT_MESSAGE, friendlyChatError } from "@/src/lib/chat/public-error";
 
-const PROVIDER_FALLBACK =
-  "AI Assistant is currently undergoing quick maintenance. Please try again in a moment.";
+const CHAT_MODEL = "gemini-3.8-flash";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const MAX_MESSAGES_IN_CONTEXT = 10;
@@ -35,23 +37,65 @@ function trimMessages(messages: UIMessage[]): UIMessage[] {
   return messages.slice(-MAX_MESSAGES_IN_CONTEXT);
 }
 
-function buildErrorResponse(
-  code: "RATE_LIMIT" | "SERVER_ERROR" | "BAD_REQUEST",
-  message: string,
-  status: number,
-  retryAfterSeconds = 0
-): Response {
-  return new Response(
-    JSON.stringify({
-      code,
-      message,
-      retryAfter: retryAfterSeconds,
-    }),
-    {
-      status,
-      headers: { "Content-Type": "application/json" },
+function logProviderFailure(label: string, error: unknown) {
+  const record = error as { status?: unknown; statusCode?: unknown };
+  const status =
+    typeof record?.status === "number"
+      ? record.status
+      : typeof record?.statusCode === "number"
+        ? record.statusCode
+        : "";
+  console.error(label, status);
+}
+
+function localChatReply(text: string): Response {
+  const stream = createUIMessageStream({
+    execute: ({ writer }) => {
+      const id = "local";
+      writer.write({ type: "start" });
+      writer.write({ type: "start-step" });
+      writer.write({ type: "text-start", id });
+      writer.write({ type: "text-delta", id, delta: text });
+      writer.write({ type: "text-end", id });
+      writer.write({ type: "finish-step" });
+      writer.write({ type: "finish", finishReason: "stop" });
+    },
+    onError: () => friendlyChatError(undefined),
+  });
+  return createUIMessageStreamResponse({ stream });
+}
+
+async function assertProviderStarted(result: {
+  fullStream: AsyncIterable<{ type: string; error?: unknown }>;
+}) {
+  const iterator = result.fullStream[Symbol.asyncIterator]();
+  while (true) {
+    const next = await iterator.next();
+    if (next.done) {
+      throw new Error("empty model output");
     }
-  );
+    const part = next.value;
+    if (part.type === "error") {
+      throw part.error instanceof Error ? part.error : new Error("provider failed");
+    }
+    if (
+      part.type === "text-delta" ||
+      part.type === "tool-call" ||
+      part.type === "tool-input-start" ||
+      part.type === "tool-input-delta"
+    ) {
+      void (async () => {
+        try {
+          while (!(await iterator.next()).done) {
+            // Keep this branch moving so the reply stream is not stalled.
+          }
+        } catch {
+          // The shopper-facing stream reports its own failure.
+        }
+      })();
+      return;
+    }
+  }
 }
 
 function preferScore(
@@ -193,8 +237,8 @@ If the tool returns 0 products, DO NOT hallucinate products. Reply gracefully wi
 function chatStream(result: { toUIMessageStreamResponse: (init?: { onError?: (error: unknown) => string }) => Response }) {
   return result.toUIMessageStreamResponse({
     onError: (error) => {
-      console.error("[chat/route] stream failed", error);
-      return PROVIDER_FALLBACK;
+      logProviderFailure("[chat/route] stream failed", error);
+      return friendlyChatError(error);
     },
   });
 }
@@ -203,12 +247,7 @@ function chatStream(result: { toUIMessageStreamResponse: (init?: { onError?: (er
 export async function POST(req: Request) {
   const limit = rateLimit(`chat:${clientKey(req)}`, 12, 60_000);
   if (!limit.ok) {
-    return buildErrorResponse(
-      "RATE_LIMIT",
-      "High traffic detected. Please wait a few seconds before retrying.",
-      429,
-      60,
-    );
+    return localChatReply(CHAT_WAIT_MESSAGE);
   }
 
   let messages: UIMessage[];
@@ -216,10 +255,10 @@ export async function POST(req: Request) {
     const body = await req.json();
     messages = body?.messages;
     if (!Array.isArray(messages) || messages.length === 0) {
-      return buildErrorResponse("BAD_REQUEST", "Messages array is required.", 400);
+      return localChatReply(CHAT_FAILURE_MESSAGE);
     }
   } catch {
-    return buildErrorResponse("BAD_REQUEST", "Invalid JSON payload.", 400);
+    return localChatReply(CHAT_FAILURE_MESSAGE);
   }
 
   const trimmedMessages = trimMessages(messages);
@@ -231,69 +270,43 @@ export async function POST(req: Request) {
       ? `${SYSTEM_PROMPT}\n\nThe signed-in shopper's stored skin type is "${shopper.skinType ?? "not set"}" and finish preference is "${shopper.finish ?? "not set"}". When you call searchProducts, pass skinType and finish so matching products are preferred.`
       : SYSTEM_PROMPT;
 
-  let isGeminiQuotaExceeded = false;
+  const shared = {
+    system: systemPrompt,
+    messages: modelMessages,
+    tools,
+    stopWhen: stepCountIs(3),
+    maxRetries: 0,
+  };
 
-  // 1. ATTEMPT GEMINI FIRST
+  const geminiAbort = new AbortController();
   try {
-    console.log("Attempting Chat with Gemini...");
-    const result = streamText({
-      model: google("gemini-3.5-flash"),
-      system: systemPrompt,
-      messages: modelMessages,
-      tools,
-      stopWhen: stepCountIs(3),
+    const gemini = streamText({
+      ...shared,
+      model: google(CHAT_MODEL),
+      abortSignal: geminiAbort.signal,
     });
+    await assertProviderStarted(gemini);
+    return chatStream(gemini);
+  } catch (geminiErr) {
+    geminiAbort.abort();
+    logProviderFailure("[chat/route] Gemini failed", geminiErr);
+  }
 
-    return chatStream(result);
-  } catch (geminiErr: any) {
-    console.warn("Gemini failed. Attempting Groq fallback...", geminiErr?.message || geminiErr);
-
-    if (
-      geminiErr?.status === 429 ||
-      geminiErr?.message?.includes("quota") ||
-      geminiErr?.message?.includes("RESOURCE_EXHAUSTED")
-    ) {
-      isGeminiQuotaExceeded = true;
-    }
-
-    // 2. FALLBACK TO GROQ
-    try {
-      console.log("Attempting Chat with Groq Fallback...");
-      const result = streamText({
-        model: groq("qwen-3.6-27b"),
-        system: systemPrompt,
-        messages: modelMessages,
-        tools,
-        stopWhen: stepCountIs(3),
-        providerOptions: {
-          groq: { parallel_tool_calls: false },
-        },
-      });
-
-      return chatStream(result);
-    } catch (groqErr: any) {
-      console.error("[chat/route] All AI Providers Failed:", groqErr?.message || groqErr);
-
-      const isGroqQuotaExceeded =
-        groqErr?.status === 429 ||
-        groqErr?.message?.includes("rate") ||
-        groqErr?.message?.includes("quota");
-
-      // Categorized Error Responses
-      if (isGeminiQuotaExceeded || isGroqQuotaExceeded) {
-        return buildErrorResponse(
-          "RATE_LIMIT",
-          "High traffic detected. Please wait a few seconds before retrying.",
-          429,
-          10
-        );
-      }
-
-      return buildErrorResponse(
-        "SERVER_ERROR",
-        PROVIDER_FALLBACK,
-        503
-      );
-    }
+  const fallbackAbort = new AbortController();
+  try {
+    const fallback = streamText({
+      ...shared,
+      model: groq("qwen-3.6-27b"),
+      abortSignal: fallbackAbort.signal,
+      providerOptions: {
+        groq: { parallel_tool_calls: false },
+      },
+    });
+    await assertProviderStarted(fallback);
+    return chatStream(fallback);
+  } catch (groqErr) {
+    fallbackAbort.abort();
+    logProviderFailure("[chat/route] providers failed", groqErr);
+    return localChatReply(CHAT_FAILURE_MESSAGE);
   }
 }

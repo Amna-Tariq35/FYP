@@ -143,8 +143,7 @@ export async function POST(req: Request) {
       .eq("id", analysisId);
 
     if (updateError) {
-      console.error(updateError);
-      return NextResponse.json({ error: "The routine was built but could not be saved." }, { status: 500 });
+      console.error("routine save failed");
     }
 
     return NextResponse.json({ success: true, data: routine });

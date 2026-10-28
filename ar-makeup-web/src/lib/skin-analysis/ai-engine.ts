@@ -3,6 +3,7 @@ import Groq from "groq-sdk";
 import { Product, ConcernScores, SkincareRoutine } from "./recommend";
 import { getTopCandidates } from "./candidate-selector";
 import { buildDeterministicRoutine, type SafetyContext } from "./deterministic-routine";
+import { buildGroqRoutineMessages } from "./groq-payload";
 
 // Schema for response validation
 const routineResponseSchema = {
@@ -41,12 +42,86 @@ const routineResponseSchema = {
   required: ["aiSummary", "amRoutine", "pmRoutine"], // Ensure aiSummary is required
 };
 
+function providerFailure(error: unknown) {
+  const record = error as { status?: unknown; statusCode?: unknown };
+  const status =
+    typeof record?.status === "number"
+      ? record.status
+      : typeof record?.statusCode === "number"
+        ? record.statusCode
+        : undefined;
+  const raw = error instanceof Error ? error.message : "request failed";
+  const message = raw
+    .replace(/key=[^&\s]+/gi, "key=redacted")
+    .replace(/Bearer\s+\S+/gi, "Bearer redacted")
+    .slice(0, 240);
+  return { status, message };
+}
+
+function isGeminiBusy(error: unknown) {
+  const failure = providerFailure(error);
+  if (failure.status === 503) return true;
+  return /\b503\b/.test(failure.message);
+}
+
+type ModelRoutine = {
+  aiSummary?: string;
+  amRoutine?: { id: string; matchReason: string; matchScore?: number }[];
+  pmRoutine?: { id: string; matchReason: string; matchScore?: number }[];
+};
+
+function readRoutinePayload(value: unknown): ModelRoutine | null {
+  let parsed: unknown = value;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return null;
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const record = parsed as ModelRoutine;
+  const hasSteps =
+    (Array.isArray(record.amRoutine) && record.amRoutine.length > 0) ||
+    (Array.isArray(record.pmRoutine) && record.pmRoutine.length > 0);
+  return hasSteps ? record : null;
+}
+
+async function geminiRoutine(call: () => Promise<unknown>) {
+  try {
+    const first = readRoutinePayload(await call());
+    if (first) return first;
+    console.warn("Gemini routine was empty. Trying the next provider.");
+    return null;
+  } catch (error) {
+    const failure = providerFailure(error);
+    console.warn("Gemini routine failed", failure.status ?? "");
+    if (!isGeminiBusy(error)) return null;
+    try {
+      const second = readRoutinePayload(await call());
+      if (second) return second;
+      console.warn("Gemini retry was empty. Trying the next provider.");
+      return null;
+    } catch (retryError) {
+      const retry = providerFailure(retryError);
+      console.warn("Gemini retry failed", retry.status ?? "");
+      return null;
+    }
+  }
+}
+
 export async function generateFinalRoutine(
   allDbProducts: Product[],
   userSkinType: string,
   // [UPDATED] Must accept Array as well for Photo Route compatibility
   concernScores: ConcernScores | string[],
   safety: SafetyContext = {},
+  models?: {
+    gemini?: () => Promise<unknown>;
+    groq?: () => Promise<unknown>;
+  },
 ): Promise<SkincareRoutine & { summary: string; source: "ai" | "rules" | "mixed" }> { 
   // 1. Candidate selection (Token reduction)
   const candidates = getTopCandidates(allDbProducts, userSkinType, concernScores, 3);
@@ -106,76 +181,76 @@ CRITICAL DIRECTIVES:
     pmCandidates: lightweightPmCandidates,
   };
 
-  let aiResult: any = null;
+  const rules = buildDeterministicRoutine(allDbProducts, userSkinType, concernScores, {
+    ...safety,
+    skinType: userSkinType,
+  });
 
-  // ------------------------------------------------------------------
-  // [UPDATED] SAFE KEY USAGE (Removed delete process.env to prevent crashes)
-  // ------------------------------------------------------------------
-  try {
-    console.log("Attempting generation with Gemini...");
-    const skincareKey = process.env.GEMINI_API_KEY;
-
-    if (!skincareKey) {
-      throw new Error("GEMINI_API_KEY is not defined in .env file");
-    }
-
-    // Passing apiKey directly into the SDK isolates it safely
-    const ai = new GoogleGenAI({ apiKey: skincareKey });
-
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
-      contents: [{ role: "user", parts: [{ text: JSON.stringify(userPayload) }] }],
-      config: {
-        systemInstruction: systemPrompt,
-        responseMimeType: "application/json",
-        responseSchema: routineResponseSchema,
-        temperature: 0.2,
-      },
+  const callGemini =
+    models?.gemini ??
+    (async () => {
+      const skincareKey = process.env.GEMINI_API_KEY;
+      if (!skincareKey) {
+        throw new Error("Gemini key is not configured");
+      }
+      const ai = new GoogleGenAI({ apiKey: skincareKey });
+      const response = await ai.models.generateContent({
+        model: "gemini-3.8-flash",
+        contents: [{ role: "user", parts: [{ text: JSON.stringify(userPayload) }] }],
+        config: {
+          systemInstruction: systemPrompt,
+          responseMimeType: "application/json",
+          responseSchema: routineResponseSchema,
+          temperature: 0.2,
+          httpOptions: {
+            retryOptions: { attempts: 1 },
+          },
+        },
+      });
+      return response.text || "";
     });
 
-    aiResult = JSON.parse(response.text || "{}");
-    // 👇 YEH LINE ADD KAREIN 👇
-    console.log("AI RAW OUTPUT (GEMINI):", JSON.stringify(aiResult, null, 2)); 
-    
-    console.log("Successfully generated routine with Gemini!");
-
-  } catch (geminiError) {
-    console.warn("Gemini server busy/failed. Falling back to Groq...", geminiError);
-
-    try {
-      console.log("Attempting generation with Groq...");
-      const groqKey = process.env.GROQ_SKINCARE_API_KEY ;
-      const groq = new Groq({ apiKey: groqKey });
-
+  const callGroq =
+    models?.groq ??
+    (async () => {
+      const groqKey = process.env.GROQ_SKINCARE_API_KEY;
+      if (!groqKey) {
+        throw new Error("Groq key is not configured");
+      }
+      const groq = new Groq({ apiKey: groqKey, maxRetries: 0 });
+      const groqMessages = buildGroqRoutineMessages({
+        skinType: userSkinType,
+        concerns: concernScores,
+        am: lightweightAmCandidates,
+        pm: lightweightPmCandidates,
+      });
       const chatCompletion = await groq.chat.completions.create({
         messages: [
-          { role: "system", content: systemPrompt },
-          {
-            role: "user",
-            content: `Return JSON matching format: {"aiSummary":"...","amRoutine":[{"id":"","matchReason":"","matchScore":92}],"pmRoutine":[{"id":"","matchReason":"","matchScore":88}]}. Data: ${JSON.stringify(userPayload)}`,
-          },
+          { role: "system", content: groqMessages.system },
+          { role: "user", content: groqMessages.user },
         ],
         model: "openai/gpt-oss-120b",
         temperature: 0.2,
         response_format: { type: "json_object" },
       });
+      return chatCompletion.choices[0]?.message?.content || "";
+    });
 
-      aiResult = JSON.parse(chatCompletion.choices[0]?.message?.content || "{}");
-      // 👇 YEH LINE ADD KAREIN 👇
-      console.log("AI RAW OUTPUT (GROQ):", JSON.stringify(aiResult, null, 2)); 
-      
-  
-      console.log("Successfully generated routine with Groq Fallback!");
+  // One Gemini call, a second only when Gemini is busy (503), then Groq, then rules.
+  let aiResult = await geminiRoutine(callGemini);
+  if (!aiResult) {
+    try {
+      aiResult = readRoutinePayload(await callGroq());
     } catch (groqError) {
-      console.error("Both Gemini and Groq failed:", groqError);
-      aiResult = null;
+      const groqFailure = providerFailure(groqError);
+      console.error("Routine providers failed", groqFailure.status ?? "");
+      return rules;
     }
   }
 
-  const rules = buildDeterministicRoutine(allDbProducts, userSkinType, concernScores, {
-    ...safety,
-    skinType: userSkinType,
-  });
+  if (!aiResult) {
+    return rules;
+  }
 
   const assemble = (
     items: { id: string; matchReason: string; matchScore?: number }[] | undefined,
@@ -184,7 +259,8 @@ CRITICAL DIRECTIVES:
     const used = new Set<string>();
     const chosen = (items || [])
       .map((item) => {
-        const candidateProduct = productMap.get(item.id);
+        const picked = item as { id?: string; key?: string };
+        const candidateProduct = productMap.get(picked.id || picked.key || "");
         if (!candidateProduct || used.has(candidateProduct.category)) return null;
         used.add(candidateProduct.category);
         return {
@@ -203,10 +279,6 @@ CRITICAL DIRECTIVES:
     }
     return chosen;
   };
-
-  if (!aiResult) {
-    return rules;
-  }
 
   const amRoutine = assemble(aiResult.amRoutine, rules.amRoutine);
   const pmRoutine = assemble(aiResult.pmRoutine, rules.pmRoutine);
