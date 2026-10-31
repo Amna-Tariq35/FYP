@@ -356,7 +356,8 @@ async function analyzeWithFacepp(cleanBase64: string, cvRedness: number): Promis
         lastWasImage =
           message.includes("INVALID_IMAGE") ||
           message.includes("NO_FACE") ||
-          message.includes("IMAGE_FILE");
+          message.includes("IMAGE_FILE") ||
+          message.includes("IMAGE_ERROR_UNSUPPORTED_FORMAT");
         if (lastWasImage) break;
         throw new Error(message);
       }
@@ -381,7 +382,7 @@ async function analyzeWithGemini(
   if (!geminiKey) return null;
   try {
     const google = createGoogleGenerativeAI({ apiKey: geminiKey });
-    const modelName = process.env.GEMINI_VISION_MODEL || "gemini-2.5-flash";
+    const modelName = process.env.GEMINI_VISION_MODEL || "gemini-3.8-flash";
     const { object } = await withTimeout(
       () =>
         generateObject({

@@ -25,6 +25,7 @@ export default function ScanPage() {
   // State for API Quota Exceeded & Unavailable Fallback
   const [isQuotaError, setIsQuotaError] = useState(false);
   const [unavailableError, setUnavailableError] = useState<{ message: string } | null>(null);
+  const [offerQuestionnaire, setOfferQuestionnaire] = useState(false);
 
   const videoConstraints = {
     width: 1080,
@@ -39,6 +40,7 @@ export default function ScanPage() {
       setValidationError(null);
       setIsQuotaError(false);
       setUnavailableError(null);
+      setOfferQuestionnaire(false);
 
       // Stage 1: Compress Image
       setProcessingStage("Optimizing image quality...");
@@ -121,6 +123,13 @@ export default function ScanPage() {
           });
           return;
         }
+        const serverMessage = typeof apiResult.error === "string" ? apiResult.error.trim() : "";
+        if (apiResponse.status === 400 && /face not (detected|clear)/i.test(serverMessage)) {
+          setValidationError(serverMessage);
+          setOfferQuestionnaire(true);
+          setPreviewImage(null);
+          return;
+        }
         setValidationError("The photo could not be read. Please try again.");
         setPreviewImage(null);
         return;
@@ -173,6 +182,7 @@ export default function ScanPage() {
     setValidationError(null);
     setIsQuotaError(false);
     setUnavailableError(null);
+    setOfferQuestionnaire(false);
   };
 
   if (!hasConsent) {
@@ -284,9 +294,16 @@ export default function ScanPage() {
             <AlertCircle size={20} className="shrink-0 mt-0.5" />
             <p>{validationError}</p>
           </div>
-          <button onClick={resetScan} className="underline text-xs shrink-0 hover:opacity-80">
-            Try Again
-          </button>
+          <div className="flex shrink-0 flex-col items-end gap-2">
+            {offerQuestionnaire ? (
+              <Link href="/skin-analysis/questionnaire" className="underline text-xs hover:opacity-80">
+                Take the questionnaire instead
+              </Link>
+            ) : null}
+            <button onClick={resetScan} className="underline text-xs shrink-0 hover:opacity-80">
+              Try Again
+            </button>
+          </div>
         </div>
       )}
 

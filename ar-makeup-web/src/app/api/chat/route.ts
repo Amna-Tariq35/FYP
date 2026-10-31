@@ -17,6 +17,7 @@ import { asStringList } from "@/src/lib/skin-analysis/product-shape";
 import { CHAT_FAILURE_MESSAGE, CHAT_WAIT_MESSAGE, friendlyChatError } from "@/src/lib/chat/public-error";
 
 const CHAT_MODEL = "gemini-3.8-flash";
+const DEFAULT_GROQ_CHAT_MODEL = "openai/gpt-oss-120b";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const MAX_MESSAGES_IN_CONTEXT = 10;
@@ -37,15 +38,56 @@ function trimMessages(messages: UIMessage[]): UIMessage[] {
   return messages.slice(-MAX_MESSAGES_IN_CONTEXT);
 }
 
+function providerStatus(error: unknown): number | undefined {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    const record = current as {
+      status?: unknown;
+      statusCode?: unknown;
+      message?: unknown;
+      cause?: unknown;
+      lastError?: unknown;
+      response?: { status?: unknown };
+    };
+    if (typeof record.status === "number") return record.status;
+    if (typeof record.statusCode === "number") return record.statusCode;
+    if (typeof record.response?.status === "number") return record.response.status;
+    current = record.cause ?? record.lastError;
+  }
+  return undefined;
+}
+
+function isGeminiBusy(error: unknown) {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    const record = current as {
+      status?: unknown;
+      statusCode?: unknown;
+      message?: unknown;
+      cause?: unknown;
+      lastError?: unknown;
+      response?: { status?: unknown };
+    };
+    if (record.status === 503 || record.statusCode === 503 || record.response?.status === 503) {
+      return true;
+    }
+    if (typeof record.message === "string" && /\b503\b/.test(record.message)) return true;
+    current = record.cause ?? record.lastError;
+  }
+  return false;
+}
+
 function logProviderFailure(label: string, error: unknown) {
-  const record = error as { status?: unknown; statusCode?: unknown };
-  const status =
-    typeof record?.status === "number"
-      ? record.status
-      : typeof record?.statusCode === "number"
-        ? record.statusCode
-        : "";
-  console.error(label, status);
+  console.error(label, providerStatus(error) ?? "");
+}
+
+function groqChatModel() {
+  const configured = process.env.GROQ_CHAT_MODEL?.trim();
+  return configured || DEFAULT_GROQ_CHAT_MODEL;
 }
 
 function localChatReply(text: string): Response {
@@ -278,25 +320,32 @@ export async function POST(req: Request) {
     maxRetries: 0,
   };
 
-  const geminiAbort = new AbortController();
-  try {
-    const gemini = streamText({
-      ...shared,
-      model: google(CHAT_MODEL),
-      abortSignal: geminiAbort.signal,
-    });
-    await assertProviderStarted(gemini);
-    return chatStream(gemini);
-  } catch (geminiErr) {
-    geminiAbort.abort();
-    logProviderFailure("[chat/route] Gemini failed", geminiErr);
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const geminiAbort = new AbortController();
+    try {
+      const gemini = streamText({
+        ...shared,
+        model: google(CHAT_MODEL),
+        abortSignal: geminiAbort.signal,
+      });
+      await assertProviderStarted(gemini);
+      return chatStream(gemini);
+    } catch (error) {
+      geminiAbort.abort();
+      logProviderFailure(
+        attempt === 1 ? "[chat/route] Gemini failed" : "[chat/route] Gemini retry failed",
+        error,
+      );
+      if (attempt === 1 && isGeminiBusy(error)) continue;
+      break;
+    }
   }
 
   const fallbackAbort = new AbortController();
   try {
     const fallback = streamText({
       ...shared,
-      model: groq("qwen-3.6-27b"),
+      model: groq(groqChatModel()),
       abortSignal: fallbackAbort.signal,
       providerOptions: {
         groq: { parallel_tool_calls: false },

@@ -6,6 +6,7 @@ import { loadShippingInfo } from "@/src/store/checkoutShipping";
 import { loadAddToMakeupBag } from "@/src/store/addToMakeupBag";
 import type { ShippingInfo } from "@/src//types/order";
 import { loadCart, selectedCartItems } from "@/src//store/cart";
+import { supabase } from "@/src/lib/supabase/client";
 
 function isShippingComplete(s: ShippingInfo) {
   return (
@@ -30,7 +31,21 @@ export default function PaymentPanel() {
   const [selectedMethod, setSelectedMethod] = useState<"cod" | "card">("card");
   const [isPlacing, setIsPlacing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [signedIn, setSignedIn] = useState(false);
   const placingRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    supabase.auth.getUser().then(({ data, error: authError }) => {
+      if (cancelled) return;
+      setSignedIn(!authError && Boolean(data.user));
+      setAuthReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     const s = loadShippingInfo();
@@ -68,12 +83,18 @@ export default function PaymentPanel() {
         return;
       }
 
-      if (currentShipping.email?.trim()) {
-        if (!isValidEmail(currentShipping.email)) {
-          setError("Please enter a valid email address (or clear it).");
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+      const signedIn = !authError && Boolean(authData.user);
+      if (!signedIn) {
+        if (!currentShipping.email?.trim() || !isValidEmail(currentShipping.email ?? "")) {
+          setError("Email is required for guest checkout.");
           setIsPlacing(false);
           return;
         }
+      } else if (currentShipping.email?.trim() && !isValidEmail(currentShipping.email)) {
+        setError("Please enter a valid email address.");
+        setIsPlacing(false);
+        return;
       }
 
       const payload = {
@@ -254,19 +275,23 @@ export default function PaymentPanel() {
 
           {shipping.email?.trim() ? (
             <div className="text-[var(--text-muted)]">{shipping.email}</div>
-          ) : (
+          ) : signedIn ? (
             <div className="text-[var(--text-muted)] text-xs mt-1">
-              No email provided —{" "}
+              Order updates go to your account email.
+            </div>
+          ) : authReady ? (
+            <div className="text-[var(--text-muted)] text-xs mt-1">
+              Email is required for guest checkout.{" "}
               <button
                 type="button"
                 className="text-[#C06C84] hover:underline"
                 onClick={() => router.push("/checkout/shipping")}
                 disabled={isPlacing}
               >
-                add one for order tracking
+                Add your email
               </button>
             </div>
-          )}
+          ) : null}
         </div>
       </div>
 

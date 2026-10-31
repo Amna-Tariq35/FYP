@@ -12,6 +12,7 @@ import {
   loadAddToMakeupBag,
   saveAddToMakeupBag,
 } from "@/src/store/addToMakeupBag";
+import { supabase } from "@/src/lib/supabase/client";
 
 type FieldKey = keyof ShippingInfo;
 type Errors = Partial<Record<FieldKey, string>>;
@@ -26,11 +27,15 @@ function isValidPhone(phone: string) {
   return /^[0-9+\-\s()]+$/.test(cleaned);
 }
 
-function validate(values: ShippingInfo): Errors {
+function validate(values: ShippingInfo, emailMode: "required" | "format" | "skip"): Errors {
   const e: Errors = {};
+  const email = values.email?.trim() ?? "";
 
-  if (values.email && values.email.trim().length > 0) {
-    if (!isValidEmail(values.email)) e.email = "Enter a valid email address.";
+  if (emailMode === "required") {
+    if (!email) e.email = "Email is required for guest checkout.";
+    else if (!isValidEmail(email)) e.email = "Enter a valid email address.";
+  } else if (emailMode === "format" && email && !isValidEmail(email)) {
+    e.email = "Enter a valid email address.";
   }
 
   if (!values.name.trim()) e.name = "Full name is required.";
@@ -53,6 +58,9 @@ export default function ShippingForm() {
   const [touched, setTouched] = useState<Partial<Record<FieldKey, boolean>>>({});
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [addToMakeupBag, setAddToMakeupBag] = useState(true);
+  const [authReady, setAuthReady] = useState(false);
+  const [signedIn, setSignedIn] = useState(false);
+  const [accountEmail, setAccountEmail] = useState<string | null>(null);
 
   useEffect(() => {
     const stored = loadShippingInfo();
@@ -60,16 +68,37 @@ export default function ShippingForm() {
     setAddToMakeupBag(loadAddToMakeupBag());
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    supabase.auth.getUser().then(({ data, error }) => {
+      if (cancelled) return;
+      const email = data.user?.email?.trim() || null;
+      setSignedIn(!error && Boolean(data.user));
+      setAccountEmail(!error && data.user ? email : null);
+      setAuthReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Auto-save on every change
   useEffect(() => {
     saveShippingInfo(values);
   }, [values]);
 
-  const computedErrors = useMemo(() => validate(values), [values]);
+  const requireGuestEmail = authReady && !signedIn;
+  const usesAccountEmail = authReady && signedIn && Boolean(accountEmail);
+  const emailMode = usesAccountEmail ? "skip" : requireGuestEmail ? "required" : "format";
+
+  const computedErrors = useMemo(
+    () => validate(values, emailMode),
+    [values, emailMode]
+  );
 
   const canContinue = useMemo(
-    () => Object.keys(computedErrors).length === 0,
-    [computedErrors]
+    () => authReady && Object.keys(computedErrors).length === 0,
+    [authReady, computedErrors]
   );
 
   function setField<K extends FieldKey>(key: K, value: ShippingInfo[K]) {
@@ -79,7 +108,7 @@ export default function ShippingForm() {
   function handleBlur(key: FieldKey) {
     setTouched((prev) => ({ ...prev, [key]: true }));
     // Recompute from current values to avoid stale closure
-    const freshErrors = validate(values);
+    const freshErrors = validate(values, emailMode);
     setErrors((prev) => ({ ...prev, [key]: freshErrors[key] }));
   }
 
@@ -87,7 +116,7 @@ export default function ShippingForm() {
     e.preventDefault();
     setSubmitAttempted(true);
 
-    const finalErrors = validate(values);
+    const finalErrors = validate(values, emailMode);
     setErrors(finalErrors);
 
     if (Object.keys(finalErrors).length > 0) {
@@ -117,29 +146,41 @@ export default function ShippingForm() {
         </p>
       </div>
 
-      {/* Email (optional) */}
-      <div>
-        <label className="ui-label" htmlFor="email">
-          Email{" "}
-          <span className="ui-muted font-normal">(optional)</span>
-        </label>
-        <input
-          id="email"
-          type="email"
-          inputMode="email"
-          autoComplete="email"
-          className={["ui-input mt-2", showError("email") ? "ui-input-error" : ""].join(" ")}
-          value={values.email ?? ""}
-          onChange={(e) => setField("email", e.target.value)}
-          onBlur={() => handleBlur("email")}
-          data-field="email"
-          placeholder="you@example.com"
-        />
-        {showError("email") ? <p className="ui-error">{errors.email}</p> : null}
+      {!authReady ? (
+        <p className="ui-helper">Checking your account…</p>
+      ) : usesAccountEmail ? (
         <p className="ui-helper">
-          Providing an email lets you track your order as a guest.
+          Order updates go to the email on your account.
         </p>
-      </div>
+      ) : (
+        <div>
+          <label className="ui-label" htmlFor="email">
+            Email{" "}
+            {requireGuestEmail ? (
+              <span className="text-[var(--rose-primary)]">*</span>
+            ) : null}
+          </label>
+          <input
+            id="email"
+            type="email"
+            inputMode="email"
+            autoComplete="email"
+            required={requireGuestEmail}
+            className={["ui-input mt-2", showError("email") ? "ui-input-error" : ""].join(" ")}
+            value={values.email ?? ""}
+            onChange={(e) => setField("email", e.target.value)}
+            onBlur={() => handleBlur("email")}
+            data-field="email"
+            placeholder="you@example.com"
+          />
+          {showError("email") ? <p className="ui-error">{errors.email}</p> : null}
+          {requireGuestEmail ? (
+            <p className="ui-helper">
+              Required for guest checkout so we can send your order details.
+            </p>
+          ) : null}
+        </div>
+      )}
 
       {/* Full name */}
       <div>
