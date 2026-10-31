@@ -17,6 +17,11 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "AR Makeup",
   description: "Try shades on a live camera, browse products, and open shared looks.",
+  openGraph: {
+    title: "AR Makeup",
+    description: "Try shades on a live camera, browse products, and open shared looks.",
+    type: "website",
+  },
 };
 
 export default function RootLayout({

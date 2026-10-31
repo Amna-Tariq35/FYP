@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import { DollarSign, ShoppingBag, Clock, ArrowRight, AlertTriangle } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/src/lib/supabase/client";
+import AdminSignInRequired from "@/src/components/admin/AdminSignInRequired";
 
 type StatusStyle = { bg: string; text: string };
 type DashboardOrder = { id: string; shipping_name: string | null; total: number; status: string };
@@ -41,6 +42,7 @@ export default function AdminDashboard() {
     lowStockProducts: [],
   });
   const [loading, setLoading] = useState(true);
+  const [authRequired, setAuthRequired] = useState(false);
 
   useEffect(() => {
     async function fetchDashboardData() {
@@ -51,6 +53,11 @@ export default function AdminDashboard() {
         const res = await fetch("/api/admin/dashboard", {
           headers: { Authorization: `Bearer ${token}` },
         });
+
+        if (res.status === 401 || res.status === 403) {
+          setAuthRequired(true);
+          return;
+        }
 
         const data = await res.json();
         if (res.ok && data) {
@@ -71,6 +78,10 @@ export default function AdminDashboard() {
 
     fetchDashboardData();
   }, []);
+
+  if (authRequired) {
+    return <AdminSignInRequired nextPath="/admin" />;
+  }
 
   if (loading) {
     return (

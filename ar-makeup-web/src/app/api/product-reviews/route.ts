@@ -141,7 +141,13 @@ export async function POST(request: Request) {
     .insert({ user_id: user.id, product_key: productKey, rating, body: reviewBody })
     .select("id,product_key,rating,body,created_at,updated_at")
     .single();
-  if (error) return NextResponse.json({ error: error.code === "23505" ? "You already reviewed this product." : error.message }, { status: 400 });
+  if (error) {
+    console.error("Review insert failed:", error.message);
+    return NextResponse.json(
+      { error: error.code === "23505" ? "You already reviewed this product." : "Could not save your review." },
+      { status: 400 },
+    );
+  }
   return NextResponse.json({ review: { ...data, verified_purchase: true, is_mine: true } }, { status: 201 });
 }
 

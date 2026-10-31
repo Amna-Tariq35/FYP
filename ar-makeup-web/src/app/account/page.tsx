@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { Bell, Heart, Layers, Repeat2, ShoppingBag, Sparkles } from "lucide-react";
+import ShadeMatchCard from "@/src/components/account/ShadeMatchCard";
 
 export default function AccountPage() {
   return (
@@ -8,6 +9,7 @@ export default function AccountPage() {
         <h1 className="text-2xl font-bold text-[var(--text-main)]">Your account</h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">Manage saved products, orders, and replenishment shortcuts.</p>
         <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <ShadeMatchCard />
           <Link href="/account/repeats" className="rounded-2xl border border-[var(--border-soft)] bg-white p-5 transition hover:border-[#C06C84]/50 hover:shadow-sm">
             <Repeat2 className="text-[#C06C84]" size={22} />
             <h2 className="mt-4 font-semibold text-[var(--text-main)]">Your repeats</h2>

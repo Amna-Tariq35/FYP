@@ -1,3 +1,5 @@
+import type { Metadata } from "next";
+import { connection } from "next/server";
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import {
@@ -23,13 +25,39 @@ function departmentLabel(mainCategory: string | null) {
   return "Products";
 }
 
+function productTitle(name: string, brand: string | null) {
+  const label = brand?.trim() ? `${name} · ${brand.trim()}` : name;
+  if (label.length <= 58) return label;
+  return `${label.slice(0, 57)}…`;
+}
+
+function productDescription(name: string, brand: string | null, description: string | null) {
+  const text = description?.trim();
+  if (text) return text.length <= 155 ? text : `${text.slice(0, 154)}…`;
+  return brand?.trim() ? `Shop ${name} by ${brand.trim()}.` : `Shop ${name}.`;
+}
+
 type PageProps = {
   params: Promise<{ product_key: string }>;
 };
 
-export const revalidate = 60;
+// Missing keys must not be a cached static shell. That path never read cookies,
+// so notFound() was delivered as HTTP 200. Catalog rows stay cached in getProductByKey.
+export const dynamic = "force-dynamic";
+
+export async function generateMetadata(props: PageProps): Promise<Metadata> {
+  await connection();
+  const params = await props.params;
+  const product = await getProductByKey(decodeURIComponent(params.product_key));
+  if (!product) return { title: "Product not found" };
+  return {
+    title: productTitle(product.name, product.brand),
+    description: productDescription(product.name, product.brand, product.description),
+  };
+}
 
 export default async function ProductDetailPage(props: PageProps) {
+  await connection();
   const params = await props.params; // ✅ unwrap params promise
   const productKey = decodeURIComponent(params.product_key);
 

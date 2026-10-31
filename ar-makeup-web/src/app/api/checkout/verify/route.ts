@@ -37,7 +37,7 @@ export async function POST(request: Request) {
     if (!result.ok) {
       return NextResponse.json(
         { success: false, error: result.error, status: result.payment_status ?? loaded.order.status },
-        { status: result.status },
+        { status: typeof result.status === "number" ? result.status : Number(result.status) },
       );
     }
 
@@ -45,7 +45,7 @@ export async function POST(request: Request) {
   } catch (error: unknown) {
     console.error("Verify Error:", error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "Could not verify payment." },
+      { error: "Could not verify payment." },
       { status: 500 },
     );
   }

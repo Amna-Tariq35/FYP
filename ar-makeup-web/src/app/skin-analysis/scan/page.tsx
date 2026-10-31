@@ -123,9 +123,12 @@ export default function ScanPage() {
           });
           return;
         }
-        const serverMessage = typeof apiResult.error === "string" ? apiResult.error.trim() : "";
-        if (apiResponse.status === 400 && /face not (detected|clear)/i.test(serverMessage)) {
-          setValidationError(serverMessage);
+        if (apiResult.code === "FACE_NOT_CLEAR") {
+          const serverMessage = typeof apiResult.error === "string" ? apiResult.error.trim() : "";
+          setValidationError(
+            serverMessage ||
+              "Face not detected clearly. Please use a straight, well-lit, front-facing photo.",
+          );
           setOfferQuestionnaire(true);
           setPreviewImage(null);
           return;

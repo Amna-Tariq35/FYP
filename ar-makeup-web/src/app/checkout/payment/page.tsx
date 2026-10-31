@@ -8,7 +8,7 @@ import PaymentPanel from "@/src/components/checkout/PaymentPanel";
 
 export default function CheckoutPaymentPage() {
   return (
-    <CheckoutGuard redirectTo="/cart" loadingText="Redirecting…">
+    <CheckoutGuard loadingText="Checking your cart…">
       <CheckoutShell
         step="payment"
         title="Checkout"

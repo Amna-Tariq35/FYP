@@ -9,7 +9,7 @@ import ShippingForm from "@/src/components/checkout/ShippingForm";
 
 export default function CheckoutShippingPage() {
   return (
-    <CheckoutGuard redirectTo="/cart" loadingText="Redirecting…">
+    <CheckoutGuard loadingText="Checking your cart…">
       <CheckoutShell
         step="shipping"
         title="Checkout"

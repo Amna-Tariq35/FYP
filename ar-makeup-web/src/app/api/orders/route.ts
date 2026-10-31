@@ -251,7 +251,7 @@ export async function POST(req: Request) {
       );
       console.error("ORDER INSERT ERROR (auth):", error);
       return NextResponse.json(
-        { error: "Failed to create order.", details: error?.message ?? null },
+        { error: "Failed to create order." },
         { status: 500 }
       );
     }
@@ -286,7 +286,7 @@ export async function POST(req: Request) {
       );
       console.error("ORDER INSERT ERROR (guest):", insertErr);
       return NextResponse.json(
-        { error: "Failed to create order.", details: insertErr.message },
+        { error: "Failed to create order." },
         { status: 500 }
       );
     }
@@ -315,7 +315,6 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           error: "Order created but failed to finalize items.",
-          details: rpcErr?.message ?? null,
           guest_token,
         },
         { status: 500 }
@@ -365,7 +364,7 @@ export async function POST(req: Request) {
     );
 
     return NextResponse.json(
-      { error: "Failed to create order items.", details: itemsErr.message },
+      { error: "Failed to create order items." },
       { status: 500 }
     );
   }
@@ -429,8 +428,9 @@ export async function GET(req: Request) {
   const { data, error, count } = await query.range(from, to);
 
   if (error) {
+    console.error("Failed to load orders:", error.message);
     return NextResponse.json(
-      { error: "Failed to load orders", details: error.message },
+      { error: "Failed to load orders" },
       { status: 500 }
     );
   }

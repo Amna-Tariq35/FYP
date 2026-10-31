@@ -206,6 +206,7 @@ export default function ProductsClient({
   const [selectedFinish, setSelectedFinish] = useState("All");
   const [selectedMain, setSelectedMain] = useState<MainFilter>("All");
   const [inStockOnly, setInStockOnly] = useState(false);
+  const [forYourSkin, setForYourSkin] = useState(false);
   const [skinFriendlyOnly, setSkinFriendlyOnly] = useState(false);
   const [hasReviewsOnly, setHasReviewsOnly] = useState(false);
   const [pageProducts, setPageProducts] = useState<MakeupProduct[]>(initialPage.products);
@@ -300,6 +301,11 @@ export default function ProductsClient({
     [catalogFacets.finishes],
   );
 
+  const savedSkinType = userProfile?.skin_type?.trim() || "";
+  const finishPreference = userProfile?.finish_preference?.trim() || "";
+  const hasSkinProfile = Boolean(savedSkinType || finishPreference);
+  const rankForSkin = forYourSkin && hasSkinProfile;
+
   const priceChipActive = priceRange[0] > 0 || priceRange[1] < maxPrice;
   const priceQueryActive = debouncedPrice[0] > 0 || debouncedPrice[1] < maxPrice;
   const listQuery = useMemo<CatalogListQuery>(() => {
@@ -318,6 +324,9 @@ export default function ProductsClient({
       sort: sortBy === "price-asc" || sortBy === "price-desc" || sortBy === "name-asc" || sortBy === "rating-desc"
         ? sortBy
         : "featured",
+      forSkin: rankForSkin,
+      matchSkinType: rankForSkin ? savedSkinType : "",
+      matchFinish: rankForSkin ? finishPreference : "",
     });
   }, [
     currentPage,
@@ -332,6 +341,9 @@ export default function ProductsClient({
     skinFriendlyOnly,
     hasReviewsOnly,
     sortBy,
+    rankForSkin,
+    savedSkinType,
+    finishPreference,
   ]);
 
   const filterSignature = JSON.stringify({ ...listQuery, page: undefined });
@@ -376,7 +388,6 @@ export default function ProductsClient({
     return () => controller.abort();
   }, [serializedQuery]);
 
-  const finishPreference = userProfile?.finish_preference?.trim() || "";
   const preferredFinishValue =
     finishes.find(
       (finish) => finish !== "All" && finish.toLowerCase() === finishPreference.toLowerCase()
@@ -391,6 +402,7 @@ export default function ProductsClient({
     inStockOnly,
     skinFriendlyOnly,
     hasReviewsOnly,
+    rankForSkin,
   ].filter(Boolean).length;
 
   const clearAllFilters = () => {
@@ -400,6 +412,7 @@ export default function ProductsClient({
     setSelectedFinish("All");
     setSelectedMain("All");
     setInStockOnly(false);
+    setForYourSkin(false);
     setSkinFriendlyOnly(false);
     setHasReviewsOnly(false);
     resetPrice();
@@ -472,6 +485,13 @@ export default function ProductsClient({
           key: "reviews",
           label: "Has reviews",
           onRemove: () => setHasReviewsOnly(false),
+        }
+      : null,
+    rankForSkin
+      ? {
+          key: "for-skin",
+          label: "For your skin",
+          onRemove: () => setForYourSkin(false),
         }
       : null,
   ].filter((chip): chip is { key: string; label: string; onRemove: () => void } => chip !== null);
@@ -1222,6 +1242,33 @@ export default function ProductsClient({
         }
         .sort-select:focus { border-color: var(--rose-primary); }
 
+        .for-skin-btn {
+          padding: 8px 14px;
+          font-size: 13px;
+          font-weight: 600;
+          border-radius: 12px;
+          border: 1.5px solid var(--border-soft);
+          background: var(--bg-base);
+          color: var(--text-main);
+          cursor: pointer;
+          white-space: nowrap;
+        }
+        .for-skin-btn.active {
+          border-color: var(--rose-primary);
+          background: rgba(192,108,132,0.12);
+          color: var(--rose-primary);
+        }
+        .skin-profile-prompt {
+          margin: 0;
+          font-size: 13px;
+          line-height: 1.45;
+          color: var(--text-muted);
+        }
+        .skin-profile-prompt a {
+          color: var(--rose-primary);
+          font-weight: 600;
+        }
+
         /* ── Products Grid ───────────────────────────────────── */
         .products-grid {
           display: grid;
@@ -1584,6 +1631,15 @@ export default function ProductsClient({
                 )}
               </button>
 
+              <button
+                type="button"
+                className={`for-skin-btn ${forYourSkin ? "active" : ""}`}
+                aria-pressed={forYourSkin}
+                onClick={() => setForYourSkin((on) => !on)}
+              >
+                For your skin
+              </button>
+
               <div className="sort-select-wrapper">
                 <SlidersHorizontal className="sort-icon" />
                 <select
@@ -1600,6 +1656,13 @@ export default function ProductsClient({
               </div>
             </div>
             </div>
+
+            {forYourSkin && !hasSkinProfile && (
+              <p className="skin-profile-prompt">
+                Save a skin profile to rank products for your skin.{" "}
+                <Link href="/skin-analysis">Go to skin analysis</Link>
+              </p>
+            )}
 
             {filterChips.length > 0 && (
               <div className="filter-chips">

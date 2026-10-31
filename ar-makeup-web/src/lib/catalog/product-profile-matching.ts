@@ -193,6 +193,41 @@ function sameText(a: string | null | undefined, b: string | null | undefined) {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
+/** Higher means a closer saved-profile match. Skin type outranks finish. */
+export function shopperMatchRank(
+  product: { finish?: string | null; skin_type?: unknown },
+  profile: ShopperMatchProfile | null | undefined,
+): number {
+  if (!profile) return 0;
+  let rank = 0;
+  if (
+    profile.skinType &&
+    asStringList(product.skin_type).some((value) => sameText(value, profile.skinType))
+  ) {
+    rank += 2;
+  }
+  if (sameText(product.finish, profile.finish)) rank += 1;
+  return rank;
+}
+
+/** One shopper-facing line. Null when nothing on the product matches the saved profile. */
+export function profileMatchNote(
+  product: { finish?: string | null; skin_type?: unknown },
+  profile: ShopperMatchProfile | null | undefined,
+): string | null {
+  if (!profile || shopperMatchRank(product, profile) === 0) return null;
+  const skin = profile.skinType?.trim().toLowerCase() ?? "";
+  const finish = profile.finish?.trim().toLowerCase() ?? "";
+  const skinHit = Boolean(
+    skin && asStringList(product.skin_type).some((value) => sameText(value, profile.skinType)),
+  );
+  const finishHit = sameText(product.finish, profile.finish);
+  if (skinHit && finishHit) return `Matches your ${skin} skin and ${finish} finish`;
+  if (skinHit) return `Matches your ${skin} skin`;
+  if (finishHit) return `Matches your ${finish} finish`;
+  return null;
+}
+
 /** Exact finish or skin-type lookup. No score and no undertone guess. */
 export function profileMatchLabels(
   product: { finish?: string | null; skin_type?: unknown },

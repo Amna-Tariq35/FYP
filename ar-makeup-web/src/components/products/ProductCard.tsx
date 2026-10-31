@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Heart, Star } from "lucide-react";
 import { MakeupProduct } from "@/src/types/catalog";
 import ProductImageFace from "@/src/components/products/ProductImageFace";
-import { profileMatchLabels, type ShopperMatchProfile } from "@/src/lib/catalog/product-profile-matching";
+import { profileMatchNote, type ShopperMatchProfile } from "@/src/lib/catalog/product-profile-matching";
 
 type ProductCardProps = {
   product: MakeupProduct;
@@ -74,7 +74,7 @@ export default function ProductCard({
   const score = product.rating_average;
   const count = product.review_count;
 
-  const matchLabels = profileMatchLabels(product, matchProfile ?? (
+  const matchNote = profileMatchNote(product, matchProfile ?? (
     userFinishPreference ? { finish: userFinishPreference, skinType: null } : null
   ));
 
@@ -148,17 +148,9 @@ export default function ProductCard({
             </span>
           )}
 
-          {/* Finish match badge sits on the lower right so it does not cover the wishlist heart. */}
-          {matchLabels.length > 0 && (
-            <span className="absolute bottom-3 right-3 flex max-w-[70%] flex-col items-end gap-1">
-              {matchLabels.map((label) => (
-                <span
-                  key={label}
-                  className="inline-flex items-center gap-1 rounded-full border border-green-200/50 bg-green-50/95 px-2.5 py-0.5 text-[10px] font-semibold tracking-wide text-green-700"
-                >
-                  {label}
-                </span>
-              ))}
+          {matchNote && (
+            <span className="absolute bottom-3 right-3 inline-flex max-w-[70%] items-center rounded-full border border-green-200/50 bg-green-50/95 px-2.5 py-0.5 text-[10px] font-semibold tracking-wide text-green-700">
+              For your skin
             </span>
           )}
         </div>
@@ -186,6 +178,12 @@ export default function ProductCard({
           >
             {product.name}
           </h3>
+
+          {matchNote && (
+            <p className="mb-2 text-[11px] font-medium leading-snug text-green-700">
+              {matchNote}
+            </p>
+          )}
 
           {/* Rating */}
           <div className="mb-2.5 flex items-center gap-1.5">

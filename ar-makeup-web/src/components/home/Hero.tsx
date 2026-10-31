@@ -48,6 +48,12 @@ export default function Hero() {
             >
               Browse Products
             </Link>
+            <Link
+              href="/try-on"
+              className="inline-flex items-center justify-center rounded-2xl border border-[#B65C7A]/30 bg-white/70 px-6 py-3 text-sm font-medium text-[#7a4a5a] transition hover:bg-white"
+            >
+              Lipstick and blush preview
+            </Link>
           </div>
 
           <p className="mt-5 text-[11px] tracking-wide text-[#9a7a85]">

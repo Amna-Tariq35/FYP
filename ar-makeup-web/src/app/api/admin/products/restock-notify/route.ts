@@ -22,7 +22,7 @@ export async function POST(request: Request) {
     console.error("Restock notification failed", error);
     return NextResponse.json(
       {
-        error: error instanceof Error ? error.message : "Could not send restock notifications.",
+        error: "Could not send restock notifications.",
       },
       { status: 500 },
     );

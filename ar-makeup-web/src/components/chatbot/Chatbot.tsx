@@ -12,7 +12,9 @@ import {
 } from 'lucide-react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport } from 'ai';
+import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
+import type { UIMessage } from 'ai';
 import { addToCart } from '@/src/store/cart';
 import { friendlyChatError } from '@/src/lib/chat/public-error';
 
@@ -185,21 +187,37 @@ function ProductCard({ product }: { product: Product }) {
 
 // ── Extract products from tool result parts ───────────────────────────────────
 
-function extractProductsFromParts(parts: any[]): Product[] {
-  if (!Array.isArray(parts)) return [];
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isProduct(value: unknown): value is Product {
+  return isRecord(value) && typeof value.product_key === 'string' && typeof value.name === 'string';
+}
+
+function toolOutput(part: UIMessage['parts'][number]): Record<string, unknown> | null {
+  if (!part.type.startsWith('tool-') || part.type === 'dynamic-tool') return null;
+  if (!('state' in part) || part.state !== 'output-available') return null;
+  if (!('output' in part) || !isRecord(part.output)) return null;
+  return part.output;
+}
+
+function extractProductsFromParts(parts: UIMessage['parts']): Product[] {
   for (const part of parts) {
-    if (
-      part.type?.startsWith('tool-') &&
-      part.type !== 'tool-invocation' &&
-      part.state === 'output-available' &&
-      part.output?.success === true &&
-      Array.isArray(part.output?.products) &&
-      part.output.products.length > 0
-    ) {
-      return part.output.products as Product[];
-    }
+    const output = toolOutput(part);
+    if (!output || output.success !== true || !Array.isArray(output.products)) continue;
+    const products = output.products.filter(isProduct).filter((product) => product.product_key);
+    if (products.length > 0) return products;
   }
   return [];
+}
+
+function extractCatalogHref(parts: UIMessage['parts']): string | null {
+  for (const part of parts) {
+    const output = toolOutput(part);
+    if (output?.catalogHref === '/products') return '/products';
+  }
+  return null;
 }
 
 // ── Main Chatbot Component ────────────────────────────────────────────────────
@@ -240,7 +258,7 @@ export default function Chatbot() {
     <div className="fixed bottom-6 right-6 z-50">
       {isOpen && (
         <div
-          className="bg-white w-[360px] sm:w-[400px] h-[560px] rounded-2xl shadow-2xl flex flex-col mb-4 overflow-hidden animate-in slide-in-from-bottom-5"
+          className="bg-white w-[min(360px,calc(100vw-2rem))] h-[560px] rounded-2xl shadow-2xl flex flex-col mb-4 overflow-hidden animate-in slide-in-from-bottom-5"
           style={{ border: '1px solid var(--border-soft)' }}
         >
           {/* ── Header ── */}
@@ -258,7 +276,9 @@ export default function Chatbot() {
               </div>
             </div>
             <button
+              type="button"
               onClick={() => setIsOpen(false)}
+              aria-label="Close chat"
               className="hover:bg-white/20 p-1.5 rounded-full transition-colors"
             >
               <X size={18} />
@@ -305,13 +325,14 @@ export default function Chatbot() {
 
             {/* Messages List */}
             {messages.map((m) => {
-              const products = extractProductsFromParts(m.parts as any[]);
+              const products = extractProductsFromParts(m.parts);
+              const catalogHref = extractCatalogHref(m.parts);
               const isUser = m.role === 'user';
 
               return (
                 <div key={m.id} className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} gap-2`}>
-                  {(m.parts as any[]).map((part: any, index: number) => {
-                    if (part.type === 'text' && part.text?.trim()) {
+                  {m.parts.map((part, index) => {
+                    if (part.type === 'text' && part.text.trim()) {
                       return (
                         <div
                           key={index}
@@ -328,7 +349,7 @@ export default function Chatbot() {
                       );
                     }
 
-                    if (part.type === 'tool-invocation') {
+                    if ((part.type as string) === 'tool-invocation') {
                       return (
                         <div
                           key={index}
@@ -360,6 +381,15 @@ export default function Chatbot() {
                         <ProductCard key={product.product_key} product={product} />
                       ))}
                     </div>
+                  )}
+                  {!isUser && products.length === 0 && catalogHref && (
+                    <Link
+                      href={catalogHref}
+                      className="text-xs font-semibold underline"
+                      style={{ color: 'var(--rose-primary)' }}
+                    >
+                      Browse products
+                    </Link>
                   )}
                 </div>
               );
@@ -428,6 +458,7 @@ export default function Chatbot() {
             />
             <button
               type="submit"
+              aria-label="Send message"
               disabled={isLoading || !input.trim()}
               className="text-white p-2.5 rounded-full transition-all flex items-center justify-center shadow-md disabled:opacity-50"
               style={{ background: 'var(--rose-primary)' }}
@@ -441,7 +472,9 @@ export default function Chatbot() {
       {/* ── Floating Button ── */}
       {!isOpen && (
         <button
+          type="button"
           onClick={() => setIsOpen(true)}
+          aria-label="Open chat"
           className="text-white p-4 rounded-full shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center relative"
           style={{ background: 'linear-gradient(135deg, #C06C84 0%, #e07a90 100%)' }}
         >

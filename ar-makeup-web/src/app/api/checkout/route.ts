@@ -120,7 +120,7 @@ export async function POST(request: Request) {
       }
       console.error("Stripe Error:", stripeError);
       return NextResponse.json({
-        error: stripeError instanceof Error ? stripeError.message : "Stripe checkout failed.",
+        error: "We couldn't start checkout. Please try again.",
       }, { status: 500 });
     }
 
@@ -142,7 +142,7 @@ export async function POST(request: Request) {
   } catch (error: unknown) {
     console.error("Checkout error:", error);
     return NextResponse.json({
-      error: error instanceof Error ? error.message : "Stripe checkout failed.",
+      error: "We couldn't start checkout. Please try again.",
     }, { status: 500 });
   }
 }

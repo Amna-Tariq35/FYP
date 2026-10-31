@@ -16,6 +16,7 @@ import {
   type ReviewAggregate,
   type ReviewAggregateResult,
 } from "@/src/lib/catalog/review-stats";
+import { shopperMatchRank } from "@/src/lib/catalog/product-profile-matching";
 import type { MakeupProduct, ProductShade } from "@/src/types/catalog";
 
 const PRODUCT_COLUMNS =
@@ -28,6 +29,11 @@ type SlimProduct = {
   name: string;
   price: number | null;
   created_at: string | null;
+};
+
+type SkinSlim = SlimProduct & {
+  finish: string | null;
+  skin_type: unknown;
 };
 
 type ProductRow = Record<string, unknown>;
@@ -222,6 +228,84 @@ async function loadReviewAwarePage(
   };
 }
 
+async function scanSkinMatching(client: SupabaseClient, constraints: ListingConstraints): Promise<SkinSlim[]> {
+  const rows: SkinSlim[] = [];
+  let page = 0;
+  while (true) {
+    const from = page * SCAN_PAGE;
+    const to = from + SCAN_PAGE - 1;
+    const request = (applyListingFilters(
+      client.from("makeup_products").select("product_key,name,price,created_at,finish,skin_type"),
+      constraints,
+    ) as unknown as OrderedQuery)
+      .order("product_key", { ascending: true })
+      .range(from, to);
+    const { data, error } = await request;
+    if (error) throw new Error(error.message);
+    const batch = (data ?? []) as SkinSlim[];
+    rows.push(
+      ...batch.map((row) => ({
+        product_key: String(row.product_key),
+        name: String(row.name ?? ""),
+        price: row.price == null ? null : Number(row.price),
+        created_at: row.created_at ?? null,
+        finish: typeof row.finish === "string" ? row.finish : null,
+        skin_type: row.skin_type ?? null,
+      })),
+    );
+    if (batch.length < SCAN_PAGE) break;
+    page += 1;
+  }
+  return rows;
+}
+
+async function loadSkinRankedPage(
+  client: SupabaseClient,
+  query: CatalogListQuery,
+  constraints: ListingConstraints,
+): Promise<CatalogPageResult> {
+  const matching = await scanSkinMatching(client, constraints);
+  const needsReviews = query.hasReviews || query.sort === "rating-desc";
+  const stats: ReviewAggregateResult = needsReviews
+    ? await getReviewAggregates(matching.map((row) => row.product_key))
+    : { ok: false, source: "unavailable" };
+  if (!stats.ok && query.hasReviews) {
+    return {
+      products: [],
+      total: 0,
+      page: query.page,
+      pageSize: CATALOG_PAGE_SIZE,
+      reviewsUnavailable: true,
+    };
+  }
+
+  const sort = !stats.ok && query.sort === "rating-desc" ? "featured" : query.sort;
+  let rows = matching;
+  if (query.hasReviews && stats.ok) {
+    rows = rows.filter((row) => (stats.map.get(row.product_key)?.count ?? 0) > 0);
+  }
+  const profile = {
+    finish: query.matchFinish || null,
+    skinType: query.matchSkinType || null,
+  };
+  const tieBreak = compareSlim(sort, stats);
+  rows.sort((a, b) => {
+    const rankDelta = shopperMatchRank(b, profile) - shopperMatchRank(a, profile);
+    if (rankDelta !== 0) return rankDelta;
+    return tieBreak(a, b);
+  });
+  const start = (query.page - 1) * CATALOG_PAGE_SIZE;
+  const pageKeys = rows.slice(start, start + CATALOG_PAGE_SIZE).map((row) => row.product_key);
+  const aggregates = needsReviews ? stats : await getReviewAggregates(pageKeys);
+  return {
+    products: await hydrateProducts(client, pageKeys, aggregates),
+    total: rows.length,
+    page: query.page,
+    pageSize: CATALOG_PAGE_SIZE,
+    reviewsUnavailable: !aggregates.ok,
+  };
+}
+
 async function loadCatalogPage(query: CatalogListQuery): Promise<CatalogPageResult> {
   const normalized = normalizeCatalogQuery(query);
   const constraints = listingConstraints(normalized);
@@ -235,14 +319,59 @@ async function loadCatalogPage(query: CatalogListQuery): Promise<CatalogPageResu
     };
   }
   const client = getCatalogSupabase();
+  if (normalized.forSkin) return loadSkinRankedPage(client, normalized, constraints);
   const needsReviewSet = normalized.hasReviews || normalized.sort === "rating-desc";
   if (!needsReviewSet) return loadDirectPage(client, normalized, constraints);
   return loadReviewAwarePage(client, normalized, constraints);
 }
 
+function brandFoldKey(brand: string): string {
+  return brand.trim().toLocaleLowerCase();
+}
+
+function brandLetterCase(value: string): "upper" | "lower" | "title" | "mixed" {
+  const letters = value.replace(/[^A-Za-z]/g, "");
+  if (!letters) return "mixed";
+  if (letters === letters.toUpperCase()) return "upper";
+  if (letters === letters.toLowerCase()) return "lower";
+  const words = value.split(/[\s/&+-]+/).filter(Boolean);
+  const titled = words.every((word) => {
+    const wordLetters = word.replace(/[^A-Za-z]/g, "");
+    if (!wordLetters) return true;
+    if (wordLetters.length === 1) return wordLetters === wordLetters.toUpperCase();
+    return (
+      wordLetters[0] === wordLetters[0].toUpperCase() &&
+      wordLetters.slice(1) === wordLetters.slice(1).toLowerCase()
+    );
+  });
+  return titled ? "title" : "mixed";
+}
+
+/** One display label per case-insensitive brand. Prefer non-ALL-CAPS, then title case, then the most common spelling. */
+function chooseBrandLabel(spellings: Map<string, number>): string {
+  const entries = [...spellings.entries()];
+  if (entries.length === 1) return entries[0][0];
+
+  const notAllCaps = entries.filter(([label]) => brandLetterCase(label) !== "upper");
+  const pool = notAllCaps.length > 0 ? notAllCaps : entries;
+  const titleCase = pool.filter(([label]) => brandLetterCase(label) === "title");
+  const preferred = titleCase.length > 0 ? titleCase : pool;
+  preferred.sort((a, b) => {
+    if (b[1] !== a[1]) return b[1] - a[1];
+    return a[0].localeCompare(b[0]);
+  });
+  return preferred[0][0];
+}
+
+function foldBrandLabels(counts: Map<string, Map<string, number>>): string[] {
+  return [...counts.values()]
+    .map((spellings) => chooseBrandLabel(spellings))
+    .sort((a, b) => a.localeCompare(b));
+}
+
 async function loadFacets(): Promise<CatalogFacets> {
   const client = getCatalogSupabase();
-  const brands = new Set<string>();
+  const brandCounts = new Map<string, Map<string, number>>();
   const finishes = new Set<string>();
   const categoriesByMain: Record<string, Set<string>> = {};
   let maxPrice = 1;
@@ -264,7 +393,12 @@ async function loadFacets(): Promise<CatalogFacets> {
       const finish = typeof row.finish === "string" ? row.finish.trim() : "";
       const category = typeof row.category === "string" ? row.category.trim() : "";
       const main = typeof row.main_category === "string" ? row.main_category.trim().toLowerCase() : "";
-      if (brand) brands.add(brand);
+      if (brand) {
+        const key = brandFoldKey(brand);
+        const spellings = brandCounts.get(key) ?? new Map<string, number>();
+        spellings.set(brand, (spellings.get(brand) ?? 0) + 1);
+        brandCounts.set(key, spellings);
+      }
       if (finish) finishes.add(finish);
       if (category) {
         const bucket = categoriesByMain[main] ?? new Set<string>();
@@ -279,7 +413,7 @@ async function loadFacets(): Promise<CatalogFacets> {
   }
 
   return {
-    brands: [...brands].sort((a, b) => a.localeCompare(b)),
+    brands: foldBrandLabels(brandCounts),
     finishes: [...finishes].sort((a, b) => a.localeCompare(b)),
     categoriesByMain: Object.fromEntries(
       Object.entries(categoriesByMain).map(([main, values]) => [main, [...values].sort((a, b) => a.localeCompare(b))]),
@@ -321,8 +455,8 @@ async function loadProductsByKeys(joinedKeys: string): Promise<MakeupProduct[]> 
   return hydrateProducts(client, keys, aggregates);
 }
 
-const readCatalogPage = unstable_cache(loadCatalogPage, ["catalog-page-v2"], { revalidate: CACHE_SECONDS });
-const readCatalogFacets = unstable_cache(loadFacets, ["catalog-facets-v1"], { revalidate: CACHE_SECONDS });
+const readCatalogPage = unstable_cache(loadCatalogPage, ["catalog-page-v3"], { revalidate: CACHE_SECONDS });
+const readCatalogFacets = unstable_cache(loadFacets, ["catalog-facets-v2"], { revalidate: CACHE_SECONDS });
 const readProductByKey = unstable_cache(loadProductByKey, ["catalog-product-v2"], { revalidate: CACHE_SECONDS });
 const readShades = unstable_cache(loadShades, ["catalog-shades-v1"], { revalidate: CACHE_SECONDS });
 const readProductsByKeys = unstable_cache(loadProductsByKeys, ["catalog-keys-v1"], { revalidate: CACHE_SECONDS });

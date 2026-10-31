@@ -94,7 +94,7 @@ export async function cancelPlacedOrderForOwner(input: {
   }
 
   const cancelled = await releaseAndCancelPlacedOrder(orderId);
-  if (!cancelled.ok) return cancelled;
+  if (cancelled.ok === false) return cancelled;
 
   const { data: updated, error: loadError } = await admin
     .from("orders")

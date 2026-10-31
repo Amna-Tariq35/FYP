@@ -21,9 +21,8 @@ export async function POST(request: Request) {
       process.env.STRIPE_WEBHOOK_SECRET!,
     );
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Invalid webhook signature";
-    console.error("Stripe webhook signature verification failed:", message);
-    return new Response(`Webhook error: ${message}`, { status: 400 });
+    console.error("Stripe webhook signature verification failed:", err);
+    return new Response("Webhook error: Invalid webhook signature", { status: 400 });
   }
 
   switch (event.type) {

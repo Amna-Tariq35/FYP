@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ShoppingCart,
@@ -28,14 +29,12 @@ let deepARPendingShutdown = false;
 let deepARActiveMounts = 0;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const deepARInitialize = async (canvas: HTMLCanvasElement): Promise<any> => {
+const deepARInitialize = async (canvas: HTMLCanvasElement, licenseKey: string): Promise<any> => {
   if (deepARActiveInstance) return deepARActiveInstance;
   if (deepARInitializePromise) return deepARInitializePromise;
 
   deepARInitializePromise = (async () => {
     const deeparModule = await import("deepar");
-    const licenseKey =
-      "2952b3fa8af974da37a4802986a2b95c7383ea2f999dc94e83646b7ecab03d9c68e6232e888e8333";
     const instance = await deeparModule.initialize({
       licenseKey,
       canvas,
@@ -61,10 +60,10 @@ const deepARInitialize = async (canvas: HTMLCanvasElement): Promise<any> => {
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const deepARAcquire = async (canvas: HTMLCanvasElement): Promise<any> => {
+const deepARAcquire = async (canvas: HTMLCanvasElement, licenseKey: string): Promise<any> => {
   deepARActiveMounts += 1;
   deepARPendingShutdown = false;
-  return await deepARInitialize(canvas);
+  return await deepARInitialize(canvas, licenseKey);
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -105,6 +104,7 @@ export default function TryOnPage() {
   const [isInitializingAR, setIsInitializingAR] = useState(true);
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [previewUnavailable, setPreviewUnavailable] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [cameraAttempt, setCameraAttempt] = useState(0);
 
@@ -171,17 +171,28 @@ export default function TryOnPage() {
     const initializeDeepAR = async () => {
       if (!canvasRef.current) return;
       setIsInitializingAR(true);
+      setPreviewUnavailable(false);
+      const licenseKey = process.env.NEXT_PUBLIC_DEEPAR_LICENSE_KEY?.trim() ?? "";
+      if (!licenseKey) {
+        if (!isActive) return;
+        setDeepARInstance(null);
+        setError(null);
+        setPreviewUnavailable(true);
+        setIsInitializingAR(false);
+        return;
+      }
       try {
-        instance = await deepARAcquire(canvasRef.current);
+        instance = await deepARAcquire(canvasRef.current, licenseKey);
         if (!isActive) return;
         setDeepARInstance(instance);
       } catch (err) {
         console.error("DeepAR initialization error:", err);
+        if (!isActive) return;
         setError(
-          "Could not initialize camera. Please check permissions and try again."
+          "We couldn't start the camera. You can still browse shades here, or look through the catalog."
         );
       } finally {
-        setIsInitializingAR(false);
+        if (isActive) setIsInitializingAR(false);
       }
     };
 
@@ -276,6 +287,7 @@ export default function TryOnPage() {
 
   const retryCamera = () => {
     setError(null);
+    setPreviewUnavailable(false);
     setIsInitializingAR(true);
     setCameraAttempt((attempt) => attempt + 1);
   };
@@ -401,11 +413,11 @@ export default function TryOnPage() {
           {/* Header */}
           <div className="page-header">
             <h1 className="page-title">
-              Virtual <em>Try‑On</em>
+              Lipstick and blush live preview
             </h1>
             <p className="page-subtitle">
               <Sparkles size={13} style={{ color: "#C06C84" }} />
-              Experience our signature shades in real‑time
+              The full live AR experience is in the Android app.
             </p>
           </div>
 
@@ -420,16 +432,33 @@ export default function TryOnPage() {
                   <p>Starting Camera…</p>
                 </div>
               )}
+              {previewUnavailable && !error && (
+                <div className="camera-overlay-state" style={{ padding: "32px", textAlign: "center" }}>
+                  <AlertCircle size={40} style={{ color: "#e07090", marginBottom: 12 }} />
+                  <p style={{ fontWeight: 600, color: "#1a1a1a", marginBottom: 6 }}>
+                    Preview unavailable
+                  </p>
+                  <p style={{ fontSize: 13, color: "#9a8f8f" }}>
+                    The live preview is unavailable right now. You can still browse shades here.
+                  </p>
+                  <Link href="/products" className="camera-products-link">
+                    Browse products
+                  </Link>
+                </div>
+              )}
               {error && (
                 <div className="camera-overlay-state" style={{ padding: "32px", textAlign: "center" }}>
                   <AlertCircle size={40} style={{ color: "#e07090", marginBottom: 12 }} />
                   <p style={{ fontWeight: 600, color: "#1a1a1a", marginBottom: 6 }}>
-                    Camera Error
+                    Camera unavailable
                   </p>
                   <p style={{ fontSize: 13, color: "#9a8f8f" }}>{error}</p>
                   <button type="button" className="camera-retry" onClick={retryCamera}>
-                    Try camera again
+                    Try again
                   </button>
+                  <Link href="/products" className="camera-products-link">
+                    Browse products
+                  </Link>
                 </div>
               )}
               <canvas ref={canvasRef} />
@@ -993,6 +1022,12 @@ const pageStyles = `
     font-weight: 600;
     padding: 8px 14px;
     cursor: pointer;
+  }
+  .camera-products-link {
+    font-size: 13px;
+    font-weight: 600;
+    color: #C06C84;
+    text-decoration: underline;
   }
   .save-bag-btn {
     border: 1px solid rgba(192,108,132,0.35);

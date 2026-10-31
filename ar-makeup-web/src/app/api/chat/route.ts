@@ -14,6 +14,7 @@ import { createSupabaseServerClient } from "@/src/lib/supabase/server";
 import { clientKey, rateLimit } from "@/src/lib/skin-analysis/rate-limit";
 import { loadShopperMatchProfile } from "@/src/lib/catalog/product-profile-matching";
 import { asStringList } from "@/src/lib/skin-analysis/product-shape";
+import { searchCatalogCards, lastUserText, type ChatCatalogCard } from "@/src/lib/chat/catalog-fallback";
 import { CHAT_FAILURE_MESSAGE, CHAT_WAIT_MESSAGE, friendlyChatError } from "@/src/lib/chat/public-error";
 
 const CHAT_MODEL = "gemini-3.8-flash";
@@ -90,7 +91,8 @@ function groqChatModel() {
   return configured || DEFAULT_GROQ_CHAT_MODEL;
 }
 
-function localChatReply(text: string): Response {
+function localChatReply(text: string, products?: ChatCatalogCard[]): Response {
+  const cards = products ?? [];
   const stream = createUIMessageStream({
     execute: ({ writer }) => {
       const id = "local";
@@ -99,12 +101,47 @@ function localChatReply(text: string): Response {
       writer.write({ type: "text-start", id });
       writer.write({ type: "text-delta", id, delta: text });
       writer.write({ type: "text-end", id });
+      if (cards.length > 0) {
+        writer.write({
+          type: "tool-input-available",
+          toolCallId: "catalog-fallback",
+          toolName: "searchProducts",
+          input: {},
+        });
+        writer.write({
+          type: "tool-output-available",
+          toolCallId: "catalog-fallback",
+          output: { success: true, products: cards, message: "" },
+        });
+      } else if (products) {
+        writer.write({
+          type: "tool-input-available",
+          toolCallId: "catalog-fallback",
+          toolName: "searchProducts",
+          input: {},
+        });
+        writer.write({
+          type: "tool-output-available",
+          toolCallId: "catalog-fallback",
+          output: { success: true, products: [], message: "", catalogHref: "/products" },
+        });
+      }
       writer.write({ type: "finish-step" });
       writer.write({ type: "finish", finishReason: "stop" });
     },
     onError: () => friendlyChatError(undefined),
   });
   return createUIMessageStreamResponse({ stream });
+}
+
+async function catalogFallbackReply(messages: UIMessage[]): Promise<Response> {
+  try {
+    const products = await searchCatalogCards(lastUserText(messages));
+    return localChatReply(CHAT_FAILURE_MESSAGE, products);
+  } catch {
+    console.error("[chat/route] catalog fallback failed");
+    return localChatReply(CHAT_FAILURE_MESSAGE, []);
+  }
 }
 
 async function assertProviderStarted(result: {
@@ -356,6 +393,6 @@ export async function POST(req: Request) {
   } catch (groqErr) {
     fallbackAbort.abort();
     logProviderFailure("[chat/route] providers failed", groqErr);
-    return localChatReply(CHAT_FAILURE_MESSAGE);
+    return catalogFallbackReply(trimmedMessages);
   }
 }

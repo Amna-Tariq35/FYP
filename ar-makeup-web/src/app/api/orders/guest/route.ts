@@ -4,8 +4,8 @@ import { createClient } from "@supabase/supabase-js";
 
 export const dynamic = "force-dynamic";
 
-function jsonError(message: string, status = 400, extra?: any) {
-  return NextResponse.json({ error: message, ...extra }, { status });
+function jsonError(message: string, status = 400) {
+  return NextResponse.json({ error: message }, { status });
 }
 
 function safeString(v: unknown) {
@@ -50,9 +50,8 @@ export async function GET(req: Request) {
     .single();
 
   if (orderErr || !order) {
-    return jsonError("Order not found.", 404, {
-      details: orderErr?.message ?? null,
-    });
+    if (orderErr) console.error("Guest order lookup failed:", orderErr.message);
+    return jsonError("Order not found.", 404);
   }
 
   // 2) fetch items (RLS must allow select based on same token)
@@ -63,9 +62,8 @@ export async function GET(req: Request) {
     .order("created_at", { ascending: true });
 
   if (itemsErr) {
-    return jsonError("Failed to load order items.", 500, {
-      details: itemsErr.message,
-    });
+    console.error("Guest order items failed:", itemsErr.message);
+    return jsonError("Failed to load order items.", 500);
   }
 
   return NextResponse.json({ order, items: items ?? [] }, { status: 200 });

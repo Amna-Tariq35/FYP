@@ -219,6 +219,7 @@ export async function POST(req: Request) {
         return publicError(
           "Face not detected clearly. Please use a straight, well-lit, front-facing photo.",
           400,
+          { code: "FACE_NOT_CLEAR" },
         );
       }
       facepp = null;

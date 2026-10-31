@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Search, Eye, Filter, RefreshCw } from "lucide-react";
 import useSWR from "swr";
 import { supabase } from "@/src/lib/supabase/client";
+import AdminSignInRequired from "@/src/components/admin/AdminSignInRequired";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -57,9 +58,18 @@ const fetcher = async (url: string) => {
     headers: { Authorization: `Bearer ${session.access_token}` },
   });
 
+  if (res.status === 401 || res.status === 403) {
+    const authError = new Error("Admin sign-in required");
+    authError.name = "AdminAuthError";
+    throw authError;
+  }
   if (!res.ok) throw new Error(`API Error: ${res.status}`);
   return res.json();
 };
+
+function isAdminAuthError(error: unknown): boolean {
+  return error instanceof Error && (error.name === "AdminAuthError" || error.message === "No active session");
+}
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
@@ -80,6 +90,11 @@ export default function AdminOrdersPage() {
   );
 
   const orders: Order[] = data?.orders ?? [];
+  const needsSignIn = !isLoading && isAdminAuthError(error);
+
+  if (needsSignIn) {
+    return <AdminSignInRequired nextPath="/admin/orders" />;
+  }
 
   const showNotification = (message: string, type: "success" | "error") => {
     setNotification({ message, type });

@@ -5,8 +5,8 @@ import { cancelPlacedOrderForOwner } from "@/src/lib/orders/cancel-placed";
 
 export const dynamic = "force-dynamic";
 
-function jsonError(message: string, status = 400, extra?: any) {
-  return NextResponse.json({ error: message, ...extra }, { status });
+function jsonError(message: string, status = 400) {
+  return NextResponse.json({ error: message }, { status });
 }
 
 export async function GET(
@@ -39,9 +39,8 @@ export async function GET(
     .maybeSingle();
 
   if (orderErr || !order) {
-    return jsonError("Order not found.", 404, {
-      details: orderErr?.message ?? null,
-    });
+    if (orderErr) console.error("Order lookup failed:", orderErr.message);
+    return jsonError("Order not found.", 404);
   }
 
   // ✅ order_items RLS should restrict to items of orders owned by user
@@ -52,9 +51,8 @@ export async function GET(
     .order("created_at", { ascending: true });
 
   if (itemsErr) {
-    return jsonError("Failed to load order items.", 500, {
-      details: itemsErr.message,
-    });
+    console.error("Order items failed:", itemsErr.message);
+    return jsonError("Failed to load order items.", 500);
   }
 
   return NextResponse.json({ order, items: items ?? [] }, { status: 200 });
@@ -92,7 +90,7 @@ export async function PATCH(
     guestToken: null,
   });
 
-  if (!result.ok) {
+  if (result.ok === false) {
     return jsonError(result.error, result.status);
   }
 

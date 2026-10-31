@@ -23,7 +23,7 @@ export async function POST(request: Request) {
       guestToken: guestToken || null,
     });
 
-    if (!result.ok) {
+    if (result.ok === false) {
       return NextResponse.json({ error: result.error }, { status: result.status });
     }
 

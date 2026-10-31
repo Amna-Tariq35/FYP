@@ -72,6 +72,6 @@ export async function GET(request:Request) {
 
   } catch (error: unknown) {
     console.error("Dashboard Error:", error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Dashboard failed." }, { status: 500 });
+    return NextResponse.json({ error: "Dashboard failed." }, { status: 500 });
   }
 }

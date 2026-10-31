@@ -39,7 +39,7 @@ export async function POST(request: Request) {
 
     if (status === 'cancelled') {
       const cancelled = await releaseAndCancelPlacedOrder(String(order_id));
-      if (!cancelled.ok) {
+      if (cancelled.ok === false) {
         return NextResponse.json({ error: cancelled.error }, { status: cancelled.status });
       }
       return NextResponse.json({ success: true, status: 'cancelled' });
@@ -55,6 +55,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, status });
   } catch (error: any) {
     console.error("Update Status Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Could not update the order status." }, { status: 500 });
   }
 }

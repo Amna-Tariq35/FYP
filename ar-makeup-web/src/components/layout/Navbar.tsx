@@ -57,6 +57,7 @@ export default function Navbar() {
     () => [
       { href: "/", label: "Home" },
       { href: "/products", label: "Products" },
+      { href: "/try-on", label: "Try-On" },
       { href: "/skin-analysis", label: "Skin Analysis" },
     ],
     []

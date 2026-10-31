@@ -26,6 +26,10 @@ export type CatalogListQuery = {
   skinFriendly: boolean;
   hasReviews: boolean;
   sort: CatalogSort;
+  /** Rank saved skin-type and finish matches first. Other filters still apply. */
+  forSkin: boolean;
+  matchSkinType: string;
+  matchFinish: string;
 };
 
 export type CatalogFacets = {
@@ -60,6 +64,9 @@ export function defaultCatalogQuery(): CatalogListQuery {
     skinFriendly: false,
     hasReviews: false,
     sort: "featured",
+    forSkin: false,
+    matchSkinType: "",
+    matchFinish: "",
   };
 }
 
@@ -68,6 +75,8 @@ export function normalizeCatalogQuery(input: CatalogListQuery): CatalogListQuery
     input.main === "makeup" || input.main === "skincare" ? input.main : "all";
   const sort: CatalogSort = CATALOG_SORTS.includes(input.sort) ? input.sort : "featured";
   const page = Math.min(10000, Math.max(1, Math.floor(Number(input.page)) || 1));
+  const matchSkinType = input.forSkin ? clipMatchLabel(input.matchSkinType) : "";
+  const matchFinish = input.forSkin ? clipMatchLabel(input.matchFinish) : "";
   return {
     page,
     search: input.search.trim().slice(0, 80),
@@ -81,6 +90,9 @@ export function normalizeCatalogQuery(input: CatalogListQuery): CatalogListQuery
     skinFriendly: Boolean(input.skinFriendly),
     hasReviews: Boolean(input.hasReviews),
     sort,
+    forSkin: Boolean(input.forSkin) && (matchSkinType.length > 0 || matchFinish.length > 0),
+    matchSkinType,
+    matchFinish,
   };
 }
 
@@ -100,6 +112,9 @@ export function parseCatalogQuery(params: ParamSource): CatalogListQuery {
     skinFriendly: params.get("skin") === "1",
     hasReviews: params.get("reviews") === "1",
     sort: CATALOG_SORTS.includes(sortRaw as CatalogSort) ? (sortRaw as CatalogSort) : "featured",
+    forSkin: params.get("forSkin") === "1",
+    matchSkinType: params.get("skinType") ?? "",
+    matchFinish: params.get("matchFinish") ?? "",
   });
 }
 
@@ -118,7 +133,19 @@ export function catalogQueryToSearchParams(query: CatalogListQuery): URLSearchPa
   if (normalized.skinFriendly) params.set("skin", "1");
   if (normalized.hasReviews) params.set("reviews", "1");
   if (normalized.sort !== "featured") params.set("sort", normalized.sort);
+  if (normalized.forSkin) {
+    params.set("forSkin", "1");
+    if (normalized.matchSkinType) params.set("skinType", normalized.matchSkinType);
+    if (normalized.matchFinish) params.set("matchFinish", normalized.matchFinish);
+  }
   return params;
+}
+
+function clipMatchLabel(value: string | null | undefined): string {
+  if (!value) return "";
+  const cleaned = value.trim().slice(0, 40);
+  if (!/^[A-Za-z0-9][A-Za-z0-9 .'+-]*$/.test(cleaned)) return "";
+  return cleaned;
 }
 
 function finitePrice(value: number | null): number | null {

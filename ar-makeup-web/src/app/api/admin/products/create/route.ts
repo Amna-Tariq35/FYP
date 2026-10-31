@@ -72,6 +72,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: true, product: newProduct });
   } catch (error: unknown) {
     console.error("Create Product Error:", error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Product creation failed." }, { status: 500 });
+    return NextResponse.json({ error: "Product creation failed." }, { status: 500 });
   }
 }

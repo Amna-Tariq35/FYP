@@ -29,6 +29,6 @@ export async function GET(request: Request) {
     return NextResponse.json({ orders: data });
   } catch (error: any) {
     console.error("Fetch Orders Error:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: "Could not load orders." }, { status: 500 });
   }
 }

@@ -65,11 +65,16 @@ export function sanitizeSearch(value: string): string | null {
 
 type FilterQuery = {
   eq: (column: string, value: unknown) => FilterQuery;
+  ilike: (column: string, value: string) => FilterQuery;
   gt: (column: string, value: unknown) => FilterQuery;
   gte: (column: string, value: unknown) => FilterQuery;
   lte: (column: string, value: unknown) => FilterQuery;
   or: (filters: string) => FilterQuery;
 };
+
+function escapeIlikeExact(value: string): string {
+  return value.replace(/[%_\\]/g, (char) => `\\${char}`);
+}
 
 /**
  * Every public catalog read goes through this so a department filter cannot
@@ -89,7 +94,7 @@ export function applyListingFilters(query: unknown, constraints: ListingConstrai
     next = next.eq("category", constraints.category);
   }
   if (constraints.brand) {
-    next = next.eq("brand", constraints.brand);
+    next = next.ilike("brand", escapeIlikeExact(constraints.brand));
   }
   if (constraints.finish) {
     next = next.eq("finish", constraints.finish);

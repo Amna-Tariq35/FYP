@@ -276,7 +276,7 @@ export async function POST(request: NextRequest) {
 
     // ── Rank the catalog ─────────────────────────────────────────────────────
     const catalog = await loadFoundationCatalog(supabase);
-    if (!catalog.ok) {
+    if (catalog.ok === false) {
       console.error("[foundation-match] catalog read failed", catalog.message);
       return jsonError("Could not read the shade catalog", 500);
     }

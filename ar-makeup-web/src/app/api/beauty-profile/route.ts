@@ -76,10 +76,8 @@ function missingColumnName(error: { message?: string; code?: string } | null): s
   return plain?.[1] ?? null;
 }
 
-function honestProfileError(message: string | undefined): string {
-  const text = (message ?? "").replace(/\s+/g, " ").trim();
-  if (!text || text.length > 180) return "Could not save your beauty profile.";
-  return text;
+function honestProfileError(): string {
+  return "Could not save your beauty profile.";
 }
 
 /**
@@ -331,7 +329,7 @@ export async function POST(request: NextRequest) {
 
     if (error) {
       console.error("[beauty-profile POST write error]", error.message);
-      return jsonError(honestProfileError(error.message), 500);
+      return jsonError(honestProfileError(), 500);
     }
 
     return NextResponse.json(
