@@ -114,7 +114,8 @@ function ResultsContent({
 
   const [logData, setLogData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [isGeneratingRoutine, setIsGeneratingRoutine] = useState(false);
+  const [isUpgradingRoutine, setIsUpgradingRoutine] = useState(false);
+  const [showRoutineRetry, setShowRoutineRetry] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"AM" | "PM">("AM");
 
@@ -149,11 +150,16 @@ function ResultsContent({
         const data = payload.analysis;
 
         setLogData(data);
+        setLoading(false);
 
-        if (data && (!data.routine_snapshot || !data.routine_snapshot.amRoutine?.length)) {
-          await generateRoutineOnTheFly(data);
+        const savedAm = data?.routine_snapshot?.amRoutine;
+        const hasSaved = Array.isArray(savedAm) && savedAm.length > 0;
+        if (hasSaved) {
+          setShowRoutineRetry(data.routine_snapshot?.source === "rules");
+        } else if (data) {
+          await upgradeRoutine(data);
         }
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error("Fetch Error:", err);
         setError("Could not load this report. Please try again.");
       } finally {
@@ -164,40 +170,79 @@ function ResultsContent({
     if (sessionId) fetchResultsAndProcess();
   }, [sessionId]);
 
-  const generateRoutineOnTheFly = async (record: any) => {
-    try {
-      setIsGeneratingRoutine(true);
-      setRoutineError(null);
+  const storeRoutine = (
+    amRoutine: unknown[],
+    pmRoutine: unknown[],
+    source: unknown,
+    summary: unknown,
+  ) => {
+    setLogData((prev) => ({
+      ...prev,
+      routine_snapshot: { amRoutine, pmRoutine, source },
+      ai_summary: typeof summary === "string" && summary ? summary : prev?.ai_summary,
+    }));
+    setRoutineError(null);
+  };
 
-      const response = await fetch("/api/generate-routine", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ analysisId: record.id }),
-      });
-      const resData = await response.json().catch(() => null);
-      const amRoutine = Array.isArray(resData?.data?.amRoutine) ? resData.data.amRoutine : [];
-      const pmRoutine = Array.isArray(resData?.data?.pmRoutine) ? resData.data.pmRoutine : [];
-      if (!response.ok || !resData?.data || (amRoutine.length === 0 && pmRoutine.length === 0)) {
-        setRoutineError("The routine could not be built. You can try again.");
-        return;
+  const readRoutineResponse = async (response: Response) => {
+    const resData = await response.json().catch(() => null);
+    const data = resData && typeof resData === "object" ? (resData as { data?: unknown }).data : null;
+    const record = data && typeof data === "object" ? (data as {
+      amRoutine?: unknown;
+      pmRoutine?: unknown;
+      source?: unknown;
+      summary?: unknown;
+    }) : null;
+    const amRoutine = Array.isArray(record?.amRoutine) ? record.amRoutine : [];
+    const pmRoutine = Array.isArray(record?.pmRoutine) ? record.pmRoutine : [];
+    if (!response.ok || !record || (amRoutine.length === 0 && pmRoutine.length === 0)) return null;
+    return { amRoutine, pmRoutine, source: record.source, summary: record.summary };
+  };
+
+  const requestRoutine = async (analysisId: string, body: Record<string, boolean>, timeoutMs: number) => {
+    const response = await fetch("/api/generate-routine", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ analysisId, ...body }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return readRoutineResponse(response);
+  };
+
+  const upgradeRoutine = async (record: { id?: string }, options?: { retry?: boolean }) => {
+    const analysisId = record.id || sessionId;
+    setIsUpgradingRoutine(true);
+    setShowRoutineRetry(false);
+    setRoutineError(null);
+    let personalized = false;
+
+    const aiPromise = requestRoutine(analysisId, { retry: true }, 55_000)
+      .then((routine) => {
+        if (routine && routine.source !== "rules") {
+          personalized = true;
+          storeRoutine(routine.amRoutine, routine.pmRoutine, routine.source, routine.summary);
+        }
+        return routine;
+      })
+      .catch(() => null);
+
+    if (!options?.retry) {
+      try {
+        const quick = await requestRoutine(analysisId, { quick: true }, 15_000);
+        if (!personalized && quick) {
+          storeRoutine(quick.amRoutine, quick.pmRoutine, quick.source ?? "rules", quick.summary);
+        } else if (!personalized && !quick) {
+          setRoutineError("The routine could not be built. You can try again.");
+        }
+      } catch {
+        if (!personalized) setRoutineError("The routine could not be built. You can try again.");
       }
-
-      setLogData((prev: any) => ({
-        ...prev,
-        routine_snapshot: {
-          amRoutine,
-          pmRoutine,
-          source: resData.data.source,
-        },
-        ai_summary: resData.data.summary || prev?.ai_summary,
-      }));
-      setRoutineError(null);
-    } catch {
-      console.error("Failed to generate routine dynamically");
-      setRoutineError("The routine could not be built. You can try again.");
-    } finally {
-      setIsGeneratingRoutine(false);
     }
+
+    const ai = await aiPromise;
+    const aiReady = Boolean(ai && ai.source !== "rules");
+    if (!aiReady) setShowRoutineRetry(true);
+    setIsUpgradingRoutine(false);
   };
 
   const handleSkinConfirmation = async (isYes: boolean) => {
@@ -221,7 +266,7 @@ function ResultsContent({
 
       const updatedData = await response.json();
 
-      setLogData((prev: any) => ({
+      setLogData((prev) => ({
         ...prev,
         skin_type: updatedData.userSkinType || "Dry",
         ai_summary: updatedData.summary || prev?.ai_summary,
@@ -231,7 +276,7 @@ function ResultsContent({
           main_concerns: updatedData.mainConcerns || prev?.concern_scores?.main_concerns,
         },
       }));
-      await generateRoutineOnTheFly({
+      await upgradeRoutine({
         ...logData,
         id: sessionId,
         skin_type: "Dry",
@@ -315,7 +360,7 @@ function ResultsContent({
       <div className="min-h-screen flex flex-col items-center justify-center bg-[var(--bg-base)] gap-4">
         <Sparkles className="w-10 h-10 animate-spin text-[var(--rose-primary)]" />
         <p className="text-[var(--text-secondary)] font-medium text-sm animate-pulse">
-          Matching products to your skin profile...
+          Loading your skin profile...
         </p>
       </div>
     );
@@ -560,32 +605,57 @@ function ResultsContent({
           </div>
         )}
 
-        {routineError &&
-          !isGeneratingRoutine &&
-          (am.length === 0 && pm.length === 0 ||
-            routineError === "The skin type could not be updated. You can try again.") && (
+        {routineError === "The skin type could not be updated. You can try again." && (
           <div className="mb-6 rounded-2xl border border-[var(--border-soft)] bg-white p-4 text-sm text-[var(--text-secondary)]">
             <p>{routineError}</p>
-            <button type="button" className="mt-3 underline" onClick={() => generateRoutineOnTheFly(logData)}>
+          </div>
+        )}
+
+        {routineError && am.length === 0 && pm.length === 0 && (
+          <div className="mb-6 rounded-2xl border border-[var(--border-soft)] bg-white p-4 text-sm text-[var(--text-secondary)]">
+            <p>{routineError}</p>
+            <button type="button" className="mt-3 underline" onClick={() => upgradeRoutine(logData)}>
               Try again
             </button>
           </div>
         )}
 
-        {isGeneratingRoutine && (
-          <div className="bg-white p-12 rounded-3xl text-center border border-[var(--border-soft)] shadow-sm">
-            <Sparkles className="w-8 h-8 text-[var(--rose-primary)] animate-spin mx-auto mb-3" />
-            <h3 className="font-bold text-gray-800 text-base mb-1">
-              Building Routine Steps...
-            </h3>
-            <p className="text-xs text-gray-500">
-              Matching products against catalog ingredients and skin profile.
-            </p>
+        {(am.length > 0 || pm.length > 0) && (
+          <div className="mb-4 flex h-8 items-center justify-center gap-3">
+            <span className="ui-badge">
+              {logData.routine_snapshot?.source === "ai" || logData.routine_snapshot?.source === "mixed"
+                ? "Personalized for you"
+                : "Quick routine"}
+            </span>
+            {showRoutineRetry && !isUpgradingRoutine ? (
+              <button
+                type="button"
+                className="text-sm font-semibold text-[var(--rose-primary)] underline"
+                onClick={() => upgradeRoutine(logData, { retry: true })}
+              >
+                Retry
+              </button>
+            ) : null}
+          </div>
+        )}
+
+        {isUpgradingRoutine && am.length === 0 && pm.length === 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" aria-busy="true">
+            {[0, 1, 2].map((slot) => (
+              <div key={slot} className="ui-card bg-white overflow-hidden">
+                <div className="h-48 animate-pulse bg-gray-100" />
+                <div className="space-y-3 p-5">
+                  <div className="h-3 w-20 animate-pulse rounded bg-gray-100" />
+                  <div className="h-4 w-3/4 animate-pulse rounded bg-gray-100" />
+                  <div className="h-10 w-full animate-pulse rounded bg-gray-50" />
+                </div>
+              </div>
+            ))}
           </div>
         )}
 
         {/* ROUTINE CARDS GRID */}
-        {!isGeneratingRoutine && (
+        {(am.length > 0 || pm.length > 0) && (
           <motion.div
             key={activeTab}
             initial={{ opacity: 0, y: 15 }}
@@ -674,7 +744,7 @@ function ResultsContent({
         )}
 
         {/* EMPTY ROUTINE FALLBACK */}
-        {!isGeneratingRoutine && currentRoutine.length === 0 && (am.length > 0 || pm.length > 0) && (
+        {currentRoutine.length === 0 && (am.length > 0 || pm.length > 0) && (
           <div className="text-center py-16 bg-white rounded-3xl border border-[var(--border-soft)]">
             <Layers className="w-12 h-12 text-gray-300 mx-auto mb-3" />
             <h3 className="text-lg font-bold text-gray-700">

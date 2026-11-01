@@ -6,7 +6,8 @@ import Webcam from "react-webcam";
 import { compressImage } from "@/src/lib/image-utils";
 import { processFaceImage, drawLandmarksOnCanvas, FaceAnalysisResult } from "@/src/lib/skin-analysis/face-mesh";
 import { analyzeSkinFromLandmarks } from "@/src/lib/skin-analysis/cv-heuristics";
-import { Camera, Upload, ShieldCheck, AlertCircle, RefreshCw, ServerCrash, FileText } from "lucide-react";
+import { canonicalConcern } from "@/src/lib/skin-analysis/contract";
+import { Camera, Upload, ShieldCheck, AlertCircle, RefreshCw, ServerCrash } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 export default function ScanPage() {
@@ -24,8 +25,23 @@ export default function ScanPage() {
   
   // State for API Quota Exceeded & Unavailable Fallback
   const [isQuotaError, setIsQuotaError] = useState(false);
-  const [unavailableError, setUnavailableError] = useState<{ message: string } | null>(null);
   const [offerQuestionnaire, setOfferQuestionnaire] = useState(false);
+
+  const questionnaireSkinTypes = new Set(["Oily", "Dry", "Combination", "Normal", "Sensitive"]);
+  const questionnaireConcerns = new Set([
+    "acne",
+    "oiliness",
+    "dryness",
+    "dehydration",
+    "redness",
+    "rosacea",
+    "irritation",
+    "damaged barrier",
+    "dullness",
+    "dark spots",
+    "sun-damage",
+    "anti-aging",
+  ]);
 
   const videoConstraints = {
     width: 1080,
@@ -39,15 +55,11 @@ export default function ScanPage() {
       setIsProcessing(true);
       setValidationError(null);
       setIsQuotaError(false);
-      setUnavailableError(null);
       setOfferQuestionnaire(false);
 
-      // Stage 1: Compress Image
-      setProcessingStage("Optimizing image quality...");
-      const compressedBlob = await compressImage(source);
+      setProcessingStage("Checking your face");
+      const compressedBlob = await compressImage(source, 1024);
       
-      // Stage 2: Load Image Element
-      setProcessingStage("Initializing Face Mesh AI...");
       const imgElement = new Image();
       objectUrl = URL.createObjectURL(compressedBlob);
       imgElement.src = objectUrl;
@@ -57,8 +69,6 @@ export default function ScanPage() {
         imgElement.onerror = reject;
       });
 
-      // Stage 3: Face Detection & Validation
-      setProcessingStage("Detecting facial landmarks...");
       const faceResult: FaceAnalysisResult = await processFaceImage(imgElement);
 
       if (!faceResult.isValid || !faceResult.landmarks) {
@@ -76,26 +86,27 @@ export default function ScanPage() {
         drawLandmarksOnCanvas(canvasRef.current, faceResult.landmarks);
       }
 
-      // Stage 4: Run CV Computer Vision Heuristics
-      setProcessingStage("Generating localized skin metrics...");
       const analysisReport = analyzeSkinFromLandmarks(imgElement, faceResult.landmarks);
 
-      // Stage 5: Generate strictly JPEG Base64 for API
-      setProcessingStage("Preparing data for AI...");
+      const maxSide = 1024;
+      const scale = Math.min(1, maxSide / imgElement.width, maxSide / imgElement.height);
+      const uploadWidth = Math.max(1, Math.round(imgElement.width * scale));
+      const uploadHeight = Math.max(1, Math.round(imgElement.height * scale));
       const tempCanvas = document.createElement("canvas");
-      tempCanvas.width = imgElement.width;
-      tempCanvas.height = imgElement.height;
+      tempCanvas.width = uploadWidth;
+      tempCanvas.height = uploadHeight;
       const tempCtx = tempCanvas.getContext("2d");
-      
-      if (tempCtx) {
-        tempCtx.fillStyle = "#FFFFFF";
-        tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
-        tempCtx.drawImage(imgElement, 0, 0);
+      if (!tempCtx) {
+        setValidationError("The photo could not be read. Please try again.");
+        setPreviewImage(null);
+        return;
       }
-      
-      const imageBase64 = tempCanvas.toDataURL("image/jpeg", 0.85);
+      tempCtx.fillStyle = "#FFFFFF";
+      tempCtx.fillRect(0, 0, uploadWidth, uploadHeight);
+      tempCtx.drawImage(imgElement, 0, 0, uploadWidth, uploadHeight);
+      const imageBase64 = tempCanvas.toDataURL("image/jpeg", 0.82);
 
-      setProcessingStage("Reading your skin profile...");
+      setProcessingStage("Analyzing your skin");
 
       const apiResponse = await fetch("/api/skin-analysis", {
         method: "POST",
@@ -117,10 +128,20 @@ export default function ScanPage() {
           return;
         }
         if (apiResult.error === "PHOTO_ANALYSIS_UNAVAILABLE") {
-          setUnavailableError({
-            message:
-              "Photo analysis is busy right now. You can try again in a moment, or answer the short questionnaire for a result that does not depend on the photo service.",
-          });
+          const params = new URLSearchParams();
+          params.set("notice", "photo-unavailable");
+          if (questionnaireSkinTypes.has(analysisReport.skinType)) {
+            params.set("skinType", analysisReport.skinType);
+          }
+          const concerns: string[] = [];
+          for (const raw of analysisReport.primaryConcerns) {
+            const tag = canonicalConcern(raw);
+            if (!tag || !questionnaireConcerns.has(tag) || concerns.includes(tag)) continue;
+            concerns.push(tag);
+            if (concerns.length === 5) break;
+          }
+          if (concerns.length > 0) params.set("concerns", concerns.join("|"));
+          router.push(`/skin-analysis/questionnaire?${params.toString()}`);
           return;
         }
         if (apiResult.code === "FACE_NOT_CLEAR") {
@@ -138,8 +159,7 @@ export default function ScanPage() {
         return;
       }
 
-      // Stage 8: Redirect to Analysis Result Page
-      setProcessingStage("Finalizing your personalized report...");
+      setProcessingStage("Building your routine");
       let redirectUrl = `/skin-analysis/results/${apiResult.sessionId}`;
       
       if (apiResult.needsSkinTypeConfirmation) {
@@ -184,7 +204,6 @@ export default function ScanPage() {
     setPreviewImage(null);
     setValidationError(null);
     setIsQuotaError(false);
-    setUnavailableError(null);
     setOfferQuestionnaire(false);
   };
 
@@ -238,37 +257,6 @@ export default function ScanPage() {
     );
   }
 
-  // --- PHOTO ANALYSIS UNAVAILABLE FALLBACK UI ---
-  if (unavailableError) {
-    return (
-      <div className="ui-container min-h-screen flex items-center justify-center py-12">
-        <div className="max-w-md w-full bg-white border border-[#FEE4E2] shadow-sm rounded-2xl p-8 text-center">
-          <div className="w-20 h-20 bg-[#FEF3F2] text-[#B42318] rounded-full flex items-center justify-center mx-auto mb-6">
-            <AlertCircle size={40} />
-          </div>
-          <h2 className="text-2xl font-semibold text-[#B42318] mb-3">Photo Scan Unavailable</h2>
-          <p className="text-gray-600 mb-8 leading-relaxed">
-            {unavailableError.message}
-          </p>
-          <div className="flex flex-col gap-3">
-            <Link 
-              href="/skin-analysis/questionnaire"
-              className="w-full bg-[#B42318] text-white py-3 rounded-full font-medium hover:bg-[#991B1B] transition-colors flex items-center justify-center gap-2"
-            >
-              <FileText size={18} /> Take Quick Questionnaire Instead
-            </Link>
-            <button 
-              onClick={resetScan}
-              className="ui-btn-secondary w-full py-3"
-            >
-              Try Photo Scan Again
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="ui-container min-h-screen flex flex-col items-center py-8">
       <div className="w-full max-w-md flex justify-between items-center mb-6">
@@ -291,7 +279,7 @@ export default function ScanPage() {
       />
 
       {/* REGULAR VALIDATION ERROR UI */}
-      {validationError && !isQuotaError && !unavailableError && (
+      {validationError && !isQuotaError && (
         <div className="w-full max-w-md bg-[#FEF3F2] border border-[#FEE4E2] text-[#B42318] p-4 rounded-xl flex items-start justify-between gap-3 mb-4 text-sm font-medium">
           <div className="flex items-start gap-2">
             <AlertCircle size={20} className="shrink-0 mt-0.5" />
@@ -360,7 +348,7 @@ export default function ScanPage() {
         </div>
       )}
 
-      {previewImage && !isProcessing && validationError && !isQuotaError && !unavailableError && (
+      {previewImage && !isProcessing && validationError && !isQuotaError && (
         <div className="w-full max-w-md mt-6 flex justify-center">
           <button onClick={resetScan} className="ui-btn-secondary gap-2">
             <RefreshCw size={16} /> Retake Photo

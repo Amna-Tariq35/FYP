@@ -17,6 +17,7 @@ import {
 } from "@/src/lib/skin-analysis/contract";
 import { mapFaceppSkinResult } from "@/src/lib/skin-analysis/facepp-mapper";
 import { clientKey, rateLimit } from "@/src/lib/skin-analysis/rate-limit";
+import { runGeminiModelChain, visionModelList } from "@/src/lib/llm/gemini-models";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -243,6 +244,11 @@ export async function POST(req: Request) {
       );
     }
 
+    console.info(
+      "Photo analysis",
+      outcome.engine === "gemini" ? outcome.model || "gemini" : "facepp",
+    );
+
     const heuristics =
       mediaPipeData && typeof mediaPipeData.overallScore === "number"
         ? {
@@ -328,6 +334,7 @@ type EngineOutcome = {
   needsSkinTypeConfirmation: boolean;
   confidence: "high" | "medium" | "low";
   engine: "facepp" | "gemini";
+  model?: string;
 };
 
 async function analyzeWithFacepp(cleanBase64: string, cvRedness: number): Promise<EngineOutcome | null> {
@@ -335,45 +342,47 @@ async function analyzeWithFacepp(cleanBase64: string, cvRedness: number): Promis
   const faceppSecret = process.env.FACEPP_API_SECRET;
   if (!faceppKey || !faceppSecret) return null;
 
-  let lastWasImage = false;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const formData = new FormData();
-      formData.append("api_key", faceppKey);
-      formData.append("api_secret", faceppSecret);
-      formData.append("image_base64", cleanBase64);
-      const response = await withTimeout(
-        (signal) =>
-          fetch("https://api-us.faceplusplus.com/facepp/v1/skinanalyze", {
-            method: "POST",
-            body: formData,
-            signal,
-          }),
-        12_000,
-      );
-      const data = await response.json();
-      if (!response.ok || data.error_message) {
-        const message = String(data.error_message || "Face++ failed");
-        lastWasImage =
-          message.includes("INVALID_IMAGE") ||
-          message.includes("NO_FACE") ||
-          message.includes("IMAGE_FILE") ||
-          message.includes("IMAGE_ERROR_UNSUPPORTED_FORMAT");
-        if (lastWasImage) break;
-        throw new Error(message);
+  try {
+    const formData = new FormData();
+    formData.append("api_key", faceppKey);
+    formData.append("api_secret", faceppSecret);
+    formData.append("image_base64", cleanBase64);
+    const response = await withTimeout(
+      (signal) =>
+        fetch("https://api-us.faceplusplus.com/facepp/v1/skinanalyze", {
+          method: "POST",
+          body: formData,
+          signal,
+        }),
+      8_000,
+    );
+    const data = await response.json();
+    if (!response.ok || data.error_message) {
+      const message = String(data.error_message || "Face++ failed");
+      const imageProblem =
+        message.includes("INVALID_IMAGE") ||
+        message.includes("NO_FACE") ||
+        message.includes("IMAGE_FILE") ||
+        message.includes("IMAGE_ERROR_UNSUPPORTED_FORMAT");
+      if (imageProblem) {
+        throw Object.assign(new Error("FACE_NOT_CLEAR"), { imageQuality: true });
       }
-      const mapped = mapFaceppSkinResult(data.result, cvRedness);
-      return { ...mapped, engine: "facepp" };
-    } catch (error) {
-      console.warn(`Face++ attempt ${attempt} failed`, error);
-      if (attempt === 1) await new Promise((r) => setTimeout(r, 800));
+      console.warn("Face++ request failed");
+      return null;
     }
+    const mapped = mapFaceppSkinResult(data.result, cvRedness);
+    return { ...mapped, engine: "facepp" };
+  } catch (error) {
+    if (error instanceof Error && error.message === "FACE_NOT_CLEAR") throw error;
+    console.warn("Face++ request failed");
+    return null;
   }
-  if (lastWasImage) {
-    throw Object.assign(new Error("FACE_NOT_CLEAR"), { imageQuality: true });
-  }
-  return null;
 }
+
+const VISION_BUDGET_MS = 18_000;
+const VISION_MODEL_MS = 8_000;
+
+type VisionProfile = z.infer<typeof GeminiSchema>;
 
 async function analyzeWithGemini(
   cleanBase64: string,
@@ -382,15 +391,25 @@ async function analyzeWithGemini(
   const geminiKey = process.env.GEMINI_API_KEY;
   if (!geminiKey) return null;
   try {
-    const google = createGoogleGenerativeAI({ apiKey: geminiKey });
-    const modelName = process.env.GEMINI_VISION_MODEL || "gemini-3.8-flash";
-    const { object } = await withTimeout(
-      () =>
-        generateObject({
-          model: google(modelName),
+    const parent = AbortSignal.timeout(VISION_BUDGET_MS);
+    let modelUsed = "";
+    const object = await runGeminiModelChain<VisionProfile>({
+      apiKey: geminiKey,
+      owner: "routine",
+      models: visionModelList(),
+      parent,
+      perModelMs: VISION_MODEL_MS,
+      accept: (value) => GeminiSchema.safeParse(value).success,
+      onAccepted: (model) => {
+        modelUsed = model;
+      },
+      invoke: async (model, signal, apiKey) => {
+        const client = createGoogleGenerativeAI({ apiKey });
+        const { object: generated } = await generateObject({
+          model: client(model),
           schema: GeminiSchema,
           temperature: 0,
-          abortSignal: AbortSignal.timeout(15_000),
+          abortSignal: signal,
           messages: [
             {
               role: "user",
@@ -405,9 +424,11 @@ async function analyzeWithGemini(
               ],
             },
           ],
-        }),
-      18_000,
-    );
+        });
+        return generated;
+      },
+    });
+    if (!object) return null;
     const concerns: AnalysisConcern[] = object.mainConcerns.map((tag) => ({
       tag,
       severity: 0.65,
@@ -420,9 +441,16 @@ async function analyzeWithGemini(
       needsSkinTypeConfirmation: object.skinType === "Normal",
       confidence: "medium",
       engine: "gemini",
+      model: modelUsed || "gemini",
     };
   } catch (error) {
-    console.warn("Gemini vision fallback failed", error);
+    const status =
+      error && typeof error === "object" && "status" in error && typeof error.status === "number"
+        ? error.status
+        : error && typeof error === "object" && "statusCode" in error && typeof error.statusCode === "number"
+          ? error.statusCode
+          : "";
+    console.warn("Gemini vision fallback failed", status);
     return null;
   }
 }

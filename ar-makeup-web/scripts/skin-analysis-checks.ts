@@ -221,6 +221,62 @@ void (async () => {
   assert.equal(emptyThenRules.source, "rules");
   assert.ok(emptyThenRules.amRoutine.length > 0);
 
+  let hangAborted = false;
+  const hedged = await generateFinalRoutine(catalog, "Oily", { acne: 0.9 }, { skinType: "Oily" }, {
+    hedgeMs: 30,
+    gemini: (signal) =>
+      new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          resolve({
+            aiSummary: "This arrived too late.",
+            amRoutine: [{ id: "t", matchReason: "late", matchScore: 80 }],
+            pmRoutine: [{ id: "t", matchReason: "late", matchScore: 80 }],
+          });
+        }, 5_000);
+        signal.addEventListener(
+          "abort",
+          () => {
+            hangAborted = true;
+            clearTimeout(timer);
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          },
+          { once: true },
+        );
+      }),
+    groq: async () => ({
+      aiSummary: "A short routine from the backup model. It is not a medical diagnosis.",
+      amRoutine: [{ id: "c", matchReason: "Matches the oily profile.", matchScore: 80 }],
+      pmRoutine: [{ id: "m", matchReason: "Light moisturizer for night.", matchScore: 80 }],
+    }),
+  });
+  assert.equal(hangAborted, true);
+  assert.equal(hedged.source === "rules", false);
+  assert.equal(hedged.amRoutine.some((item) => item.id === "c"), true);
+
+  let retryAfterAccept = 0;
+  const firstWins = await generateFinalRoutine(catalog, "Oily", { acne: 0.9 }, { skinType: "Oily" }, {
+    hedgeMs: 5_000,
+    gemini: async () => {
+      retryAfterAccept += 1;
+      if (retryAfterAccept === 1) {
+        throw Object.assign(new Error("503 Service Unavailable"), { status: 503 });
+      }
+      return {
+        aiSummary: "Second Gemini pass.",
+        amRoutine: [{ id: "t", matchReason: "second", matchScore: 80 }],
+        pmRoutine: [{ id: "t", matchReason: "second", matchScore: 80 }],
+      };
+    },
+    groq: async () => ({
+      aiSummary: "Groq returned first.",
+      amRoutine: [{ id: "c", matchReason: "first", matchScore: 80 }],
+      pmRoutine: [{ id: "m", matchReason: "first", matchScore: 80 }],
+    }),
+  });
+  assert.equal(retryAfterAccept, 1);
+  assert.equal(firstWins.summary.includes("Groq returned first"), true);
+  assert.equal(firstWins.amRoutine.some((item) => item.id === "c"), true);
+
   const leaked = [
     new Error("ApiError: 429 limit reached\n    at Groq (node_modules/groq/index.js:10:1)"),
     { status: 413, message: '{"error":{"message":"Request too large"}}' },

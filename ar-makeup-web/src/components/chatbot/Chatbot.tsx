@@ -16,7 +16,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import type { UIMessage } from 'ai';
 import { addToCart } from '@/src/store/cart';
-import { friendlyChatError } from '@/src/lib/chat/public-error';
+import { CHAT_FAILURE_MESSAGE, friendlyChatError } from '@/src/lib/chat/public-error';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -227,29 +227,61 @@ export default function Chatbot() {
   const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState('');
   const [chatError, setChatError] = useState<string | null>(null);
+  const [slow, setSlow] = useState(false);
+  const [stopped, setStopped] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const lastTextRef = useRef('');
 
-  const { messages, sendMessage, status } = useChat({
+  const { messages, sendMessage, status, stop } = useChat({
     transport: new DefaultChatTransport({ api: '/api/chat' }),
     onError: (error) => {
       console.error('Chat request failed');
       setChatError(friendlyChatError(error));
+      setStopped(true);
+      setSlow(false);
     },
   });
 
-  const isLoading = status === 'submitted' || status === 'streaming';
+  const isLoading = (status === 'submitted' || status === 'streaming') && !stopped;
+  const stopRef = useRef(stop);
+  stopRef.current = stop;
+
+  useEffect(() => {
+    if (!isLoading) {
+      setSlow(false);
+      return;
+    }
+    const slowTimer = window.setTimeout(() => setSlow(true), 8_000);
+    const failTimer = window.setTimeout(() => {
+      stopRef.current();
+      setStopped(true);
+      setSlow(false);
+      setChatError(CHAT_FAILURE_MESSAGE);
+    }, 30_000);
+    return () => {
+      window.clearTimeout(slowTimer);
+      window.clearTimeout(failTimer);
+    };
+  }, [isLoading]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, chatError]);
+  }, [messages, chatError, isLoading, slow]);
+
+  const sendText = (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || isLoading) return;
+    lastTextRef.current = trimmed;
+    setStopped(false);
+    setSlow(false);
+    setChatError(null);
+    sendMessage({ text: trimmed });
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (input.trim() && !isLoading) {
-      setChatError(null);
-      sendMessage({ text: input });
-      setInput('');
-    }
+    sendText(input);
+    if (input.trim()) setInput('');
   };
 
   if (pathname?.startsWith('/admin')) return null;
@@ -306,8 +338,7 @@ export default function Chatbot() {
                     <button
                       key={suggestion}
                       onClick={() => {
-                        setChatError(null);
-                        sendMessage({ text: suggestion.replace(/^[^\w]+/, '') });
+                        sendText(suggestion.replace(/^[^\w]+/, ''));
                       }}
                       className="text-xs px-3 py-2 rounded-xl text-left transition-all hover:shadow-sm disabled:opacity-50"
                       style={{
@@ -397,7 +428,7 @@ export default function Chatbot() {
 
             {/* Loading Indicator */}
             {isLoading && (
-              <div className="flex items-start">
+              <div className="flex flex-col items-start gap-1">
                 <div
                   className="flex items-center gap-2 text-xs px-3 py-2 rounded-full"
                   style={{ background: '#FDF2F4', color: 'var(--rose-primary)' }}
@@ -405,12 +436,17 @@ export default function Chatbot() {
                   <Loader2 size={11} className="animate-spin" />
                   <span className="font-medium">Thinking...</span>
                 </div>
+                {slow && (
+                  <p className="text-[10px] px-1" style={{ color: 'var(--text-muted)' }}>
+                    Still thinking...
+                  </p>
+                )}
               </div>
             )}
 
             {/* Structured Error Card */}
-            {chatError && (
-              <div className="flex items-start">
+            {chatError && !isLoading && (
+              <div className="flex flex-col items-start gap-2">
                 <div
                   className="p-3 rounded-2xl max-w-[85%] text-sm shadow-sm"
                   style={{
@@ -422,6 +458,14 @@ export default function Chatbot() {
                 >
                   {chatError}
                 </div>
+                <button
+                  type="button"
+                  onClick={() => sendText(lastTextRef.current)}
+                  className="text-xs font-semibold px-3 py-1.5 rounded-full"
+                  style={{ background: 'var(--rose-primary)', color: 'white' }}
+                >
+                  Try again
+                </button>
               </div>
             )}
 

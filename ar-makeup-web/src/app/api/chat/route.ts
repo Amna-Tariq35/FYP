@@ -16,74 +16,37 @@ import { loadShopperMatchProfile } from "@/src/lib/catalog/product-profile-match
 import { asStringList } from "@/src/lib/skin-analysis/product-shape";
 import { searchCatalogCards, lastUserText, type ChatCatalogCard } from "@/src/lib/chat/catalog-fallback";
 import { CHAT_FAILURE_MESSAGE, CHAT_WAIT_MESSAGE, friendlyChatError } from "@/src/lib/chat/public-error";
+import {
+  CHAT_FIRST_TOKEN_MS,
+  raceChatProviders,
+  timeoutError,
+  type ChatAttempt,
+} from "@/src/lib/chat/provider-race";
+import {
+  abortReason,
+  chatModelList,
+  usesGeminiThinkingLevel,
+} from "@/src/lib/llm/gemini-models";
 
-const CHAT_MODEL = "gemini-3.8-flash";
 const DEFAULT_GROQ_CHAT_MODEL = "openai/gpt-oss-120b";
 
+export const runtime = "nodejs";
+export const maxDuration = 30;
+
 // ─── Constants ────────────────────────────────────────────────────────────────
-const MAX_MESSAGES_IN_CONTEXT = 10;
+const MAX_MESSAGES_IN_CONTEXT = 8;
+const MAX_MESSAGE_CHARS = 2_000;
 const SUPABASE_RESULTS_LIMIT = 5;
-
-// ─── Provider Clients ────────────────────────────────────────────────────────
-const google = createGoogleGenerativeAI({
-  apiKey: process.env.CHATBOT_GOOGLE_KEY ||"",
-});
-
-const groq = createGroq({
-  apiKey: process.env.GROQ_API_KEY || "",
-});
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function trimMessages(messages: UIMessage[]): UIMessage[] {
-  if (messages.length <= MAX_MESSAGES_IN_CONTEXT) return messages;
-  return messages.slice(-MAX_MESSAGES_IN_CONTEXT);
-}
-
-function providerStatus(error: unknown): number | undefined {
-  const seen = new Set<unknown>();
-  let current: unknown = error;
-  while (current && typeof current === "object" && !seen.has(current)) {
-    seen.add(current);
-    const record = current as {
-      status?: unknown;
-      statusCode?: unknown;
-      message?: unknown;
-      cause?: unknown;
-      lastError?: unknown;
-      response?: { status?: unknown };
-    };
-    if (typeof record.status === "number") return record.status;
-    if (typeof record.statusCode === "number") return record.statusCode;
-    if (typeof record.response?.status === "number") return record.response.status;
-    current = record.cause ?? record.lastError;
-  }
-  return undefined;
-}
-
-function isGeminiBusy(error: unknown) {
-  const seen = new Set<unknown>();
-  let current: unknown = error;
-  while (current && typeof current === "object" && !seen.has(current)) {
-    seen.add(current);
-    const record = current as {
-      status?: unknown;
-      statusCode?: unknown;
-      message?: unknown;
-      cause?: unknown;
-      lastError?: unknown;
-      response?: { status?: unknown };
-    };
-    if (record.status === 503 || record.statusCode === 503 || record.response?.status === 503) {
-      return true;
-    }
-    if (typeof record.message === "string" && /\b503\b/.test(record.message)) return true;
-    current = record.cause ?? record.lastError;
-  }
-  return false;
-}
-
-function logProviderFailure(label: string, error: unknown) {
-  console.error(label, providerStatus(error) ?? "");
+  const recent = messages.slice(-MAX_MESSAGES_IN_CONTEXT);
+  return recent.map((message) => ({
+    ...message,
+    parts: message.parts.map((part) =>
+      part.type === "text" ? { ...part, text: part.text.slice(0, MAX_MESSAGE_CHARS) } : part,
+    ),
+  }));
 }
 
 function groqChatModel() {
@@ -144,18 +107,106 @@ async function catalogFallbackReply(messages: UIMessage[]): Promise<Response> {
   }
 }
 
-async function assertProviderStarted(result: {
-  fullStream: AsyncIterable<{ type: string; error?: unknown }>;
-}) {
+function asCard(value: unknown): ChatCatalogCard | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.product_key !== "string" || row.product_key.length === 0 || typeof row.name !== "string") {
+    return null;
+  }
+  const price = typeof row.price === "number" ? row.price : Number(row.price);
+  if (!Number.isFinite(price)) return null;
+  return {
+    id: typeof row.id === "string" ? row.id : row.product_key,
+    product_key: row.product_key,
+    name: row.name,
+    brand: typeof row.brand === "string" ? row.brand : "",
+    category: typeof row.category === "string" ? row.category : "",
+    price,
+    image_url: typeof row.image_url === "string" ? row.image_url : undefined,
+    finish: typeof row.finish === "string" ? row.finish : undefined,
+    skin_type: typeof row.skin_type === "string" ? row.skin_type : undefined,
+  };
+}
+
+function cardsFromToolOutput(output: unknown): ChatCatalogCard[] | null {
+  if (!output || typeof output !== "object") return null;
+  const record = output as { products?: unknown };
+  if (!Array.isArray(record.products)) return null;
+  return record.products.map(asCard).filter((card): card is ChatCatalogCard => card !== null);
+}
+
+function withCatalogProducts(error: unknown, products: ChatCatalogCard[] | null) {
+  if (!products || !error || typeof error !== "object") return error;
+  Object.assign(error, { catalogProducts: products });
+  return error;
+}
+
+type ProbePart = { type: string; error?: unknown; output?: unknown };
+
+function keepStreamMoving(iterator: AsyncIterator<ProbePart>) {
+  void (async () => {
+    try {
+      while (!(await iterator.next()).done) {
+        // The other tee feeds the shopper response. This side must keep reading.
+      }
+    } catch {
+      // A failure after the reply starts is closed by the shopper stream.
+    }
+  })();
+}
+
+async function nextProbePart(
+  iterator: AsyncIterator<ProbePart>,
+  signal: AbortSignal,
+  firstToken: AbortSignal,
+) {
+  let onSignal = () => {};
+  let onFirst = () => {};
+  try {
+    return await Promise.race([
+      iterator.next(),
+      new Promise<never>((_, reject) => {
+        onSignal = () => reject(abortReason(signal));
+        onFirst = () => reject(timeoutError());
+        if (signal.aborted) {
+          onSignal();
+          return;
+        }
+        if (firstToken.aborted) {
+          onFirst();
+          return;
+        }
+        signal.addEventListener("abort", onSignal, { once: true });
+        firstToken.addEventListener("abort", onFirst, { once: true });
+      }),
+    ]);
+  } finally {
+    signal.removeEventListener("abort", onSignal);
+    firstToken.removeEventListener("abort", onFirst);
+  }
+}
+
+async function readUntilOutput(
+  result: { fullStream: AsyncIterable<ProbePart> },
+  signal: AbortSignal,
+  onActivity: () => void,
+) {
   const iterator = result.fullStream[Symbol.asyncIterator]();
+  const firstToken = AbortSignal.timeout(Math.min(CHAT_FIRST_TOKEN_MS, 10_000));
+  let products: ChatCatalogCard[] | null = null;
   while (true) {
-    const next = await iterator.next();
+    const next = await nextProbePart(iterator, signal, firstToken);
     if (next.done) {
+      if (products) return products;
       throw new Error("empty model output");
     }
     const part = next.value;
-    if (part.type === "error") {
-      throw part.error instanceof Error ? part.error : new Error("provider failed");
+    if (part.type === "tool-result") {
+      onActivity();
+      const found = cardsFromToolOutput(part.output);
+      if (found) products = found;
+      keepStreamMoving(iterator);
+      return products;
     }
     if (
       part.type === "text-delta" ||
@@ -163,16 +214,13 @@ async function assertProviderStarted(result: {
       part.type === "tool-input-start" ||
       part.type === "tool-input-delta"
     ) {
-      void (async () => {
-        try {
-          while (!(await iterator.next()).done) {
-            // Keep this branch moving so the reply stream is not stalled.
-          }
-        } catch {
-          // The shopper-facing stream reports its own failure.
-        }
-      })();
-      return;
+      onActivity();
+      keepStreamMoving(iterator);
+      return products;
+    }
+    if (part.type === "error") {
+      const error = part.error instanceof Error ? part.error : new Error("provider failed");
+      throw withCatalogProducts(error, products);
     }
   }
 }
@@ -315,14 +363,16 @@ If the tool returns 0 products, DO NOT hallucinate products. Reply gracefully wi
 
 function chatStream(result: { toUIMessageStreamResponse: (init?: { onError?: (error: unknown) => string }) => Response }) {
   return result.toUIMessageStreamResponse({
-    onError: (error) => {
-      logProviderFailure("[chat/route] stream failed", error);
-      return friendlyChatError(error);
-    },
+    onError: () => friendlyChatError(undefined),
   });
 }
 
-// ─── Route Handler (Gemini First -> Groq Fallback) ──────────────────────────
+function savedCards(products: unknown): ChatCatalogCard[] | null {
+  if (!Array.isArray(products)) return null;
+  return products.map(asCard).filter((card): card is ChatCatalogCard => card !== null);
+}
+
+// ─── Route Handler ───────────────────────────────────────────────────────────
 export async function POST(req: Request) {
   const limit = rateLimit(`chat:${clientKey(req)}`, 12, 60_000);
   if (!limit.ok) {
@@ -341,6 +391,10 @@ export async function POST(req: Request) {
   }
 
   const trimmedMessages = trimMessages(messages);
+  if (!lastUserText(trimmedMessages)) {
+    return localChatReply("");
+  }
+
   const modelMessages = await convertToModelMessages(trimmedMessages);
   const tools = { searchProducts };
   const shopper = await loadShopperMatchProfile(await createSupabaseServerClient());
@@ -357,42 +411,86 @@ export async function POST(req: Request) {
     maxRetries: 0,
   };
 
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const geminiAbort = new AbortController();
-    try {
-      const gemini = streamText({
-        ...shared,
-        model: google(CHAT_MODEL),
-        abortSignal: geminiAbort.signal,
-      });
-      await assertProviderStarted(gemini);
-      return chatStream(gemini);
-    } catch (error) {
-      geminiAbort.abort();
-      logProviderFailure(
-        attempt === 1 ? "[chat/route] Gemini failed" : "[chat/route] Gemini retry failed",
-        error,
-      );
-      if (attempt === 1 && isGeminiBusy(error)) continue;
-      break;
-    }
+  const chatKey = process.env.CHATBOT_GOOGLE_KEY?.trim() ?? "";
+  const groqKey = process.env.GROQ_API_KEY?.trim() ?? "";
+  const models = chatModelList();
+  const primaryName = models[0] ?? "";
+  const liteName = models.find((model) => model !== primaryName) ?? "";
+  const google = chatKey ? createGoogleGenerativeAI({ apiKey: chatKey }) : null;
+  const groq = groqKey ? createGroq({ apiKey: groqKey }) : null;
+
+  const geminiAttempt = (model: string, label: string): ChatAttempt<Response> | null => {
+    if (!google || !model) return null;
+    return {
+      owner: "chat",
+      model,
+      label,
+      run: async (signal, onActivity) => {
+        const result = streamText({
+          ...shared,
+          model: google(model),
+          abortSignal: signal,
+          onError: () => {},
+          ...(usesGeminiThinkingLevel(model)
+            ? {
+                providerOptions: {
+                  google: {
+                    thinkingConfig: {
+                      thinkingLevel: "low",
+                      includeThoughts: false,
+                    },
+                  },
+                },
+              }
+            : {}),
+        });
+        await readUntilOutput(result, signal, onActivity);
+        return chatStream(result);
+      },
+    };
+  };
+
+  const hedge: ChatAttempt<Response> | null = groq
+    ? {
+        owner: "chat",
+        model: "groq",
+        label: `groq/${groqChatModel()}`,
+        run: async (signal, onActivity) => {
+          const result = streamText({
+            ...shared,
+            model: groq(groqChatModel()),
+            abortSignal: signal,
+            onError: () => {},
+            providerOptions: {
+              groq: {
+                reasoningEffort: "low",
+                parallelToolCalls: false,
+              },
+            },
+          });
+          await readUntilOutput(result, signal, onActivity);
+          return chatStream(result);
+        },
+      }
+    : null;
+
+  const outcome = await raceChatProviders({
+    primary: geminiAttempt(primaryName, `gemini/${primaryName}`),
+    hedge,
+    lite: geminiAttempt(liteName, `gemini/${liteName}`),
+  });
+
+  if (outcome.kind === "ok") {
+    console.info(`[chat] ${outcome.label}`);
+    return outcome.value;
+  }
+  if (outcome.kind === "bad-request") {
+    console.info("[chat] bad-request");
+    return localChatReply(CHAT_FAILURE_MESSAGE);
   }
 
-  const fallbackAbort = new AbortController();
-  try {
-    const fallback = streamText({
-      ...shared,
-      model: groq(groqChatModel()),
-      abortSignal: fallbackAbort.signal,
-      providerOptions: {
-        groq: { parallel_tool_calls: false },
-      },
-    });
-    await assertProviderStarted(fallback);
-    return chatStream(fallback);
-  } catch (groqErr) {
-    fallbackAbort.abort();
-    logProviderFailure("[chat/route] providers failed", groqErr);
-    return catalogFallbackReply(trimmedMessages);
-  }
+  console.info("[chat] catalog-fallback");
+  const reused = savedCards(outcome.products);
+  if (reused) return localChatReply(CHAT_FAILURE_MESSAGE, reused);
+  return catalogFallbackReply(trimmedMessages);
 }

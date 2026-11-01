@@ -84,6 +84,7 @@ export default function QuestionnairePage() {
   const [loadingIndex, setLoadingIndex] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isAiBusy, setIsAiBusy] = useState(false);
+  const [photoNotice, setPhotoNotice] = useState<string | null>(null);
 
   // Cycle loading messages when submitting
   useEffect(() => {
@@ -95,6 +96,28 @@ export default function QuestionnairePage() {
     }
     return () => clearInterval(interval);
   }, [isSubmitting]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("notice") === "photo-unavailable") {
+      setPhotoNotice(
+        "Photo analysis is unavailable right now. Answer these questions and we will match products without the photo.",
+      );
+    }
+    const allowedSkin = new Set(SKIN_TYPES.map((item) => item.id));
+    const skin = params.get("skinType");
+    if (skin && allowedSkin.has(skin)) setSkinType(skin);
+    const allowedConcerns = new Set(DB_CONCERNS.map((item) => item.value));
+    const concerns = (params.get("concerns") ?? "")
+      .split("|")
+      .map((item) => item.trim())
+      .filter((item) => allowedConcerns.has(item))
+      .slice(0, MAX_CONCERNS);
+    if (concerns.length > 0) {
+      setSelectedConcerns(concerns);
+      setConcernSeverity(Object.fromEntries(concerns.map((item) => [item, 5])));
+    }
+  }, []);
 
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data }) => {
@@ -198,6 +221,11 @@ export default function QuestionnairePage() {
               Skin Analysis
             </h1>
             <p className="ui-muted mt-1">Answer a few questions so we can match products. This is not a medical diagnosis.</p>
+            {photoNotice ? (
+              <p className="mt-3 rounded-xl border border-[var(--border-soft)] bg-white px-3 py-2 text-sm text-[var(--text-secondary)]">
+                {photoNotice}
+              </p>
+            ) : null}
           </div>
           {!isSubmitting && (
             <span className="text-[var(--rose-primary)] font-semibold text-sm">
