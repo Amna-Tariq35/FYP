@@ -5,8 +5,27 @@ import { NextResponse, type NextRequest } from "next/server";
 /**
  * Next.js 16.1 catches notFound() inside the segment boundary and still
  * responds HTTP 200. These checks run first and return a real 404.
- * A failed lookup falls through so a live row is not hidden by an outage.
+ * A failed or timed-out lookup falls through so a live row is not hidden
+ * by an outage.
  */
+
+const LOOKUP_TIMEOUT_MS = 4000;
+
+function withFailOpen(work: () => Promise<NextResponse>): Promise<NextResponse> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(NextResponse.next()), LOOKUP_TIMEOUT_MS);
+    work().then(
+      (response) => {
+        clearTimeout(timer);
+        resolve(response);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(NextResponse.next());
+      },
+    );
+  });
+}
 
 function lastSegment(pathname: string): string | null {
   const parts = pathname.split("/").filter(Boolean);
@@ -147,9 +166,9 @@ async function skinGuard(request: NextRequest) {
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  if (pathname.startsWith("/products/")) return productGuard(request);
-  if (pathname.startsWith("/looks/")) return lookGuard(request);
-  if (pathname.startsWith("/skin-analysis/results/")) return skinGuard(request);
+  if (pathname.startsWith("/products/")) return withFailOpen(() => productGuard(request));
+  if (pathname.startsWith("/looks/")) return withFailOpen(() => lookGuard(request));
+  if (pathname.startsWith("/skin-analysis/results/")) return withFailOpen(() => skinGuard(request));
   return NextResponse.next();
 }
 
