@@ -37,9 +37,9 @@ export default function CheckoutSteps({ current }: { current: StepKey }) {
                     className={[
                       "h-8 w-8 shrink-0 rounded-full flex items-center justify-center border transition-all",
                       active
-                        ? "bg-[#C06C84] text-white border-transparent shadow-sm shadow-[#C06C84]/30"
+                        ? "bg-[var(--rose-primary)] text-white border-transparent shadow-sm shadow-[var(--rose-primary)]/30"
                         : completed
-                        ? "bg-white text-[#C06C84] border-[#C06C84]"
+                        ? "bg-white text-[var(--rose-primary)] border-[var(--rose-primary)]"
                         : "bg-white text-[var(--text-muted)] border-[var(--border-soft)]",
                     ].join(" ")}
                     aria-hidden="true"

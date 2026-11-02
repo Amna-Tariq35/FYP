@@ -211,7 +211,7 @@ export default function QuestionnairePage() {
   };
 
   return (
-    <div className="min-h-screen bg-[var(--bg-base)] py-12 px-4 sm:px-6 lg:px-8 flex flex-col items-center">
+    <main className="min-h-screen bg-[var(--bg-base)] py-12 px-4 sm:px-6 lg:px-8 flex flex-col items-center">
       {/* HEADER / PROGRESS BAR */}
       <div className="w-full max-w-3xl mb-8">
         <div className="flex justify-between items-end mb-4">
@@ -499,6 +499,6 @@ export default function QuestionnairePage() {
           </>
         )}
       </div>
-    </div>
+    </main>
   );
 }

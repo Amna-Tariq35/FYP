@@ -148,7 +148,7 @@ export default function Navbar() {
           <Link
             href="/cart"
             className="relative rounded-full p-2 text-black/65 hover:bg-white/60 hover:text-black"
-            aria-label="Cart"
+            aria-label={cartCount > 0 ? `Cart ${cartCount}` : "Cart"}
             title="Cart"
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
@@ -172,7 +172,7 @@ export default function Navbar() {
             </svg>
 
             {cartCount > 0 && (
-              <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-[#B65C7A] px-1 text-[11px] font-semibold text-white">
+              <span className="absolute -right-1 -top-1 grid h-5 min-w-5 place-items-center rounded-full bg-[var(--rose-primary)] px-1 text-[11px] font-semibold text-white">
                 {cartCount}
               </span>
             )}

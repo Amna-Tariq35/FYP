@@ -21,7 +21,7 @@ export default function CheckoutShell({
   right,
 }: Props) {
   return (
-    <div className="min-h-screen" style={{ background: "var(--bg-base)" }}>
+    <main className="min-h-screen" style={{ background: "var(--bg-base)" }}>
       <div className="mx-auto max-w-6xl px-4 py-8">
 
         {/* Header */}
@@ -98,6 +98,6 @@ export default function CheckoutShell({
           ) : null}
         </div>
       </div>
-    </div>
+    </main>
   );
 }

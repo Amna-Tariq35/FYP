@@ -51,14 +51,14 @@ export default function SharedLookQuickOpen() {
         <button
           type="button"
           onClick={onOpen}
-          className="shrink-0 rounded-2xl bg-[#B65C7A] px-6 py-3 text-sm font-medium text-white transition hover:bg-[#A94E6C]"
+          className="shrink-0 rounded-2xl bg-[var(--rose-primary)] px-6 py-3 text-sm font-medium text-white transition hover:brightness-95"
         >
           Open look
         </button>
       </div>
 
       {error && (
-        <p className="mt-3 text-[12px] text-[#B65C7A]">{error}</p>
+        <p className="mt-3 text-[12px] text-[var(--rose-primary)]">{error}</p>
       )}
     </section>
   );

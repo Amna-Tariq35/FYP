@@ -41,6 +41,19 @@ test.describe("axe", () => {
         if (path.startsWith("/checkout")) await seedCart(page);
         await page.goto(path);
         await page.locator("body").waitFor();
+        await page
+          .waitForFunction(() => {
+            const headings = Array.from(document.querySelectorAll("h1, h2, p"));
+            return headings.every((el) => {
+              let node: Element | null = el;
+              while (node) {
+                if (Number(getComputedStyle(node).opacity) < 0.99) return false;
+                node = node.parentElement;
+              }
+              return true;
+            });
+          }, undefined, { timeout: 4000 })
+          .catch(() => undefined);
         const results = await new AxeBuilder({ page }).analyze();
         const compact = results.violations.map((violation) => ({
           impact: violation.impact,

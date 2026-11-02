@@ -178,7 +178,7 @@ export default function OrderSummary({
 
         <div className="flex items-center justify-between text-sm">
           <span className="text-[var(--text-secondary)]">Shipping</span>
-          <span className="font-semibold text-emerald-600">
+          <span className="font-semibold text-emerald-700">
             {shippingFee === 0 ? "Free" : formatMoney(shippingFee)}
           </span>
         </div>

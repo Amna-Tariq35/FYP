@@ -3,7 +3,7 @@ import Link from "next/link";
 
 export default function Hero() {
   return (
-    <section className="relative overflow-hidden rounded-3xl">
+    <section aria-label="Introduction" className="relative overflow-hidden rounded-3xl">
       {/* Background image */}
       <div className="absolute inset-0">
         <Image
@@ -33,7 +33,7 @@ export default function Hero() {
           {/* Headline */}
           <h1 className="mt-6 font-serif text-5xl font-semibold leading-[1.08] tracking-tight text-[#1a0e13] sm:text-6xl">
             AR Makeup,{" "}
-            <span className="italic text-[#B65C7A]">beautifully</span>{" "}
+            <span className="italic text-[var(--rose-primary)]">beautifully</span>{" "}
             simple.
           </h1>
 
@@ -46,7 +46,7 @@ export default function Hero() {
           <div className="mt-8 flex flex-wrap gap-3">
             <Link
               href="/products"
-              className="inline-flex items-center justify-center rounded-2xl bg-[#B65C7A] px-6 py-3 text-sm font-medium text-white transition hover:bg-[#A94E6C]"
+              className="inline-flex items-center justify-center rounded-2xl bg-[var(--rose-primary)] px-6 py-3 text-sm font-medium text-white transition hover:brightness-95"
             >
               Browse Products
             </Link>
@@ -58,7 +58,7 @@ export default function Hero() {
             </Link>
           </div>
 
-          <p className="mt-5 text-[11px] tracking-wide text-[#9a7a85]">
+          <p className="mt-5 text-[11px] tracking-wide text-[var(--text-muted)]">
             The full camera is in the Android app.
           </p>
         </div>

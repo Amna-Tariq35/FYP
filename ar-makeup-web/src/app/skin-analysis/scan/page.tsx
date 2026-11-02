@@ -11,6 +11,7 @@ import { Camera, Upload, ShieldCheck, AlertCircle, RefreshCw, ServerCrash } from
 import { useRouter } from "next/navigation";
 
 const CAMERA_INIT_TIMEOUT_MS = 12_000;
+const CAMERA_SLOW_HINT_MS = 6_000;
 
 export default function ScanPage() {
   const router = useRouter();
@@ -21,6 +22,10 @@ export default function ScanPage() {
   const [hasConsent, setHasConsent] = useState(false);
   const [cameraError, setCameraError] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
+  const [permissionGranted, setPermissionGranted] = useState(false);
+  const [stillStarting, setStillStarting] = useState(false);
+  const [cameraTimedOut, setCameraTimedOut] = useState(false);
+  const [cameraAttempt, setCameraAttempt] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStage, setProcessingStage] = useState<string>("");
   const [previewImage, setPreviewImage] = useState<string | null>(null);
@@ -47,10 +52,46 @@ export default function ScanPage() {
   ]);
 
   useEffect(() => {
-    if (!hasConsent || cameraError || cameraReady || previewImage) return;
-    const timer = window.setTimeout(() => setCameraError(true), CAMERA_INIT_TIMEOUT_MS);
-    return () => window.clearTimeout(timer);
-  }, [hasConsent, cameraError, cameraReady, previewImage]);
+    if (!hasConsent || cameraError || permissionGranted || previewImage || cameraTimedOut) return;
+    let cancelled = false;
+
+    const ask = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { facingMode: "user" },
+        });
+        stream.getTracks().forEach((track) => track.stop());
+        if (!cancelled) setPermissionGranted(true);
+      } catch {
+        if (!cancelled) setCameraError(true);
+      }
+    };
+
+    void ask();
+    return () => {
+      cancelled = true;
+    };
+  }, [hasConsent, cameraError, permissionGranted, previewImage, cameraTimedOut, cameraAttempt]);
+
+  useEffect(() => {
+    if (!permissionGranted || cameraError || cameraReady || previewImage || cameraTimedOut) return;
+    const slowTimer = window.setTimeout(() => setStillStarting(true), CAMERA_SLOW_HINT_MS);
+    const failTimer = window.setTimeout(() => setCameraTimedOut(true), CAMERA_INIT_TIMEOUT_MS);
+    return () => {
+      window.clearTimeout(slowTimer);
+      window.clearTimeout(failTimer);
+    };
+  }, [permissionGranted, cameraError, cameraReady, previewImage, cameraTimedOut]);
+
+  const retryCamera = () => {
+    setCameraTimedOut(false);
+    setStillStarting(false);
+    setCameraReady(false);
+    setPermissionGranted(false);
+    setCameraError(false);
+    setCameraAttempt((attempt) => attempt + 1);
+  };
 
   const videoConstraints = {
     width: 1080,
@@ -268,7 +309,7 @@ export default function ScanPage() {
 
   return (
     <div className="ui-container min-h-screen flex flex-col items-center py-8">
-      <div className="w-full max-w-md flex justify-between items-center mb-6">
+      <div className="w-full max-w-md flex justify-between items-center mb-3">
         <h2 className="ui-h2">Face Mesh Scanner</h2>
         <button 
           onClick={() => fileInputRef.current?.click()}
@@ -278,6 +319,19 @@ export default function ScanPage() {
           <Upload size={16} /> Upload Photo
         </button>
       </div>
+
+      {!permissionGranted && !cameraError && !previewImage && !cameraTimedOut ? (
+        <div className="w-full max-w-md mb-4">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="ui-btn-secondary text-xs"
+            disabled={isProcessing}
+          >
+            Skip, upload a photo instead
+          </button>
+        </div>
+      ) : null}
 
       <input 
         type="file" 
@@ -320,17 +374,34 @@ export default function ScanPage() {
               Upload Photo Instead
             </button>
           </div>
+        ) : cameraTimedOut ? (
+          <div className="text-center p-6">
+            <p className="ui-muted mb-4">The camera is taking too long to start.</p>
+            <button type="button" onClick={retryCamera} className="ui-btn">
+              Retry
+            </button>
+          </div>
+        ) : !permissionGranted ? (
+          <p className="ui-muted">Starting camera…</p>
         ) : (
-          <Webcam
-            audio={false}
-            ref={webcamRef}
-            screenshotFormat="image/jpeg"
-            videoConstraints={videoConstraints}
-            mirrored={true}
-            onUserMedia={() => setCameraReady(true)}
-            onUserMediaError={() => setCameraError(true)}
-            className="w-full h-full object-cover rounded-2xl"
-          />
+          <>
+            <Webcam
+              key={cameraAttempt}
+              audio={false}
+              ref={webcamRef}
+              screenshotFormat="image/jpeg"
+              videoConstraints={videoConstraints}
+              mirrored={true}
+              onUserMedia={() => setCameraReady(true)}
+              onUserMediaError={() => setCameraError(true)}
+              className="w-full h-full object-cover rounded-2xl"
+            />
+            {stillStarting && !cameraReady ? (
+              <p className="absolute bottom-4 left-0 right-0 text-center text-sm font-medium text-[var(--text-main)]">
+                Still starting...
+              </p>
+            ) : null}
+          </>
         )}
 
         {isProcessing && (

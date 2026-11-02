@@ -168,7 +168,7 @@ export default function ProductCard({
           </p>
 
           {/* Name */}
-          <h3
+          <h2
             className="mb-2 text-[14.5px] font-semibold leading-snug"
             style={{
               color: "var(--text-main)",
@@ -179,7 +179,7 @@ export default function ProductCard({
             }}
           >
             {product.name}
-          </h3>
+          </h2>
 
           {matchNote && (
             <p className="mb-2 text-[11px] font-medium leading-snug text-green-700">

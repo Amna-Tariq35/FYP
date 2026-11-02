@@ -96,7 +96,7 @@ export default function ProductReviews({ productKey }: { productKey: string }) {
       {loading || loadError ? null : !signedIn ? (
         <p className="mt-5 text-sm text-[var(--text-secondary)]">
           Sign in to review.{" "}
-          <Link href={signInHref} className="font-semibold text-[#C06C84]">
+          <Link href={signInHref} className="font-semibold text-[var(--rose-primary)]">
             Sign in
           </Link>
         </p>
@@ -111,7 +111,7 @@ export default function ProductReviews({ productKey }: { productKey: string }) {
           {[1, 2, 3, 4, 5].map((value) => <button key={value} type="button" onClick={() => setRating(value)} aria-label={`${value} stars`}><Star size={20} className={value <= rating ? "fill-amber-400 text-amber-400" : "text-gray-300"} /></button>)}
         </div>
         <textarea value={body} onChange={(event) => setBody(event.target.value)} maxLength={2000} placeholder="What did you think?" className="mt-3 min-h-24 w-full rounded-xl border border-[var(--border-soft)] p-3 text-sm outline-none focus:border-[#C06C84]" />
-        <button disabled={saving} className="mt-3 rounded-xl bg-[#C06C84] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{saving ? "Saving…" : editingId ? "Update review" : "Post review"}</button>
+        <button disabled={saving} className="mt-3 rounded-xl bg-[var(--rose-primary)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">{saving ? "Saving…" : editingId ? "Update review" : "Post review"}</button>
       </form>
       )}
       <div className="mt-6 space-y-4">
@@ -122,7 +122,7 @@ export default function ProductReviews({ productKey }: { productKey: string }) {
             <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">{review.verified_purchase ? <span className="rounded-full bg-emerald-50 px-2 py-1 font-semibold text-emerald-700">Verified purchase{review.shade_name ? ` · ${review.shade_name}` : ""}</span> : null}<span>{new Date(review.created_at).toLocaleDateString()}</span></div>
           </div>
           {review.body ? <p className="mt-3 text-sm leading-relaxed text-[var(--text-secondary)]">{review.body}</p> : null}
-          {review.is_mine && <div className="mt-3 flex gap-3"><button type="button" onClick={() => { setEditingId(review.id); setRating(review.rating); setBody(review.body); }} className="inline-flex items-center gap-1 text-xs text-[#C06C84]"><Pencil size={13} /> Edit</button><button type="button" onClick={() => void deleteReview(review.id)} className="inline-flex items-center gap-1 text-xs text-red-600"><Trash2 size={13} /> Delete</button></div>}
+          {review.is_mine && <div className="mt-3 flex gap-3"><button type="button" onClick={() => { setEditingId(review.id); setRating(review.rating); setBody(review.body); }} className="inline-flex items-center gap-1 text-xs text-[var(--rose-primary)]"><Pencil size={13} /> Edit</button><button type="button" onClick={() => void deleteReview(review.id)} className="inline-flex items-center gap-1 text-xs text-red-600"><Trash2 size={13} /> Delete</button></div>}
         </article>)}
       </div>
     </section>

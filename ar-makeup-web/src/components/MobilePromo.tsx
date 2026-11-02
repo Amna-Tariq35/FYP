@@ -70,7 +70,7 @@ export default function MobilePromo() {
           font-weight: 600;
           letter-spacing: 0.14em;
           text-transform: uppercase;
-          color: #C06C84;
+          color: var(--rose-primary);
           margin-bottom: 7px;
         }
 
@@ -83,11 +83,11 @@ export default function MobilePromo() {
           margin: 0 0 10px;
           letter-spacing: -0.01em;
         }
-        .promo-title em { font-style: italic; color: #C06C84; }
+        .promo-title em { font-style: italic; color: var(--rose-primary); }
 
         .promo-desc {
           font-size: 12.5px;
-          color: #9a8a8e;
+          color: var(--text-muted);
           line-height: 1.7;
           max-width: 360px;
           margin: 0 0 16px;
@@ -102,7 +102,7 @@ export default function MobilePromo() {
         .promo-chip {
           font-size: 10.5px;
           font-weight: 500;
-          color: #C06C84;
+          color: var(--rose-primary);
           background: rgba(192,108,132,0.07);
           border: 1px solid rgba(192,108,132,0.14);
           padding: 4px 11px;
@@ -153,7 +153,7 @@ export default function MobilePromo() {
 
         .promo-note {
           font-size: 10.5px;
-          color: #c0b0b8;
+          color: var(--text-muted);
           font-weight: 400;
           letter-spacing: 0.03em;
           text-align: right;
@@ -167,14 +167,14 @@ export default function MobilePromo() {
         {/* Left */}
         <div className="promo-left">
           <div className="promo-icon-ring">
-            <Sparkles size={20} color="#C06C84" />
+            <Sparkles size={20} color="var(--rose-primary)" />
           </div>
 
           <div className="promo-text">
             <p className="promo-eyebrow">Mobile App</p>
-            <h3 className="promo-title">
+            <h2 className="promo-title">
               More with Our <em>Mobile App</em>
-            </h3>
+            </h2>
             <p className="promo-desc">
               This web preview includes Lipstick &amp; Blush. The app unlocks
               real‑time AR rendering, skin analysis, and the full product library.

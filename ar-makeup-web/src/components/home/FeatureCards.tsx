@@ -35,7 +35,7 @@ export default function FeatureCards() {
         </div>
         <Link
           href="/products"
-          className="hidden text-xs font-medium tracking-wide text-[#B65C7A] hover:underline sm:inline-flex"
+          className="hidden text-xs font-medium tracking-wide text-[var(--rose-primary)] hover:underline sm:inline-flex"
         >
           View catalog →
         </Link>
@@ -51,13 +51,13 @@ export default function FeatureCards() {
           >
             {/* Icon */}
             <div className="mb-4 inline-flex h-9 w-9 items-center justify-center rounded-xl bg-[#F4EEE8]">
-              <Icon size={16} className="text-[#B65C7A]" strokeWidth={1.5} />
+              <Icon size={16} className="text-[var(--rose-primary)]" strokeWidth={1.5} />
             </div>
 
             {/* Text */}
             <div className="flex items-center justify-between">
               <p className="text-[13.5px] font-medium text-[#1a0e13]">{title}</p>
-              <span className="text-xs text-black/25 transition group-hover:text-[#B65C7A]">
+              <span className="text-xs text-[var(--text-muted)] transition group-hover:text-[var(--rose-primary)]">
                 →
               </span>
             </div>

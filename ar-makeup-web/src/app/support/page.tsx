@@ -34,7 +34,7 @@ const FAQS: { q: string; a: React.ReactNode }[] = [
       <>
         Yes. Saved looks live on your account, so a look created in the app shows
         up under{" "}
-        <Link href="/my-looks" className="text-[#C06C84] underline-offset-2 hover:underline">
+        <Link href="/my-looks" className="text-[var(--rose-primary)] underline-offset-2 hover:underline">
           My Looks
         </Link>{" "}
         as soon as you are signed in. Opening a look from the app carries your
@@ -50,7 +50,7 @@ const FAQS: { q: string; a: React.ReactNode }[] = [
         the routine are saved so product suggestions can use them. Start one from{" "}
         <Link
           href="/skin-analysis"
-          className="text-[#C06C84] underline-offset-2 hover:underline"
+          className="text-[var(--rose-primary)] underline-offset-2 hover:underline"
         >
           Skin Analysis
         </Link>
@@ -70,7 +70,7 @@ const FAQS: { q: string; a: React.ReactNode }[] = [
         Under{" "}
         <Link
           href="/my-orders"
-          className="text-[#C06C84] underline-offset-2 hover:underline"
+          className="text-[var(--rose-primary)] underline-offset-2 hover:underline"
         >
           My Orders
         </Link>
@@ -87,7 +87,7 @@ const FAQS: { q: string; a: React.ReactNode }[] = [
 
 export default function SupportPage() {
   return (
-    <div className="relative min-h-[calc(100vh-72px)] bg-[#FAF7F5]">
+    <main className="relative min-h-[calc(100vh-72px)] bg-[#FAF7F5]">
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
         <div className="absolute -left-24 -top-24 h-80 w-80 rounded-full bg-[#F4C2C2]/30 blur-3xl" />
         <div className="absolute -right-24 top-32 h-80 w-80 rounded-full bg-[#C06C84]/15 blur-3xl" />
@@ -95,7 +95,7 @@ export default function SupportPage() {
 
       <div className="relative mx-auto max-w-3xl px-4 py-14">
         <div className="text-center">
-          <div className="mx-auto inline-flex items-center gap-2 rounded-full border border-[#C06C84]/20 bg-white/70 px-3.5 py-1.5 text-xs text-[#C06C84]/80 shadow-sm backdrop-blur">
+          <div className="mx-auto inline-flex items-center gap-2 rounded-full border border-[var(--rose-primary)]/20 bg-white/70 px-3.5 py-1.5 text-xs text-[var(--rose-primary)] shadow-sm backdrop-blur">
             <span className="h-1.5 w-1.5 rounded-full bg-[#C06C84]" />
             Help Center
           </div>
@@ -151,24 +151,24 @@ export default function SupportPage() {
           </p>
           <a
             href="mailto:support@armakeup.app?subject=Support%20request"
-            className="mt-5 inline-flex items-center justify-center rounded-xl bg-[#C06C84] px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[#a85a70]"
+            className="mt-5 inline-flex items-center justify-center rounded-xl bg-[var(--rose-primary)] px-5 py-2.5 text-sm font-medium text-white transition-colors hover:brightness-95"
           >
             Email support
           </a>
         </div>
 
-        <div className="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-xs text-black/40">
-          <Link href="/products" className="transition-colors hover:text-[#C06C84]">
+        <div className="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-xs text-[var(--text-muted)]">
+          <Link href="/products" className="transition-colors hover:text-[var(--rose-primary)]">
             Shop products
           </Link>
-          <Link href="/my-orders" className="transition-colors hover:text-[#C06C84]">
+          <Link href="/my-orders" className="transition-colors hover:text-[var(--rose-primary)]">
             My orders
           </Link>
-          <Link href="/my-looks" className="transition-colors hover:text-[#C06C84]">
+          <Link href="/my-looks" className="transition-colors hover:text-[var(--rose-primary)]">
             My looks
           </Link>
         </div>
       </div>
-    </div>
+    </main>
   );
 }

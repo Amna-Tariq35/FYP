@@ -23,6 +23,7 @@ import { useMakeupBag } from "../../hooks/useMakeupBag";
 // double-mount cycles or fast navigation.
 
 const CAMERA_INIT_TIMEOUT_MS = 12_000;
+const CAMERA_SLOW_HINT_MS = 6_000;
 
 let deepARInitializePromise: Promise<DeepAR> | null = null;
 let deepARActiveInstance: DeepAR | null = null;
@@ -107,6 +108,8 @@ export default function TryOnPage() {
   );
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [cameraAttempt, setCameraAttempt] = useState(0);
+  const [stillStarting, setStillStarting] = useState(false);
+  const [awaitingPermission, setAwaitingPermission] = useState(false);
 
   const [products, setProducts] = useState<MakeupProduct[]>([]);
   const [shades, setShades] = useState<ProductShade[]>([]);
@@ -175,32 +178,35 @@ export default function TryOnPage() {
       deepARRelease(instance);
     };
 
+    const timers = { slow: 0, fail: 0 };
+    const clearTimers = () => {
+      window.clearTimeout(timers.slow);
+      window.clearTimeout(timers.fail);
+    };
+
     const showFailure = () => {
       if (!isActive) return;
+      clearTimers();
       setDeepARInstance(null);
+      setStillStarting(false);
+      setAwaitingPermission(false);
       setError(
         "We couldn't start the camera. You can still browse shades here, or look through the catalog."
       );
       setIsInitializingAR(false);
     };
 
-    const timer = window.setTimeout(() => {
-      showFailure();
-      releaseOnce();
-    }, CAMERA_INIT_TIMEOUT_MS);
-
     const initializeDeepAR = async () => {
       const canvas = canvasRef.current;
       if (!canvas) {
-        window.clearTimeout(timer);
         showFailure();
         return;
       }
       setIsInitializingAR(true);
+      setStillStarting(false);
       setPreviewUnavailable(false);
       const licenseKey = process.env.NEXT_PUBLIC_DEEPAR_LICENSE_KEY?.trim() ?? "";
       if (!licenseKey) {
-        window.clearTimeout(timer);
         if (!isActive) return;
         setDeepARInstance(null);
         setError(null);
@@ -208,17 +214,43 @@ export default function TryOnPage() {
         setIsInitializingAR(false);
         return;
       }
+
+      if (!isActive) return;
+      setAwaitingPermission(true);
+      let probe: MediaStream;
+      try {
+        probe = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { facingMode: "user" },
+        });
+      } catch (err) {
+        console.error("Camera permission error:", err);
+        showFailure();
+        return;
+      }
+      probe.getTracks().forEach((track) => track.stop());
+      if (!isActive) return;
+      setAwaitingPermission(false);
+
+      timers.slow = window.setTimeout(() => {
+        if (isActive) setStillStarting(true);
+      }, CAMERA_SLOW_HINT_MS);
+      timers.fail = window.setTimeout(() => {
+        showFailure();
+        releaseOnce();
+      }, CAMERA_INIT_TIMEOUT_MS);
+
       try {
         instance = await deepARAcquire(canvas, licenseKey);
-        window.clearTimeout(timer);
+        clearTimers();
         if (!isActive || released) {
           releaseOnce();
           return;
         }
+        setStillStarting(false);
         setDeepARInstance(instance);
         setIsInitializingAR(false);
       } catch (err) {
-        window.clearTimeout(timer);
         console.error("DeepAR initialization error:", err);
         showFailure();
         releaseOnce();
@@ -228,9 +260,11 @@ export default function TryOnPage() {
     void initializeDeepAR();
     return () => {
       isActive = false;
-      window.clearTimeout(timer);
+      clearTimers();
       releaseOnce();
       setDeepARInstance(null);
+      setStillStarting(false);
+      setAwaitingPermission(false);
     };
   }, [cameraAttempt, cameraRequested]);
 
@@ -326,17 +360,29 @@ export default function TryOnPage() {
       return;
     }
     setError(null);
+    setStillStarting(false);
     setPreviewUnavailable(false);
+    setAwaitingPermission(true);
     setIsInitializingAR(true);
     setCameraRequested(true);
   };
 
   const retryCamera = () => {
     setError(null);
+    setStillStarting(false);
     setPreviewUnavailable(false);
+    setAwaitingPermission(true);
     setIsInitializingAR(true);
     setCameraRequested(true);
     setCameraAttempt((attempt) => attempt + 1);
+  };
+
+  const browseWithoutCamera = () => {
+    setError(null);
+    setStillStarting(false);
+    setAwaitingPermission(false);
+    setIsInitializingAR(false);
+    setCameraRequested(false);
   };
 
   const handleSaveToBag = async (category: MakeupCategory) => {
@@ -452,7 +498,7 @@ export default function TryOnPage() {
     <>
       <style>{pageStyles}</style>
 
-      <div className="tryon-root">
+      <main className="tryon-root">
         <div className="bg-blob blob-1" />
         <div className="bg-blob blob-2" />
 
@@ -463,7 +509,7 @@ export default function TryOnPage() {
               Lipstick and blush live preview
             </h1>
             <p className="page-subtitle">
-              <Sparkles size={13} style={{ color: "#C06C84" }} />
+              <Sparkles size={13} style={{ color: "var(--rose-primary)" }} />
               The full live AR experience is in the Android app.
             </p>
           </div>
@@ -478,7 +524,7 @@ export default function TryOnPage() {
                   <p style={{ fontWeight: 600, color: "#1a1a1a", marginBottom: 6 }}>
                     Camera is off
                   </p>
-                  <p style={{ fontSize: 13, color: "#9a8f8f", marginBottom: 4 }}>
+                  <p style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 4 }}>
                     Shades stay available. Start the camera when you want a live preview.
                   </p>
                   <button type="button" className="camera-retry" onClick={startCamera}>
@@ -488,8 +534,14 @@ export default function TryOnPage() {
               )}
               {isInitializingAR && (
                 <div className="camera-overlay-state">
-                  <Loader2 size={36} style={{ color: "#C06C84" }} className="spin" />
+                  <Loader2 size={36} style={{ color: "var(--rose-primary)" }} className="spin" />
                   <p>Starting Camera…</p>
+                  {stillStarting ? <p>Still starting...</p> : null}
+                  {awaitingPermission ? (
+                    <button type="button" className="camera-escape" onClick={browseWithoutCamera}>
+                      Browse shades without camera
+                    </button>
+                  ) : null}
                 </div>
               )}
               {previewUnavailable && !error && (
@@ -498,7 +550,7 @@ export default function TryOnPage() {
                   <p style={{ fontWeight: 600, color: "#1a1a1a", marginBottom: 6 }}>
                     Preview unavailable
                   </p>
-                  <p style={{ fontSize: 13, color: "#9a8f8f" }}>
+                  <p style={{ fontSize: 13, color: "var(--text-muted)" }}>
                     The live preview is unavailable right now. You can still browse shades here.
                   </p>
                   <Link href="/products" className="camera-products-link">
@@ -512,9 +564,9 @@ export default function TryOnPage() {
                   <p style={{ fontWeight: 600, color: "#1a1a1a", marginBottom: 6 }}>
                     Camera unavailable
                   </p>
-                  <p style={{ fontSize: 13, color: "#9a8f8f" }}>{error}</p>
+                  <p style={{ fontSize: 13, color: "var(--text-muted)" }}>{error}</p>
                   <button type="button" className="camera-retry" onClick={retryCamera}>
-                    Try again
+                    Retry
                   </button>
                   <Link href="/products" className="camera-products-link">
                     Browse products
@@ -550,7 +602,7 @@ export default function TryOnPage() {
 
               {isLoadingData ? (
                 <div className="loading-controls">
-                  <Loader2 size={28} style={{ color: "#C06C84" }} className="spin" />
+                  <Loader2 size={28} style={{ color: "var(--rose-primary)" }} className="spin" />
                 </div>
               ) : catalogError ? (
                 <p className="catalog-error">{catalogError}</p>
@@ -579,7 +631,7 @@ export default function TryOnPage() {
                         ))}
                       </select>
                     ) : (
-                      <p style={{ fontSize: 13, color: "#b0a0a8" }}>
+                      <p style={{ fontSize: 13, color: "var(--text-muted)" }}>
                         No {activeCategory} products are available.
                       </p>
                     )}
@@ -618,7 +670,7 @@ export default function TryOnPage() {
                         })}
                       </div>
                     ) : (
-                      <p style={{ fontSize: 13, color: "#b0a0a8" }}>
+                      <p style={{ fontSize: 13, color: "var(--text-muted)" }}>
                         No shades available.
                       </p>
                     )}
@@ -741,7 +793,7 @@ export default function TryOnPage() {
             <MobilePromo />
           </div>
         </div>
-      </div>
+      </main>
     </>
   );
 }
@@ -789,10 +841,10 @@ const pageStyles = `
     letter-spacing: -0.01em;
     margin: 0 0 6px;
   }
-  .page-title em { font-style: italic; color: #C06C84; }
+  .page-title em { font-style: italic; color: var(--rose-primary); }
   .page-subtitle {
     font-size: 14px;
-    color: #9a8f8f;
+    color: var(--text-muted);
     font-weight: 400;
     letter-spacing: 0.02em;
     display: flex;
@@ -833,7 +885,7 @@ const pageStyles = `
     z-index: 10;
     gap: 12px;
   }
-  .camera-overlay-state p { font-size: 13px; color: #9a8f8f; font-weight: 500; letter-spacing: 0.04em; }
+  .camera-overlay-state p { font-size: 13px; color: var(--text-muted); font-weight: 500; letter-spacing: 0.04em; }
 
   .live-badge {
     position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
@@ -897,13 +949,13 @@ const pageStyles = `
     border-radius: 100px;
     cursor: pointer;
     transition: all 0.25s ease;
-    color: #9a8f8f;
+    color: var(--text-muted);
     letter-spacing: 0.04em;
     position: relative; z-index: 1;
   }
   .tab-btn.active {
     background: #fff;
-    color: #C06C84;
+    color: var(--rose-primary);
     box-shadow: 0 2px 12px rgba(0,0,0,0.08);
   }
 
@@ -913,7 +965,7 @@ const pageStyles = `
     font-weight: 600;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: #b0a0a8;
+    color: var(--text-muted);
     margin-bottom: 16px;
   }
 
@@ -922,13 +974,13 @@ const pageStyles = `
   .shades-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
   .clear-btn {
     display: flex; align-items: center; gap: 4px;
-    font-size: 12px; color: #b0a0a8;
+    font-size: 12px; color: var(--text-muted);
     background: none; border: none; cursor: pointer;
     transition: color 0.2s;
     font-family: 'DM Sans', sans-serif;
     padding: 0;
   }
-  .clear-btn:hover { color: #C06C84; }
+  .clear-btn:hover { color: var(--rose-primary); }
 
   .shades-grid {
     display: grid;
@@ -960,7 +1012,7 @@ const pageStyles = `
     flex-shrink: 0;
   }
   .shade-item.selected .shade-swatch {
-    border-color: #C06C84;
+    border-color: var(--rose-primary);
     box-shadow: 0 0 0 3px rgba(192,108,132,0.2), 0 2px 8px rgba(0,0,0,0.15);
   }
 
@@ -969,14 +1021,14 @@ const pageStyles = `
     font-weight: 500;
     text-align: center;
     line-height: 1.3;
-    color: #9a8f8f;
+    color: var(--text-muted);
     max-width: 44px;
     overflow: hidden;
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
   }
-  .shade-item.selected .shade-name { color: #C06C84; }
+  .shade-item.selected .shade-name { color: var(--rose-primary); }
 
   /* Intensity slider */
   .intensity-section { margin-bottom: 24px; }
@@ -986,7 +1038,7 @@ const pageStyles = `
   }
   .intensity-value {
     font-size: 12px; font-weight: 600;
-    color: #C06C84;
+    color: var(--rose-primary);
     background: rgba(192,108,132,0.08);
     padding: 3px 10px; border-radius: 100px;
   }
@@ -1000,7 +1052,7 @@ const pageStyles = `
   .slider-fill {
     position: absolute;
     left: 0; top: 0; bottom: 0;
-    background: linear-gradient(to right, #e8b4c0, #C06C84);
+    background: linear-gradient(to right, #e8b4c0, var(--rose-primary));
     border-radius: 100px;
     pointer-events: none;
     transition: width 0.05s;
@@ -1026,7 +1078,7 @@ const pageStyles = `
   .shop-section { display: flex; flex-direction: column; flex: 1; }
   .empty-state {
     text-align: center; padding: 24px 0;
-    color: #b0a0a8; font-size: 13px; line-height: 1.6;
+    color: var(--text-muted); font-size: 13px; line-height: 1.6;
   }
   .empty-state-icon { font-size: 28px; margin-bottom: 8px; }
 
@@ -1046,13 +1098,13 @@ const pageStyles = `
     flex-shrink: 0;
   }
   .product-info { flex: 1; min-width: 0; }
-  .product-brand { font-size: 10px; color: #b0a0a8; font-weight: 500; letter-spacing: 0.04em; }
+  .product-brand { font-size: 10px; color: var(--text-muted); font-weight: 500; letter-spacing: 0.04em; }
   .product-name {
     font-size: 13px; font-weight: 600; color: #1a1a1a;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     margin: 1px 0;
   }
-  .product-shade-name { font-size: 11px; color: #C06C84; font-weight: 500; }
+  .product-shade-name { font-size: 11px; color: var(--rose-primary); font-weight: 500; }
   .product-right { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex-shrink: 0; }
   .product-select {
     width: 100%;
@@ -1077,7 +1129,7 @@ const pageStyles = `
     margin-top: 14px;
     border: 0;
     border-radius: 999px;
-    background: #C06C84;
+    background: var(--rose-primary);
     color: #fff;
     font-size: 13px;
     font-weight: 600;
@@ -1087,13 +1139,24 @@ const pageStyles = `
   .camera-products-link {
     font-size: 13px;
     font-weight: 600;
-    color: #C06C84;
+    color: var(--rose-primary);
     text-decoration: underline;
+  }
+  .camera-escape {
+    margin-top: 4px;
+    border: 0;
+    background: transparent;
+    color: var(--rose-primary);
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: underline;
+    cursor: pointer;
+    padding: 4px 8px;
   }
   .save-bag-btn {
     border: 1px solid rgba(192,108,132,0.35);
     background: #fff;
-    color: #C06C84;
+    color: var(--rose-primary);
     border-radius: 999px;
     font-size: 11px;
     font-weight: 600;
@@ -1119,7 +1182,7 @@ const pageStyles = `
   .save-look-btn {
     width: 100%;
     background: #fff;
-    color: #C06C84;
+    color: var(--rose-primary);
     border: 1.5px solid rgba(192,108,132,0.45);
     padding: 12px;
     border-radius: 16px;
@@ -1133,7 +1196,7 @@ const pageStyles = `
   }
   .add-all-btn {
     width: 100%;
-    background: linear-gradient(135deg, #C06C84 0%, #a85870 100%);
+    background: linear-gradient(135deg, var(--rose-primary) 0%, #a85870 100%);
     color: #fff;
     border: none;
     padding: 16px;

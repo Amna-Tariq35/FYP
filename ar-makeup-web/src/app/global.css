@@ -4,13 +4,13 @@
    FYP Rose Theme (Global)
    ========================= */
 :root{
-  --rose-primary:#C06C84;        /* buttons, active links */
+  --rose-primary:#9A4A64;        /* buttons, active links */
   --rose-soft:#F4C2C2;           /* soft highlights */
   --bg-base:#FAF7F5;             /* page background */
   --bg-section:#FFFFFF;          /* cards/sections */
   --text-main:#1F1F1F;
   --text-secondary:#2A2A2A;
-  --text-muted:#8A8A8A;
+  --text-muted:#6E6560;
   --border-soft:rgba(0,0,0,0.05);
 }
 

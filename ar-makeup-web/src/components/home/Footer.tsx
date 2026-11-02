@@ -15,7 +15,7 @@ export default function Footer() {
                 AR Makeup
               </span>
             </div>
-            <p className="mt-4 max-w-[280px] text-xs font-light leading-6 text-[#6a4a55]">
+            <p className="mt-4 max-w-[280px] text-xs font-light leading-6 text-[var(--text-muted)]">
               A virtual makeup try-on web experience for product discovery,
               saved looks, and shareable results — built as a Final Year Project.
             </p>
@@ -35,7 +35,7 @@ export default function Footer() {
                 <Link
                   key={x.label}
                   href={x.href}
-                  className="text-xs font-light text-[#6a4a55] hover:text-[#B65C7A]"
+                  className="text-xs font-light text-[var(--text-muted)] hover:text-[var(--rose-primary)]"
                 >
                   {x.label}
                 </Link>
@@ -65,14 +65,14 @@ export default function Footer() {
 
         {/* Bottom bar */}
         <div className="mt-10 flex flex-col items-start justify-between gap-3 border-t border-black/8 pt-6 sm:flex-row sm:items-center">
-          <p className="text-[11px] text-[#9a7a85]">
+          <p className="text-[11px] text-[var(--text-muted)]">
             © {new Date().getFullYear()} AR Makeup. All rights reserved.
           </p>
           <div className="flex gap-5">
-            <Link href="/privacy" className="text-[11px] text-[#9a7a85] hover:text-[#B65C7A]">
+            <Link href="/privacy" className="text-[11px] text-[var(--text-muted)] hover:text-[var(--rose-primary)]">
               Privacy
             </Link>
-            <Link href="/terms" className="text-[11px] text-[#9a7a85] hover:text-[#B65C7A]">
+            <Link href="/terms" className="text-[11px] text-[var(--text-muted)] hover:text-[var(--rose-primary)]">
               Terms
             </Link>
           </div>
