@@ -1,8 +1,5 @@
 import type { UIMessage } from "ai";
-import { getCatalogPage, getShadesByProductKey } from "@/src/lib/catalog/queries";
-import { defaultCatalogQuery, normalizeCatalogQuery } from "@/src/lib/catalog/list-contract";
-import { sanitizeSearch } from "@/src/lib/catalog/listing-constraints";
-import type { MakeupProduct } from "@/src/types/catalog";
+import { searchChatProducts, type ChatSearchProduct } from "@/src/lib/chat/catalog-search";
 
 export const CHAT_CATALOG_CARD_LIMIT = 4;
 
@@ -41,62 +38,40 @@ export function lastUserText(messages: UIMessage[]): string {
   return "";
 }
 
-function skinTypeLabel(value: MakeupProduct["skin_type"]): string | undefined {
-  if (Array.isArray(value)) {
-    const joined = value.map((item) => String(item).trim()).filter(Boolean).join(", ");
-    return joined || undefined;
-  }
-  if (typeof value === "string" && value.trim()) return value.trim();
-  return undefined;
-}
-
-/** In-stock catalog matches for the shopper's last message. Empty when the text cannot be searched. */
-export async function searchCatalogCards(text: string): Promise<ChatCatalogCard[]> {
-  const search = sanitizeSearch(text);
-  if (!search) return [];
-
-  const page = await getCatalogPage(
-    normalizeCatalogQuery({
-      ...defaultCatalogQuery(),
-      search,
-      inStock: true,
-    }),
-  );
-
-  const products = page.products
-    .filter((product) => product.stock_quantity > 0 && product.product_key)
-    .slice(0, CHAT_CATALOG_CARD_LIMIT);
-
-  return Promise.all(products.map(toCard));
-}
-
-async function toCard(product: MakeupProduct): Promise<ChatCatalogCard> {
-  let shades: ChatCatalogShade[] = [];
-  try {
-    const rows = await getShadesByProductKey(product.product_key);
-    shades = rows
-      .filter((shade) => shade.shade_key && shade.shade_name)
-      .map((shade) => ({
-        id: shade.shade_key,
-        shade_key: shade.shade_key,
+function cardShades(product: ChatSearchProduct): ChatCatalogShade[] {
+  return (product.product_shades ?? []).flatMap((shade) => {
+    const shadeKey = shade.shade_key || shade.id;
+    if (!shadeKey || !shade.shade_name) return [];
+    return [
+      {
+        id: shadeKey,
+        shade_key: shadeKey,
         shade_name: shade.shade_name,
         ...(shade.shade_hex ? { shade_hex: shade.shade_hex } : {}),
-      }));
-  } catch {
-    shades = [];
-  }
+      },
+    ];
+  });
+}
 
-  const skinType = skinTypeLabel(product.skin_type);
+function toCard(product: ChatSearchProduct): ChatCatalogCard {
+  const shades = cardShades(product);
   return {
     id: product.id,
     product_key: product.product_key,
     name: product.name,
-    brand: product.brand?.trim() || "",
-    category: product.category?.trim() || "",
-    price: typeof product.price === "number" ? product.price : 0,
+    brand: product.brand.trim(),
+    category: product.category.trim(),
+    price: product.price,
     ...(product.image_url ? { image_url: product.image_url } : {}),
     ...(product.finish ? { finish: product.finish } : {}),
-    ...(skinType ? { skin_type: skinType } : {}),
+    ...(product.skin_type ? { skin_type: product.skin_type } : {}),
     ...(shades.length > 0 ? { product_shades: shades } : {}),
   };
+}
+
+/** In-stock catalog matches for the shopper's last message. Empty when nothing in the catalog fits. */
+export async function searchCatalogCards(text: string): Promise<ChatCatalogCard[]> {
+  const found = await searchChatProducts({ text });
+  if (!found.ok) return [];
+  return found.products.slice(0, CHAT_CATALOG_CARD_LIMIT).map(toCard);
 }

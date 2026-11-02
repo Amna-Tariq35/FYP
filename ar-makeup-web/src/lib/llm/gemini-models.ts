@@ -12,7 +12,7 @@ export const DEFAULT_ROUTINE_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash-lit
 
 export const DEFAULT_VISION_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash-lite"] as const;
 
-export const DEFAULT_CHAT_MODELS = ["gemini-3.8-flash", "gemini-3.5-flash-lite"] as const;
+export const DEFAULT_CHAT_MODELS = ["gemini-3.5-flash-lite", "gemini-3.8-flash"] as const;
 
 export type GeminiKeyOwner = "chat" | "routine";
 

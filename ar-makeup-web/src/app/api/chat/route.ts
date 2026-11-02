@@ -13,9 +13,22 @@ import { z } from "zod";
 import { createSupabaseServerClient } from "@/src/lib/supabase/server";
 import { clientKey, rateLimit } from "@/src/lib/skin-analysis/rate-limit";
 import { loadShopperMatchProfile } from "@/src/lib/catalog/product-profile-matching";
-import { asStringList } from "@/src/lib/skin-analysis/product-shape";
 import { searchCatalogCards, lastUserText, type ChatCatalogCard } from "@/src/lib/chat/catalog-fallback";
-import { CHAT_FAILURE_MESSAGE, CHAT_WAIT_MESSAGE, friendlyChatError } from "@/src/lib/chat/public-error";
+import {
+  allowsModelCategory,
+  CHAT_CATEGORY_LIST,
+  composeShopperText,
+  searchChatProducts,
+  shouldAnswerWithoutModel,
+  type ChatRelaxation,
+} from "@/src/lib/chat/catalog-search";
+import {
+  CHAT_FAILURE_MESSAGE,
+  CHAT_NO_MATCH_SENTENCE,
+  CHAT_WAIT_MESSAGE,
+  friendlyChatError,
+  isPlaceholderAssistantText,
+} from "@/src/lib/chat/public-error";
 import {
   CHAT_FIRST_TOKEN_MS,
   raceChatProviders,
@@ -36,17 +49,23 @@ export const maxDuration = 30;
 // ─── Constants ────────────────────────────────────────────────────────────────
 const MAX_MESSAGES_IN_CONTEXT = 8;
 const MAX_MESSAGE_CHARS = 2_000;
-const SUPABASE_RESULTS_LIMIT = 5;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function trimMessages(messages: UIMessage[]): UIMessage[] {
   const recent = messages.slice(-MAX_MESSAGES_IN_CONTEXT);
-  return recent.map((message) => ({
-    ...message,
-    parts: message.parts.map((part) =>
-      part.type === "text" ? { ...part, text: part.text.slice(0, MAX_MESSAGE_CHARS) } : part,
-    ),
-  }));
+  const trimmed: UIMessage[] = [];
+  for (const message of recent) {
+    const parts: UIMessage["parts"] = [];
+    for (const part of message.parts) {
+      if (part.type !== "text") continue;
+      const text = part.text.slice(0, MAX_MESSAGE_CHARS);
+      if (!text.trim()) continue;
+      parts.push({ type: "text", text });
+    }
+    if (parts.length === 0) continue;
+    trimmed.push({ ...message, parts });
+  }
+  return trimmed;
 }
 
 function groqChatModel() {
@@ -107,6 +126,18 @@ async function catalogFallbackReply(messages: UIMessage[]): Promise<Response> {
   }
 }
 
+async function directNoMatch(userText: string): Promise<Response | null> {
+  if (!shouldAnswerWithoutModel(userText)) return null;
+  try {
+    const found = await searchChatProducts({ text: userText });
+    if (!found.ok || found.products.length > 0) return null;
+    return localChatReply(CHAT_NO_MATCH_SENTENCE, []);
+  } catch {
+    console.error("[chat] catalog lookup failed");
+    return null;
+  }
+}
+
 function asCard(value: unknown): ChatCatalogCard | null {
   if (!value || typeof value !== "object") return null;
   const row = value as Record<string, unknown>;
@@ -141,7 +172,7 @@ function withCatalogProducts(error: unknown, products: ChatCatalogCard[] | null)
   return error;
 }
 
-type ProbePart = { type: string; error?: unknown; output?: unknown };
+type ProbePart = { type: string; text?: string; error?: unknown; output?: unknown };
 
 function keepStreamMoving(iterator: AsyncIterator<ProbePart>) {
   void (async () => {
@@ -186,6 +217,10 @@ async function nextProbePart(
   }
 }
 
+function emptyAnswer(products: ChatCatalogCard[] | null) {
+  return withCatalogProducts(new Error("empty model output"), products);
+}
+
 async function readUntilOutput(
   result: { fullStream: AsyncIterable<ProbePart> },
   signal: AbortSignal,
@@ -193,66 +228,175 @@ async function readUntilOutput(
 ) {
   const iterator = result.fullStream[Symbol.asyncIterator]();
   const firstToken = AbortSignal.timeout(Math.min(CHAT_FIRST_TOKEN_MS, 10_000));
+  const idle = new AbortController();
   let products: ChatCatalogCard[] | null = null;
+  let text = "";
+  let awaitingTool = false;
+  let sawActivity = false;
+
+  const accept = () => {
+    if (isPlaceholderAssistantText(text)) return false;
+    keepStreamMoving(iterator);
+    return true;
+  };
+
   while (true) {
-    const next = await nextProbePart(iterator, signal, firstToken);
+    const next = await nextProbePart(iterator, signal, sawActivity ? idle.signal : firstToken);
     if (next.done) {
-      if (products) return products;
-      throw new Error("empty model output");
+      if (accept()) return products;
+      throw emptyAnswer(products);
     }
     const part = next.value;
-    if (part.type === "tool-result") {
+    if (part.type === "text-delta") {
+      text += part.text ?? "";
+      sawActivity = true;
       onActivity();
+    } else if (part.type === "reasoning-delta") {
+      sawActivity = true;
+      onActivity();
+    } else if (
+      part.type === "tool-input-start" ||
+      part.type === "tool-input-delta" ||
+      part.type === "tool-call"
+    ) {
+      awaitingTool = true;
+      sawActivity = true;
+      onActivity();
+    } else if (part.type === "tool-result") {
+      awaitingTool = false;
       const found = cardsFromToolOutput(part.output);
       if (found) products = found;
-      keepStreamMoving(iterator);
-      return products;
-    }
-    if (
-      part.type === "text-delta" ||
-      part.type === "tool-call" ||
-      part.type === "tool-input-start" ||
-      part.type === "tool-input-delta"
-    ) {
+      sawActivity = true;
       onActivity();
-      keepStreamMoving(iterator);
-      return products;
-    }
-    if (part.type === "error") {
+    } else if (part.type === "tool-error") {
+      awaitingTool = false;
+      sawActivity = true;
+      onActivity();
+    } else if (part.type === "error") {
       const error = part.error instanceof Error ? part.error : new Error("provider failed");
       throw withCatalogProducts(error, products);
     }
+
+    if (part.type === "finish" || part.type === "abort") {
+      if (accept()) return products;
+      throw emptyAnswer(products);
+    }
+    if (!awaitingTool && accept()) return products;
   }
 }
 
-function preferScore(
-  row: { finish?: string | null; skin_type?: unknown },
-  skinType?: string,
-  finish?: string,
-) {
-  let score = 0;
-  if (finish && typeof row.finish === "string" && row.finish.trim().toLowerCase() === finish.trim().toLowerCase()) {
-    score += 2;
-  }
-  if (
-    skinType &&
-    asStringList(row.skin_type).some((value) => value.toLowerCase() === skinType.trim().toLowerCase())
-  ) {
-    score += 2;
-  }
-  return score;
+const RELAXATION_FLAGS = new Set<ChatRelaxation>(["skin", "price", "brand"]);
+
+function asRelaxations(value: unknown): ChatRelaxation[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is ChatRelaxation => typeof item === "string" && RELAXATION_FLAGS.has(item as ChatRelaxation));
+}
+
+function toolFacts(output: unknown): { note: string; relaxed: ChatRelaxation[]; noMatch: boolean } {
+  if (!output || typeof output !== "object") return { note: "", relaxed: [], noMatch: false };
+  const record = output as Record<string, unknown>;
+  const products = Array.isArray(record.products) ? record.products : null;
+  return {
+    note: typeof record.note === "string" ? record.note : "",
+    relaxed: asRelaxations(record.relaxed),
+    noMatch: record.success === true && products?.length === 0 && record.catalogHref === "/products",
+  };
+}
+
+function rewriteHonestResponse(response: Response): Response {
+  if (!response.body) return response;
+  let carry = "";
+  let text = "";
+  let note = "";
+  let relaxed: ChatRelaxation[] = [];
+  let noMatch = false;
+  let textId = "reply";
+  let flushed = false;
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+
+  const honestEvents = (): string => {
+    if (flushed) return "";
+    flushed = true;
+    const finalText = composeShopperText({ text, note, relaxed, noMatch });
+    if (!finalText) return "";
+    const id = textId;
+    return (
+      `data: ${JSON.stringify({ type: "text-start", id })}\n\n` +
+      `data: ${JSON.stringify({ type: "text-delta", id, delta: finalText })}\n\n` +
+      `data: ${JSON.stringify({ type: "text-end", id })}\n\n`
+    );
+  };
+
+  const onEvent = (event: string): string => {
+    const line = event.split("\n").find((item) => item.startsWith("data:"));
+    if (!line) return `${event}\n\n`;
+    const payload = line.slice(5).trim();
+    if (payload === "[DONE]") return `${honestEvents()}${event}\n\n`;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      return `${event}\n\n`;
+    }
+    if (!parsed || typeof parsed !== "object" || !("type" in parsed)) return `${event}\n\n`;
+    const chunk = parsed as { type?: unknown; id?: unknown; delta?: unknown; output?: unknown };
+    if (chunk.type === "text-start" && typeof chunk.id === "string") {
+      textId = chunk.id;
+      return "";
+    }
+    if (chunk.type === "text-delta") {
+      text += typeof chunk.delta === "string" ? chunk.delta : "";
+      return "";
+    }
+    if (chunk.type === "text-end") return "";
+    if (chunk.type === "tool-output-available") {
+      const facts = toolFacts(chunk.output);
+      note = facts.note;
+      relaxed = facts.relaxed;
+      noMatch = facts.noMatch;
+      return `${event}\n\n`;
+    }
+    if (chunk.type === "finish") return `${honestEvents()}${event}\n\n`;
+    return `${event}\n\n`;
+  };
+
+  const transform = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      carry += decoder.decode(chunk, { stream: true });
+      const parts = carry.split("\n\n");
+      carry = parts.pop() ?? "";
+      let out = "";
+      for (const part of parts) {
+        if (part.trim()) out += onEvent(part);
+      }
+      if (out) controller.enqueue(encoder.encode(out));
+    },
+    flush(controller) {
+      carry += decoder.decode();
+      let out = carry.trim() ? onEvent(carry) : "";
+      out += honestEvents();
+      if (out) controller.enqueue(encoder.encode(out));
+    },
+  });
+
+  return new Response(response.body.pipeThrough(transform), {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
 
 // ─── SINGLE SMART TOOL: For Both Makeup & Skincare ───────────────────────────
-const searchProducts = tool({
-  description:
-    "Fetch makeup AND skincare products from the unified database catalog based on user preferences.",
+function buildSearchTool(userText: string) {
+  return tool({
+  description: `Fetch in-stock makeup and skincare from this store. category must be one of: ${CHAT_CATEGORY_LIST}. Everyday words are mapped (lip, lipstick, moisturiser, moisturizer, sunscreen, SPF, lip gloss, foundation, blush). Prices are US dollars, shown as $12.00, the same as product cards and the cart. A number the shopper types is already in dollars. Do not convert currency. If a skin type, price, or brand would hide every in-stock match, drop skin type, then price, then brand. The result then includes relaxed, such as ["price"], and a note. You must say that note. Never present those products as meeting the dropped constraint.`,
   inputSchema: z.object({
     category: z
       .string()
       .optional()
       .describe(
-        "e.g. foundation, lipstick, cleanser, moisturizer, sunscreen, eye cream"
+        `One of: ${CHAT_CATEGORY_LIST}. lip and lipstick -> lipstick, lip gloss -> lip_gloss, moisturiser -> moisturizer, SPF -> sunscreen.`
       ),
     skinType: z
       .string()
@@ -277,6 +421,12 @@ const searchProducts = tool({
       .string()
       .optional()
       .describe("e.g. matte, dewy, satin. Prefer products with this finish."),
+    brand: z.string().optional().describe("Brand name, only when the shopper names one."),
+    minPrice: z.union([z.number(), z.string()]).optional().describe("Minimum price in US dollars, if the shopper gave one."),
+    maxPrice: z
+      .union([z.number(), z.string()])
+      .optional()
+      .describe("Maximum price in US dollars. Use 1 when they say under 1. Do not convert."),
   }),
   execute: async ({
     category,
@@ -286,55 +436,46 @@ const searchProducts = tool({
     colorFamily,
     undertone,
     finish,
+    brand,
+    minPrice,
+    maxPrice,
   }) => {
     try {
-      const supabase = await createSupabaseServerClient();
-      const stored = await loadShopperMatchProfile(supabase);
-      const preferredSkin = skinType || stored?.skinType || undefined;
-      const preferredFinish = finish || stored?.finish || undefined;
-
-      let query = supabase
-        .from("makeup_products")
-        .select(
-          "id, product_key, name, brand, category, price, image_url, finish, skin_type, product_shades(id, shade_name, color_family, skin_tone, undertone, shade_hex)"
-        )
-        .eq("is_active", true)
-        .limit(SUPABASE_RESULTS_LIMIT);
-
-      if (category) query = query.ilike("category", `%${category}%`);
-      if (skinType) query = query.ilike("skin_type", `%${skinType}%`);
-      if (itemForm) query = query.ilike("item_form", `%${itemForm}%`);
-      if (tags) query = query.ilike("tags", `%${tags}%`);
-
-      if (colorFamily)
-        query = query.ilike("product_shades.color_family", `%${colorFamily}%`);
-      if (undertone)
-        query = query.ilike("product_shades.undertone", `%${undertone}%`);
-
-      const { data, error } = await query;
-
-      if (error) {
-        console.error("[searchProducts] Supabase error:", error.message);
-        return {
-          success: false,
-          products: [],
-          message: "Database error occurred.",
-        };
+      const stored = await loadShopperMatchProfile(await createSupabaseServerClient());
+      const found = await searchChatProducts({
+        category: allowsModelCategory(userText) ? category : undefined,
+        text: userText,
+        skinType: skinType || stored?.skinType || undefined,
+        itemForm,
+        tags,
+        colorFamily,
+        undertone,
+        finish: finish || stored?.finish || undefined,
+        brand,
+        minPrice,
+        maxPrice,
+      });
+      if (!found.ok) {
+        return { success: false, products: [], message: "Database error occurred." };
       }
-
-      const products = (data ?? [])
-        .filter((row) => typeof row.product_key === "string" && row.product_key.length > 0)
-        .sort((a, b) => preferScore(b, preferredSkin, preferredFinish) - preferScore(a, preferredSkin, preferredFinish));
-
-      if (products.length === 0) {
+      if (found.products.length === 0) {
         return {
           success: true,
           products: [],
           message: "No matching products found.",
+          catalogHref: "/products",
         };
       }
-
-      return { success: true, products, message: "" };
+      if (found.relaxed.length > 0) {
+        return {
+          success: true,
+          products: found.products,
+          message: found.note,
+          relaxed: found.relaxed,
+          note: found.note,
+        };
+      }
+      return { success: true, products: found.products, message: "" };
     } catch (err) {
       console.error("[searchProducts] Unexpected error:", err);
       return {
@@ -344,7 +485,8 @@ const searchProducts = tool({
       };
     }
   },
-});
+  });
+}
 
 // ─── System Prompt ───────────────────────────────────────────────────────────
 const SYSTEM_PROMPT = `You are a shopping guide for this store's makeup and skincare catalog.
@@ -352,19 +494,22 @@ You help people choose products. You are not a dermatologist, and you do not dia
 
 STRICT RULES:
 1. ALWAYS call the 'searchProducts' tool before answering product-related questions.
-2. Extract context: If they say "I have acne and need a face wash", category="cleanser", tags="acne". If they want "red lipstick", category="lipstick", colorFamily="Red".
+2. Extract context and pass a real category: ${CHAT_CATEGORY_LIST}. "face wash" is cleanser, "red lipstick" is lipstick with colorFamily Red, "lip gloss" is lip_gloss, "moisturiser" is moisturizer, "SPF" is sunscreen. For "under 100", set maxPrice to 100. Prices are US dollars. Say $12.00, the same format as the product cards and the cart. A number the shopper types is already in dollars. Never convert currency and never say Rs, PKR, or rupees.
 3. NEVER list plain text product IDs, database ids, or raw data. Product cards are rendered from tool results and must be identified only by product_key.
 4. Keep your response conversational and short (1-2 sentences).
 5. If someone asks for a medical diagnosis or treatment plan, say you can only help them shop for products.
+6. If the tool result includes relaxed, those filters were dropped. Say the note field verbatim. Do not say the products meet a dropped price, skin type, or brand.
 
 FALLBACK RULE:
-If the tool returns 0 products, DO NOT hallucinate products. Reply gracefully with:
-"I couldn't find an exact match for that right now. Could we try looking for a different category or preference?"`;
+If the tool returns any products, recommend those products. When relaxed is present, the note comes first. Use the sentence below ONLY when the products array is empty:
+"${CHAT_NO_MATCH_SENTENCE}"`;
 
 function chatStream(result: { toUIMessageStreamResponse: (init?: { onError?: (error: unknown) => string }) => Response }) {
-  return result.toUIMessageStreamResponse({
-    onError: () => friendlyChatError(undefined),
-  });
+  return rewriteHonestResponse(
+    result.toUIMessageStreamResponse({
+      onError: () => friendlyChatError(undefined),
+    }),
+  );
 }
 
 function savedCards(products: unknown): ChatCatalogCard[] | null {
@@ -391,12 +536,15 @@ export async function POST(req: Request) {
   }
 
   const trimmedMessages = trimMessages(messages);
-  if (!lastUserText(trimmedMessages)) {
+  const userText = lastUserText(trimmedMessages);
+  if (!userText) {
     return localChatReply("");
   }
+  const noMatch = await directNoMatch(userText);
+  if (noMatch) return noMatch;
 
   const modelMessages = await convertToModelMessages(trimmedMessages);
-  const tools = { searchProducts };
+  const tools = { searchProducts: buildSearchTool(userText) };
   const shopper = await loadShopperMatchProfile(await createSupabaseServerClient());
   const systemPrompt =
     shopper && (shopper.skinType || shopper.finish)
@@ -491,6 +639,6 @@ export async function POST(req: Request) {
 
   console.info("[chat] catalog-fallback");
   const reused = savedCards(outcome.products);
-  if (reused) return localChatReply(CHAT_FAILURE_MESSAGE, reused);
+  if (reused && reused.length > 0) return localChatReply(CHAT_FAILURE_MESSAGE, reused);
   return catalogFallbackReply(trimmedMessages);
 }

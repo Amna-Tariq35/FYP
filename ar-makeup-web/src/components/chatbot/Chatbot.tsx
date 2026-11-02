@@ -16,7 +16,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import type { UIMessage } from 'ai';
 import { addToCart } from '@/src/store/cart';
-import { CHAT_FAILURE_MESSAGE, friendlyChatError } from '@/src/lib/chat/public-error';
+import { assistantBubbleText, CHAT_FAILURE_MESSAGE, friendlyChatError } from '@/src/lib/chat/public-error';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -355,15 +355,28 @@ export default function Chatbot() {
             )}
 
             {/* Messages List */}
-            {messages.map((m) => {
+            {messages.map((m, messageIndex) => {
               const products = extractProductsFromParts(m.parts);
               const catalogHref = extractCatalogHref(m.parts);
               const isUser = m.role === 'user';
+              const assistantText = isUser
+                ? ''
+                : m.parts
+                    .map((part) => (part.type === 'text' ? assistantBubbleText(part.text) : ''))
+                    .filter(Boolean)
+                    .join('\n')
+                    .trim();
+              const showFallbackLine =
+                !isUser &&
+                !assistantText &&
+                !chatError &&
+                (!isLoading || messageIndex !== messages.length - 1);
 
               return (
                 <div key={m.id} className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} gap-2`}>
                   {m.parts.map((part, index) => {
-                    if (part.type === 'text' && part.text.trim()) {
+                    const text = part.type === 'text' ? (isUser ? part.text.trim() : assistantBubbleText(part.text)) : '';
+                    if (part.type === 'text' && text) {
                       return (
                         <div
                           key={index}
@@ -375,7 +388,7 @@ export default function Chatbot() {
                             border: isUser ? 'none' : '1px solid var(--border-soft)',
                           }}
                         >
-                          <div className="whitespace-pre-wrap leading-relaxed">{part.text}</div>
+                          <div className="whitespace-pre-wrap leading-relaxed">{text}</div>
                         </div>
                       );
                     }
@@ -398,6 +411,20 @@ export default function Chatbot() {
 
                     return null;
                   })}
+
+                  {showFallbackLine && (
+                    <div
+                      className="p-3 rounded-2xl max-w-[85%] text-sm shadow-sm"
+                      style={{
+                        background: 'white',
+                        color: 'var(--text-main)',
+                        borderRadius: '18px 18px 18px 4px',
+                        border: '1px solid var(--border-soft)',
+                      }}
+                    >
+                      {CHAT_FAILURE_MESSAGE}
+                    </div>
+                  )}
 
                   {/* Product Cards */}
                   {!isUser && products.length > 0 && (

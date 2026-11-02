@@ -35,7 +35,8 @@ function remainingMs(started: number, chainMs: number) {
 
 /**
  * Primary, then a hedged second provider, then a lite provider.
- * The first `run` to resolve wins and the others are aborted.
+ * The first `run` to resolve wins. Losers are aborted.
+ * The winner's abort controller stays open so its stream can finish.
  * One retry total, only after a 503 that arrives within 4s.
  */
 export async function raceChatProviders<T>(input: {
@@ -65,6 +66,7 @@ export async function raceChatProviders<T>(input: {
   const race = new Promise<ChatRaceResult<T>>((resolve) => {
     resolveRace = resolve;
   });
+  let winnerStop: AbortController | null = null;
 
   const finish = (result: ChatRaceResult<T>) => {
     if (settled) return;
@@ -73,6 +75,7 @@ export async function raceChatProviders<T>(input: {
     clearTimeout(watchdog);
     resolveRace(result);
     for (const stop of stops) {
+      if (result.kind === "ok" && stop === winnerStop) continue;
       try {
         stop.abort();
       } catch {
@@ -137,7 +140,10 @@ export async function raceChatProviders<T>(input: {
       const value = await attempt.run(signal, () => {
         if (attempt === input.primary && !settled) clearTimeout(hedgeTimer);
       });
-      if (!settled) finish({ kind: "ok", label: attempt.label, value });
+      if (!settled) {
+        winnerStop = local;
+        finish({ kind: "ok", label: attempt.label, value });
+      }
     } catch (error) {
       local.abort();
       if (settled) return;
