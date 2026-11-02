@@ -1,10 +1,19 @@
+/** Shop CDNs sometimes publish http URLs. Browsers should request https. */
+export function upgradeToHttps(url: string): string {
+  const trimmed = url.trim();
+  if (/^http:\/\//i.test(trimmed)) {
+    return `https://${trimmed.slice("http://".length)}`;
+  }
+  return trimmed;
+}
+
 export function getProductImageUrl(
   image_url: string | null | undefined,
   category?: string | null
 ): string {
   // 1. Agar valid image URL mojood hai, toh wahi return karein
   if (image_url && image_url.trim().length > 0) {
-    return image_url;
+    return upgradeToHttps(image_url);
   }
 
   // 2. Skincare categories ki list
@@ -29,5 +38,5 @@ export function getProductImageUrl(
   }
 
   // Makeup / Default fallback
-  return '/images/product_placeholder.png';
+  return '/images/product_placeholder.webp';
 }

@@ -172,7 +172,13 @@ function withCatalogProducts(error: unknown, products: ChatCatalogCard[] | null)
   return error;
 }
 
-type ProbePart = { type: string; text?: string; error?: unknown; output?: unknown };
+type ProbePart = {
+  type: string;
+  text?: string;
+  error?: unknown;
+  output?: unknown;
+  finishReason?: string;
+};
 
 function keepStreamMoving(iterator: AsyncIterator<ProbePart>) {
   void (async () => {
@@ -221,10 +227,25 @@ function emptyAnswer(products: ChatCatalogCard[] | null) {
   return withCatalogProducts(new Error("empty model output"), products);
 }
 
+function streamFailure() {
+  let rejectError: (error: unknown) => void = () => {};
+  const failed = new Promise<never>((_, reject) => {
+    rejectError = reject;
+  });
+  failed.catch(() => {});
+  return {
+    failed,
+    onError: ({ error }: { error: unknown }) => {
+      rejectError(error instanceof Error ? error : new Error("provider failed"));
+    },
+  };
+}
+
 async function readUntilOutput(
   result: { fullStream: AsyncIterable<ProbePart> },
   signal: AbortSignal,
   onActivity: () => void,
+  failed?: Promise<never>,
 ) {
   const iterator = result.fullStream[Symbol.asyncIterator]();
   const firstToken = AbortSignal.timeout(Math.min(CHAT_FIRST_TOKEN_MS, 10_000));
@@ -241,7 +262,10 @@ async function readUntilOutput(
   };
 
   while (true) {
-    const next = await nextProbePart(iterator, signal, sawActivity ? idle.signal : firstToken);
+    const next = await Promise.race([
+      nextProbePart(iterator, signal, sawActivity ? idle.signal : firstToken),
+      ...(failed ? [failed] : []),
+    ]);
     if (next.done) {
       if (accept()) return products;
       throw emptyAnswer(products);
@@ -252,8 +276,8 @@ async function readUntilOutput(
       sawActivity = true;
       onActivity();
     } else if (part.type === "reasoning-delta") {
-      sawActivity = true;
-      onActivity();
+      // Reasoning is not an answer. Keep the first-token deadline so a
+      // thought-only stream cannot hold the chain for the whole provider budget.
     } else if (
       part.type === "tool-input-start" ||
       part.type === "tool-input-delta" ||
@@ -272,6 +296,17 @@ async function readUntilOutput(
       awaitingTool = false;
       sawActivity = true;
       onActivity();
+      if (!accept()) {
+        const reason =
+          part.error instanceof Error
+            ? part.error
+            : new Error(typeof part.error === "string" && part.error.trim() ? part.error : "invalid tool call");
+        throw withCatalogProducts(reason, products);
+      }
+    } else if (part.type === "finish-step") {
+      const reason = part.finishReason ?? "";
+      const stopped = reason === "stop" || reason === "length" || reason === "content-filter" || reason === "error";
+      if (stopped && !awaitingTool && !accept()) throw emptyAnswer(products);
     } else if (part.type === "error") {
       const error = part.error instanceof Error ? part.error : new Error("provider failed");
       throw withCatalogProducts(error, products);
@@ -387,47 +422,98 @@ function rewriteHonestResponse(response: Response): Response {
   });
 }
 
+function omittedText(value: string | null | undefined) {
+  const trimmed = value?.trim() ?? "";
+  return trimmed || undefined;
+}
+
+function omittedPrice(value: number | string | null | undefined) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) return value;
+  return undefined;
+}
+
+function summarizeToolOutput(output: unknown) {
+  const record = output && typeof output === "object" ? (output as Record<string, unknown>) : {};
+  const rows = Array.isArray(record.products) ? record.products : [];
+  const products = rows.slice(0, 5).flatMap((row) => {
+    if (!row || typeof row !== "object") return [];
+    const item = row as Record<string, unknown>;
+    const price = typeof item.price === "number" ? item.price : Number(item.price);
+    if (!Number.isFinite(price) || typeof item.name !== "string") return [];
+    const shades = Array.isArray(item.product_shades) ? item.product_shades : [];
+    const colors: string[] = [];
+    for (const shade of shades) {
+      if (colors.length >= 2 || !shade || typeof shade !== "object") continue;
+      const family = (shade as { color_family?: unknown }).color_family;
+      if (typeof family === "string" && family.trim() && !colors.includes(family)) colors.push(family);
+    }
+    return [
+      {
+        name: item.name,
+        brand: typeof item.brand === "string" ? item.brand : "",
+        price,
+        category: typeof item.category === "string" ? item.category : "",
+        ...(typeof item.finish === "string" && item.finish ? { finish: item.finish } : {}),
+        ...(typeof item.skin_type === "string" && item.skin_type ? { skin_type: item.skin_type } : {}),
+        ...(colors.length > 0 ? { colors } : {}),
+      },
+    ];
+  });
+  const relaxed = asRelaxations(record.relaxed);
+  return {
+    success: record.success === true,
+    count: products.length,
+    ...(typeof record.message === "string" && record.message ? { message: record.message.slice(0, 180) } : {}),
+    ...(typeof record.note === "string" && record.note ? { note: record.note.slice(0, 180) } : {}),
+    ...(relaxed.length > 0 ? { relaxed } : {}),
+    ...(record.catalogHref === "/products" ? { catalogHref: "/products" } : {}),
+    products,
+  };
+}
+
 // ─── SINGLE SMART TOOL: For Both Makeup & Skincare ───────────────────────────
-function buildSearchTool(userText: string) {
+function buildSearchTool(userText: string, followUp: boolean) {
   return tool({
   description: `Fetch in-stock makeup and skincare from this store. category must be one of: ${CHAT_CATEGORY_LIST}. Everyday words are mapped (lip, lipstick, moisturiser, moisturizer, sunscreen, SPF, lip gloss, foundation, blush). Prices are US dollars, shown as $12.00, the same as product cards and the cart. A number the shopper types is already in dollars. Do not convert currency. If a skin type, price, or brand would hide every in-stock match, drop skin type, then price, then brand. The result then includes relaxed, such as ["price"], and a note. You must say that note. Never present those products as meeting the dropped constraint.`,
   inputSchema: z.object({
     category: z
       .string()
-      .optional()
+      .nullish()
       .describe(
         `One of: ${CHAT_CATEGORY_LIST}. lip and lipstick -> lipstick, lip gloss -> lip_gloss, moisturiser -> moisturizer, SPF -> sunscreen.`
       ),
     skinType: z
       .string()
-      .optional()
+      .nullish()
       .describe("e.g. Oily, Dry, Combination, Normal"),
     itemForm: z
       .string()
-      .optional()
+      .nullish()
       .describe("e.g. Liquid, Powder, Stick, Cream, Serum"),
     tags: z
       .string()
-      .optional()
+      .nullish()
       .describe(
         "e.g. acne, hydrating, matte, anti-aging, vegan (matches with DB tags)"
       ),
     colorFamily: z
       .string()
-      .optional()
+      .nullish()
       .describe("e.g. Red, Pink, Nude (Mostly for makeup)"),
-    undertone: z.string().optional().describe("e.g. Warm, Cool, Neutral"),
+    undertone: z.string().nullish().describe("e.g. Warm, Cool, Neutral"),
     finish: z
       .string()
-      .optional()
+      .nullish()
       .describe("e.g. matte, dewy, satin. Prefer products with this finish."),
-    brand: z.string().optional().describe("Brand name, only when the shopper names one."),
-    minPrice: z.union([z.number(), z.string()]).optional().describe("Minimum price in US dollars, if the shopper gave one."),
+    brand: z.string().nullish().describe("Brand name, only when the shopper names one."),
+    minPrice: z.union([z.number(), z.string()]).nullish().describe("Minimum price in US dollars, if the shopper gave one."),
     maxPrice: z
       .union([z.number(), z.string()])
-      .optional()
+      .nullish()
       .describe("Maximum price in US dollars. Use 1 when they say under 1. Do not convert."),
   }),
+  toModelOutput: ({ output }) => ({ type: "json" as const, value: summarizeToolOutput(output) }),
   execute: async ({
     category,
     skinType,
@@ -443,17 +529,17 @@ function buildSearchTool(userText: string) {
     try {
       const stored = await loadShopperMatchProfile(await createSupabaseServerClient());
       const found = await searchChatProducts({
-        category: allowsModelCategory(userText) ? category : undefined,
+        category: allowsModelCategory(userText) || followUp ? omittedText(category) : undefined,
         text: userText,
-        skinType: skinType || stored?.skinType || undefined,
-        itemForm,
-        tags,
-        colorFamily,
-        undertone,
-        finish: finish || stored?.finish || undefined,
-        brand,
-        minPrice,
-        maxPrice,
+        skinType: omittedText(skinType) || stored?.skinType || undefined,
+        itemForm: omittedText(itemForm),
+        tags: omittedText(tags),
+        colorFamily: omittedText(colorFamily),
+        undertone: omittedText(undertone),
+        finish: omittedText(finish) || stored?.finish || undefined,
+        brand: omittedText(brand),
+        minPrice: omittedPrice(minPrice),
+        maxPrice: omittedPrice(maxPrice),
       });
       if (!found.ok) {
         return { success: false, products: [], message: "Database error occurred." };
@@ -518,33 +604,53 @@ function savedCards(products: unknown): ChatCatalogCard[] | null {
 }
 
 // ─── Route Handler ───────────────────────────────────────────────────────────
-export async function POST(req: Request) {
-  const limit = rateLimit(`chat:${clientKey(req)}`, 12, 60_000);
-  if (!limit.ok) {
-    return localChatReply(CHAT_WAIT_MESSAGE);
+function readableMessages(value: unknown): UIMessage[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const messages: UIMessage[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") return null;
+    const record = item as { role?: unknown; parts?: unknown };
+    if (typeof record.role !== "string" || !Array.isArray(record.parts)) return null;
+    messages.push(item as UIMessage);
   }
+  return messages;
+}
 
+export async function POST(req: Request) {
   let messages: UIMessage[];
   try {
-    const body = await req.json();
-    messages = body?.messages;
-    if (!Array.isArray(messages) || messages.length === 0) {
-      return localChatReply(CHAT_FAILURE_MESSAGE);
-    }
+    const body: unknown = await req.json();
+    const parsed =
+      body && typeof body === "object"
+        ? readableMessages((body as { messages?: unknown }).messages)
+        : null;
+    if (!parsed) return localChatReply(CHAT_FAILURE_MESSAGE);
+    messages = parsed;
   } catch {
     return localChatReply(CHAT_FAILURE_MESSAGE);
   }
 
-  const trimmedMessages = trimMessages(messages);
+  let trimmedMessages: UIMessage[];
+  try {
+    trimmedMessages = trimMessages(messages);
+  } catch {
+    return localChatReply(CHAT_FAILURE_MESSAGE);
+  }
   const userText = lastUserText(trimmedMessages);
   if (!userText) {
     return localChatReply("");
   }
-  const noMatch = await directNoMatch(userText);
+
+  const limit = rateLimit(`chat:${clientKey(req)}`, 12, 60_000);
+  if (!limit.ok) {
+    return localChatReply(CHAT_WAIT_MESSAGE);
+  }
+  const followUp = trimmedMessages.filter((message) => message.role === "user").length > 1;
+  const noMatch = followUp ? null : await directNoMatch(userText);
   if (noMatch) return noMatch;
 
   const modelMessages = await convertToModelMessages(trimmedMessages);
-  const tools = { searchProducts: buildSearchTool(userText) };
+  const tools = { searchProducts: buildSearchTool(userText, followUp) };
   const shopper = await loadShopperMatchProfile(await createSupabaseServerClient());
   const systemPrompt =
     shopper && (shopper.skinType || shopper.finish)
@@ -574,11 +680,12 @@ export async function POST(req: Request) {
       model,
       label,
       run: async (signal, onActivity) => {
+        const errors = streamFailure();
         const result = streamText({
           ...shared,
           model: google(model),
           abortSignal: signal,
-          onError: () => {},
+          onError: errors.onError,
           ...(usesGeminiThinkingLevel(model)
             ? {
                 providerOptions: {
@@ -592,7 +699,7 @@ export async function POST(req: Request) {
               }
             : {}),
         });
-        await readUntilOutput(result, signal, onActivity);
+        await readUntilOutput(result, signal, onActivity, errors.failed);
         return chatStream(result);
       },
     };
@@ -604,11 +711,12 @@ export async function POST(req: Request) {
         model: "groq",
         label: `groq/${groqChatModel()}`,
         run: async (signal, onActivity) => {
+          const errors = streamFailure();
           const result = streamText({
             ...shared,
             model: groq(groqChatModel()),
             abortSignal: signal,
-            onError: () => {},
+            onError: errors.onError,
             providerOptions: {
               groq: {
                 reasoningEffort: "low",
@@ -616,7 +724,7 @@ export async function POST(req: Request) {
               },
             },
           });
-          await readUntilOutput(result, signal, onActivity);
+          await readUntilOutput(result, signal, onActivity, errors.failed);
           return chatStream(result);
         },
       }

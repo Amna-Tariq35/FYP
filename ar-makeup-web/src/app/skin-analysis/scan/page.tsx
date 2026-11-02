@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import Link from "next/link";
 import Webcam from "react-webcam";
 import { compressImage } from "@/src/lib/image-utils";
@@ -10,6 +10,8 @@ import { canonicalConcern } from "@/src/lib/skin-analysis/contract";
 import { Camera, Upload, ShieldCheck, AlertCircle, RefreshCw, ServerCrash } from "lucide-react";
 import { useRouter } from "next/navigation";
 
+const CAMERA_INIT_TIMEOUT_MS = 12_000;
+
 export default function ScanPage() {
   const router = useRouter();
   const webcamRef = useRef<Webcam>(null);
@@ -18,6 +20,7 @@ export default function ScanPage() {
   
   const [hasConsent, setHasConsent] = useState(false);
   const [cameraError, setCameraError] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStage, setProcessingStage] = useState<string>("");
   const [previewImage, setPreviewImage] = useState<string | null>(null);
@@ -42,6 +45,12 @@ export default function ScanPage() {
     "sun-damage",
     "anti-aging",
   ]);
+
+  useEffect(() => {
+    if (!hasConsent || cameraError || cameraReady || previewImage) return;
+    const timer = window.setTimeout(() => setCameraError(true), CAMERA_INIT_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [hasConsent, cameraError, cameraReady, previewImage]);
 
   const videoConstraints = {
     width: 1080,
@@ -318,6 +327,7 @@ export default function ScanPage() {
             screenshotFormat="image/jpeg"
             videoConstraints={videoConstraints}
             mirrored={true}
+            onUserMedia={() => setCameraReady(true)}
             onUserMediaError={() => setCameraError(true)}
             className="w-full h-full object-cover rounded-2xl"
           />

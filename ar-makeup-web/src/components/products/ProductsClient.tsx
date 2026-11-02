@@ -23,6 +23,7 @@ import {
   categoryLabel,
   normalizeCategory,
 } from "@/src/lib/catalog/category-taxonomy";
+import { foldedBrandLabel } from "@/src/lib/catalog/brand-label";
 import {
   CATALOG_PAGE_SIZE,
   catalogQueryToSearchParams,
@@ -132,10 +133,12 @@ function FilterGroup({
 function RecentlyViewedStrip({
   products,
   wishlist,
+  brandLabels,
   onWishlistToggle,
 }: {
   products: MakeupProduct[];
   wishlist: string[];
+  brandLabels: readonly string[];
   onWishlistToggle: (k: string) => void;
 }) {
   if (products.length === 0) return null;
@@ -149,6 +152,7 @@ function RecentlyViewedStrip({
       <div className="rv-strip">
         {products.map((p) => {
           const price = typeof p.price === "number" ? `$${p.price.toFixed(2)}` : "—";
+          const brand = foldedBrandLabel(p.brand, brandLabels) || "—";
           const isWished = wishlist.includes(`${p.product_key}__`); // Match new format
           return (
             <a
@@ -167,7 +171,7 @@ function RecentlyViewedStrip({
                 >
                   <Heart className="w-3 h-3" />
                 </button>
-                <p className="rv-brand">{p.brand?.trim() || "—"}</p>
+                <p className="rv-brand">{brand}</p>
                 <p className="rv-name">{p.name}</p>
                 <p className="rv-price">{price}</p>
               </div>
@@ -522,6 +526,7 @@ export default function ProductsClient({
               onBlur={commitMin}
               onKeyDown={(e) => e.key === "Enter" && commitMin()}
               className="price-input"
+              aria-label="Minimum price"
               placeholder="Min"
             />
           </div>
@@ -537,6 +542,7 @@ export default function ProductsClient({
               onBlur={commitMax}
               onKeyDown={(e) => e.key === "Enter" && commitMax()}
               className="price-input"
+              aria-label="Maximum price"
               placeholder="Max"
             />
           </div>
@@ -560,12 +566,14 @@ export default function ProductsClient({
               if (val < priceRange[1]) handleSliderChange([val, priceRange[1]]);
             }}
             className="dual-slider"
+            aria-label="Minimum price"
           />
           <input
             type="range"
             min={0}
             max={maxPrice}
             value={priceRange[1]}
+            aria-label="Maximum price"
             onChange={(e) => {
               const val = Number(e.target.value);
               if (val > priceRange[0]) handleSliderChange([priceRange[0], val]);
@@ -674,6 +682,8 @@ export default function ProductsClient({
           gap: 28px;
           align-items: flex-start;
           width: 100%;
+          min-width: 0;
+          max-width: 100%;
         }
 
         /* ── Desktop Sidebar ─────────────────────────────────── */
@@ -753,15 +763,6 @@ export default function ProductsClient({
           display: flex;
           flex-direction: column;
           gap: 2px;
-          max-height: 200px;
-          overflow-y: auto;
-          padding-right: 2px;
-        }
-        .filter-options-list::-webkit-scrollbar { width: 3px; }
-        .filter-options-list::-webkit-scrollbar-track { background: transparent; }
-        .filter-options-list::-webkit-scrollbar-thumb {
-          background: var(--border-soft);
-          border-radius: 99px;
         }
         .filter-radio-label {
           display: flex;
@@ -773,7 +774,26 @@ export default function ProductsClient({
           transition: background 0.15s;
         }
         .filter-radio-label:hover { background: var(--bg-base); }
-        .filter-radio-input { display: none; }
+        .filter-radio-label { position: relative; }
+        .filter-radio-label:focus-within {
+          outline: 2px solid var(--rose-primary);
+          outline-offset: 2px;
+        }
+        .filter-radio-input:focus-visible + .filter-radio-dot {
+          outline: 2px solid var(--rose-primary);
+          outline-offset: 2px;
+        }
+        .filter-radio-input {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0, 0, 0, 0);
+          white-space: nowrap;
+          border: 0;
+        }
         .filter-radio-dot {
           width: 16px;
           height: 16px;
@@ -961,6 +981,8 @@ export default function ProductsClient({
         .main-seg {
           display: inline-flex;
           align-self: flex-start;
+          max-width: 100%;
+          flex-wrap: wrap;
           padding: 3px;
           border-radius: 12px;
           border: 1.5px solid var(--border-soft);
@@ -1099,7 +1121,7 @@ export default function ProductsClient({
         }
 
         /* ── Main Content ────────────────────────────────────── */
-        .products-main { flex: 1; min-width: 0; }
+        .products-main { flex: 1; min-width: 0; max-width: 100%; }
 
         /* ── Top Bar ─────────────────────────────────────────── */
         .products-topbar {
@@ -1110,13 +1132,20 @@ export default function ProductsClient({
           background: var(--bg-section);
           border: 1px solid var(--border-soft);
           border-radius: 16px;
-          padding: 14px 18px;
+          padding: 12px;
           box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+          max-width: 100%;
+          min-width: 0;
+        }
+        @media (min-width: 640px) {
+          .products-topbar { padding: 14px 18px; }
         }
         .topbar-row {
           display: flex;
           flex-direction: column;
           gap: 12px;
+          min-width: 0;
+          max-width: 100%;
         }
         @media (min-width: 640px) {
           .topbar-row { flex-direction: row; align-items: center; }
@@ -1124,18 +1153,23 @@ export default function ProductsClient({
         .results-count {
           font-size: 13px;
           color: var(--text-muted);
-          white-space: nowrap;
+          white-space: normal;
         }
         .results-count strong { font-weight: 700; color: var(--text-main); }
 
         .topbar-right {
           display: flex;
           align-items: center;
-          gap: 10px;
-          margin-left: auto;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin-left: 0;
           width: 100%;
+          min-width: 0;
+          max-width: 100%;
         }
-        @media (min-width: 640px) { .topbar-right { width: auto; } }
+        @media (min-width: 640px) {
+          .topbar-right { width: auto; margin-left: auto; gap: 10px; flex-wrap: nowrap; }
+        }
 
         /* Wishlist button in topbar - NOW A LINK */
         .wishlist-topbar-btn {
@@ -1214,7 +1248,7 @@ export default function ProductsClient({
           justify-content: center;
         }
 
-        .sort-select-wrapper { position: relative; flex: 1; }
+        .sort-select-wrapper { position: relative; flex: 1 1 8rem; min-width: 0; max-width: 100%; overflow: hidden; }
         @media (min-width: 640px) { .sort-select-wrapper { flex: 0 0 auto; } }
         .sort-icon {
           position: absolute;
@@ -1496,7 +1530,6 @@ export default function ProductsClient({
           font-size: 9.5px;
           font-weight: 600;
           letter-spacing: 0.06em;
-          text-transform: uppercase;
           color: var(--text-muted);
           margin-bottom: 3px;
           padding-right: 24px;
@@ -1519,6 +1552,7 @@ export default function ProductsClient({
       <RecentlyViewedStrip
         products={recentProducts}
         wishlist={wishlist}
+        brandLabels={catalogFacets.brands}
         onWishlistToggle={toggleWishlist}
       />
 
@@ -1609,7 +1643,7 @@ export default function ProductsClient({
 
             <div className="topbar-right">
               {/* Wishlist Button - NOW A LINK */}
-              <Link href="/account/favourites" className="wishlist-topbar-btn">
+              <Link href="/account/favourites" className="wishlist-topbar-btn" aria-label="Wishlist">
                 <Heart
                   className="w-4 h-4 heart-icon"
                   style={wishlistCount > 0 ? { fill: "var(--rose-primary)" } : {}}
@@ -1646,6 +1680,7 @@ export default function ProductsClient({
                   value={sortBy}
                   onChange={(e) => setSortBy(e.target.value)}
                   className="sort-select"
+                  aria-label="Sort products"
                 >
                   <option value="featured">Featured</option>
                   <option value="price-asc">Price: Low → High</option>
@@ -1725,6 +1760,7 @@ export default function ProductsClient({
                 <ProductCard
                   key={p.product_key}
                   product={p}
+                  brandLabel={foldedBrandLabel(p.brand, catalogFacets.brands)}
                   isWished={isWished(p.product_key)}
                   onWishlistToggle={toggleWishlist}
                   onView={addViewed}

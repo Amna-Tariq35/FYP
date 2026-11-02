@@ -1,5 +1,7 @@
 import {
+  classifyProviderFailure,
   combineAbortSignals,
+  geminiErrorStatus,
   geminiModelCoolingDown,
   rememberProviderFailure,
   type GeminiKeyOwner,
@@ -27,6 +29,52 @@ export type ChatRaceResult<T> =
 function failureProducts(error: unknown): unknown {
   if (!error || typeof error !== "object" || !("catalogProducts" in error)) return null;
   return error.catalogProducts ?? null;
+}
+
+function providerName(label: string) {
+  return label.split("/")[0] || label;
+}
+
+/** Server log only. Status and a short reason, with secrets stripped. */
+export function logChatProviderFailure(label: string, error: unknown, elapsedMs: number) {
+  const classified = classifyProviderFailure(error);
+  const status = classified.status ?? geminiErrorStatus(error);
+  console.warn(
+    "[chat] provider-error",
+    providerName(label),
+    `status=${status ?? "none"}`,
+    `kind=${classified.kind}`,
+    `ms=${elapsedMs}`,
+    `reason=${providerFailureReason(error)}`,
+  );
+}
+
+function providerFailureReason(error: unknown): string {
+  const bits: string[] = [];
+  if (error instanceof Error && error.message.trim()) bits.push(error.message.trim());
+  if (error && typeof error === "object" && "responseBody" in error) {
+    const body = error.responseBody;
+    if (typeof body === "string" && body.trim()) {
+      const message = groqStyleMessage(body);
+      if (message) bits.push(message);
+    }
+  }
+  const text = bits.join(" | ") || "request failed";
+  return text
+    .replace(/key=[^&\s]+/gi, "key=redacted")
+    .replace(/Bearer\s+\S+/gi, "Bearer redacted")
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "sk-redacted")
+    .replace(/\bAIza[0-9A-Za-z_-]{10,}\b/g, "key-redacted")
+    .slice(0, 300);
+}
+
+function groqStyleMessage(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: unknown } };
+    return typeof parsed.error?.message === "string" ? parsed.error.message : body;
+  } catch {
+    return body;
+  }
 }
 
 function remainingMs(started: number, chainMs: number) {
@@ -136,8 +184,14 @@ export async function raceChatProviders<T>(input: {
       local.signal,
     ]);
     const attemptStarted = Date.now();
+    console.info("[chat] try", providerName(attempt.label));
+    let notedFirst = false;
     try {
       const value = await attempt.run(signal, () => {
+        if (!notedFirst) {
+          notedFirst = true;
+          console.info("[chat] first-token", providerName(attempt.label), `${Date.now() - attemptStarted}ms`);
+        }
         if (attempt === input.primary && !settled) clearTimeout(hedgeTimer);
       });
       if (!settled) {
@@ -146,6 +200,7 @@ export async function raceChatProviders<T>(input: {
       }
     } catch (error) {
       local.abort();
+      if (!settled) logChatProviderFailure(attempt.label, error, Date.now() - attemptStarted);
       if (settled) return;
       rememberCaptured(error);
       if (deadline.aborted) {

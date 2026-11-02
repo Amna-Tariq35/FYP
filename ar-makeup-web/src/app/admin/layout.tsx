@@ -5,48 +5,70 @@ import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { LayoutDashboard, Package, ShoppingCart, LogOut } from "lucide-react";
 import { supabase } from "@/src/lib/supabase/client";
+import AdminSignInRequired, { AdminAccessDenied } from "@/src/components/admin/AdminSignInRequired";
+
+const ADMIN_EMAIL = "admin@makeup.com";
+
+type Access = "checking" | "signed-out" | "forbidden" | "admin";
+
+function accessForEmail(email: string | null | undefined): Access {
+  if (!email) return "signed-out";
+  if (email !== ADMIN_EMAIL) return "forbidden";
+  return "admin";
+}
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const pathname = usePathname(); // Current page ka path check karne ke liye
-  const [isAuthorized, setIsAuthorized] = useState(false);
+  const pathname = usePathname();
+  const [access, setAccess] = useState<Access>("checking");
 
   useEffect(() => {
+    let active = true;
+
     async function checkAdminAccess() {
       const { data: { session } } = await supabase.auth.getSession();
-      const user = session?.user;
-
-      if (!user || user.email !== "admin@makeup.com") {
-        alert("Access Denied! You are not an admin.");
-        router.push("/");
-      } else {
-        setIsAuthorized(true);
-      }
+      if (!active) return;
+      setAccess(accessForEmail(session?.user?.email));
     }
 
     checkAdminAccess();
 
-    // Real-time listener: Agar admin logout kare toh foran bahar nikal do
-    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT' || session?.user?.email !== "admin@makeup.com") {
-        router.push("/");
-      }
+    const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!active) return;
+      setAccess(accessForEmail(session?.user?.email));
     });
 
     return () => {
+      active = false;
       authListener.subscription.unsubscribe();
     };
-  }, [router]);
+  }, []);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
     router.push("/");
   };
 
-  if (!isAuthorized) {
+  if (access === "checking") {
     return (
       <div className="min-h-screen flex items-center justify-center text-gray-500">
         Checking Admin Access...
+      </div>
+    );
+  }
+
+  if (access === "signed-out") {
+    return (
+      <div className="flex min-h-screen items-center justify-center px-4 py-16">
+        <AdminSignInRequired nextPath={pathname || "/admin"} />
+      </div>
+    );
+  }
+
+  if (access === "forbidden") {
+    return (
+      <div className="flex min-h-screen items-center justify-center px-4 py-16">
+        <AdminAccessDenied />
       </div>
     );
   }

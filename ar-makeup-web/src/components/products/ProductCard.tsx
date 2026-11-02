@@ -11,6 +11,7 @@ type ProductCardProps = {
   isWished?: boolean;
   onWishlistToggle?: (productKey: string) => void;
   onView?: (productKey: string) => void;
+  brandLabel?: string;
   favShadeKey?: string;
   userFinishPreference?: string | null;
   matchProfile?: ShopperMatchProfile | null;
@@ -63,6 +64,7 @@ export default function ProductCard({
   isWished = false,
   onWishlistToggle,
   onView,
+  brandLabel,
   favShadeKey,
   userFinishPreference,
   matchProfile,
@@ -159,10 +161,10 @@ export default function ProductCard({
         <div className="flex flex-1 flex-col gap-0 p-4">
           {/* Brand */}
           <p
-            className="mb-1 truncate text-[10.5px] font-semibold uppercase tracking-[0.07em]"
+            className="mb-1 truncate text-[10.5px] font-semibold tracking-[0.04em]"
             style={{ color: "var(--text-muted)" }}
           >
-            {brand}
+            {brandLabel || brand}
           </p>
 
           {/* Name */}

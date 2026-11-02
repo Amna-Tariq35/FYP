@@ -12,7 +12,7 @@ export default async function ProductsPage() {
 
   return (
     <main className="min-h-screen bg-[var(--bg-base)]">
-      <div className="mx-auto max-w-[1400px] px-4 sm:px-6 lg:px-8 py-8">
+      <div className="mx-auto min-w-0 max-w-[1400px] overflow-x-clip px-4 py-8 sm:px-6 lg:px-8">
         <div className="mb-8">
           <h1 className="text-3xl font-bold text-[var(--text-main)] tracking-tight">
             Makeup Collection

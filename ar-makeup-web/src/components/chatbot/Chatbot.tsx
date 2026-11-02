@@ -225,6 +225,8 @@ function extractCatalogHref(parts: UIMessage['parts']): string | null {
 export default function Chatbot() {
   const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
+  const launcherRef = useRef<HTMLButtonElement>(null);
+  const restoreLauncherFocus = useRef(false);
   const [input, setInput] = useState('');
   const [chatError, setChatError] = useState<string | null>(null);
   const [slow, setSlow] = useState(false);
@@ -268,6 +270,29 @@ export default function Chatbot() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, chatError, isLoading, slow]);
 
+  useEffect(() => {
+    if (isOpen || !restoreLauncherFocus.current) return;
+    restoreLauncherFocus.current = false;
+    launcherRef.current?.focus();
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      restoreLauncherFocus.current = true;
+      setIsOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isOpen]);
+
+  const closeChat = () => {
+    restoreLauncherFocus.current = true;
+    setIsOpen(false);
+  };
+
   const sendText = (text: string) => {
     const trimmed = text.trim();
     if (!trimmed || isLoading) return;
@@ -309,7 +334,7 @@ export default function Chatbot() {
             </div>
             <button
               type="button"
-              onClick={() => setIsOpen(false)}
+              onClick={closeChat}
               aria-label="Close chat"
               className="hover:bg-white/20 p-1.5 rounded-full transition-colors"
             >
@@ -544,6 +569,7 @@ export default function Chatbot() {
       {!isOpen && (
         <button
           type="button"
+          ref={launcherRef}
           onClick={() => setIsOpen(true)}
           aria-label="Open chat"
           className="text-white p-4 rounded-full shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center relative"

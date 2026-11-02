@@ -13,7 +13,7 @@ export default function ProductPhoto({ src, alt }: { src: string; alt: string })
       fill
       className="object-cover"
       sizes="(max-width: 768px) 100vw, 50vw"
-      onError={() => setImageSrc("/images/product_placeholder.png")}
+      onError={() => setImageSrc("/images/product_placeholder.webp")}
     />
   );
 }

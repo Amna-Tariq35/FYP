@@ -18,6 +18,7 @@ import {
 } from "@/src/lib/catalog/review-stats";
 import { shopperMatchRank } from "@/src/lib/catalog/product-profile-matching";
 import type { MakeupProduct, ProductShade } from "@/src/types/catalog";
+import { brandFoldKey } from "@/src/lib/catalog/brand-label";
 
 const PRODUCT_COLUMNS =
   "id,product_key,name,brand,category,main_category,description,image_url,price,is_skin_friendly,is_active,finish,skin_type,stock_quantity,low_stock_threshold";
@@ -323,10 +324,6 @@ async function loadCatalogPage(query: CatalogListQuery): Promise<CatalogPageResu
   const needsReviewSet = normalized.hasReviews || normalized.sort === "rating-desc";
   if (!needsReviewSet) return loadDirectPage(client, normalized, constraints);
   return loadReviewAwarePage(client, normalized, constraints);
-}
-
-function brandFoldKey(brand: string): string {
-  return brand.trim().toLocaleLowerCase();
 }
 
 function brandLetterCase(value: string): "upper" | "lower" | "title" | "mixed" {

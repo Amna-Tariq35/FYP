@@ -7,10 +7,12 @@ export default function Hero() {
       {/* Background image */}
       <div className="absolute inset-0">
         <Image
-          src="/images/hero_model.png"
+          src="/images/hero_model.webp"
           alt="AR Makeup hero"
           fill
           priority
+          unoptimized
+          sizes="100vw"
           className="object-cover object-center"
         />
         <div className="absolute inset-0 bg-gradient-to-r from-[#FBF7F4]/98 via-[#FBF7F4]/75 to-transparent" />

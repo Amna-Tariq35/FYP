@@ -11,7 +11,8 @@
     "verify:phase0": "ts-node --project scripts/tsconfig.json scripts/verify-phase0.ts",
     "verify:foundation": "ts-node --project scripts/tsconfig.json scripts/verify-foundation.ts",
     "foundation:eval": "ts-node --project scripts/tsconfig.json scripts/foundation-eval.ts",
-    "test:skin": "ts-node --transpile-only --project scripts/tsconfig.json scripts/skin-analysis-checks.ts"
+    "test:skin": "ts-node --transpile-only --project scripts/tsconfig.json scripts/skin-analysis-checks.ts",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@ai-sdk/google": "^3.0.64",
@@ -39,6 +40,8 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.14.0",
+    "@playwright/test": "^1.64.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

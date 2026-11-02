@@ -3,7 +3,7 @@
 import React from "react";
 import Image from "next/image";
 
-const FALLBACK_IMAGE = "/images/product_placeholder.png";
+const FALLBACK_IMAGE = "/images/product_placeholder.webp";
 
 function formatMoney(amount: number, currency = "USD") {
   return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(

@@ -1,3 +1,5 @@
+import { upgradeToHttps } from "@/src/lib/catalog/image";
+
 export type ProductVisualInput = {
   productKey: string;
   name: string;
@@ -33,7 +35,7 @@ export function isSharedProductImage(imageUrl: string | null | undefined): boole
 export function resolveProductVisual(input: ProductVisualInput): ProductVisual {
   const imageUrl = input.imageUrl?.trim() ?? "";
   if (!isSharedProductImage(imageUrl)) {
-    return { kind: "photo", src: imageUrl };
+    return { kind: "photo", src: upgradeToHttps(imageUrl) };
   }
 
   const category = (input.category ?? "").trim() || "Makeup";

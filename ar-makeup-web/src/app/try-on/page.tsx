@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import type { DeepAR } from "deepar";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -21,15 +22,14 @@ import { useMakeupBag } from "../../hooks/useMakeupBag";
 // Prevents multiple DeepAR instances from being created during React StrictMode
 // double-mount cycles or fast navigation.
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let deepARInitializePromise: Promise<any> | null = null;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let deepARActiveInstance: any = null;
+const CAMERA_INIT_TIMEOUT_MS = 12_000;
+
+let deepARInitializePromise: Promise<DeepAR> | null = null;
+let deepARActiveInstance: DeepAR | null = null;
 let deepARPendingShutdown = false;
 let deepARActiveMounts = 0;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const deepARInitialize = async (canvas: HTMLCanvasElement, licenseKey: string): Promise<any> => {
+const deepARInitialize = async (canvas: HTMLCanvasElement, licenseKey: string): Promise<DeepAR> => {
   if (deepARActiveInstance) return deepARActiveInstance;
   if (deepARInitializePromise) return deepARInitializePromise;
 
@@ -59,15 +59,13 @@ const deepARInitialize = async (canvas: HTMLCanvasElement, licenseKey: string): 
   }
 };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const deepARAcquire = async (canvas: HTMLCanvasElement, licenseKey: string): Promise<any> => {
+const deepARAcquire = async (canvas: HTMLCanvasElement, licenseKey: string): Promise<DeepAR> => {
   deepARActiveMounts += 1;
   deepARPendingShutdown = false;
   return await deepARInitialize(canvas, licenseKey);
 };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const deepARRelease = (instance: any | null): void => {
+const deepARRelease = (_instance: DeepAR | null): void => {
   deepARActiveMounts = Math.max(0, deepARActiveMounts - 1);
   if (deepARActiveMounts === 0) {
     if (deepARInitializePromise) {
@@ -99,12 +97,14 @@ export default function TryOnPage() {
   const { addItem } = useMakeupBag();
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [deepARInstance, setDeepARInstance] = useState<any | null>(null);
-  const [isInitializingAR, setIsInitializingAR] = useState(true);
+  const [deepARInstance, setDeepARInstance] = useState<DeepAR | null>(null);
+  const [isInitializingAR, setIsInitializingAR] = useState(false);
+  const [cameraRequested, setCameraRequested] = useState(false);
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [previewUnavailable, setPreviewUnavailable] = useState(false);
+  const [previewUnavailable, setPreviewUnavailable] = useState(
+    () => (process.env.NEXT_PUBLIC_DEEPAR_LICENSE_KEY?.trim() ?? "") === ""
+  );
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [cameraAttempt, setCameraAttempt] = useState(0);
 
@@ -162,18 +162,45 @@ export default function TryOnPage() {
     fetchMakeupData();
   }, []);
 
-  // ── Initialize DeepAR ───────────────────────────────────────────────────────
+  // ── Initialize DeepAR only after the user asks for the camera ─────────────
   useEffect(() => {
+    if (!cameraRequested) return;
     let isActive = true;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let instance: any = null;
+    let instance: DeepAR | null = null;
+    let released = false;
+
+    const releaseOnce = () => {
+      if (released) return;
+      released = true;
+      deepARRelease(instance);
+    };
+
+    const showFailure = () => {
+      if (!isActive) return;
+      setDeepARInstance(null);
+      setError(
+        "We couldn't start the camera. You can still browse shades here, or look through the catalog."
+      );
+      setIsInitializingAR(false);
+    };
+
+    const timer = window.setTimeout(() => {
+      showFailure();
+      releaseOnce();
+    }, CAMERA_INIT_TIMEOUT_MS);
 
     const initializeDeepAR = async () => {
-      if (!canvasRef.current) return;
+      const canvas = canvasRef.current;
+      if (!canvas) {
+        window.clearTimeout(timer);
+        showFailure();
+        return;
+      }
       setIsInitializingAR(true);
       setPreviewUnavailable(false);
       const licenseKey = process.env.NEXT_PUBLIC_DEEPAR_LICENSE_KEY?.trim() ?? "";
       if (!licenseKey) {
+        window.clearTimeout(timer);
         if (!isActive) return;
         setDeepARInstance(null);
         setError(null);
@@ -182,26 +209,30 @@ export default function TryOnPage() {
         return;
       }
       try {
-        instance = await deepARAcquire(canvasRef.current, licenseKey);
-        if (!isActive) return;
+        instance = await deepARAcquire(canvas, licenseKey);
+        window.clearTimeout(timer);
+        if (!isActive || released) {
+          releaseOnce();
+          return;
+        }
         setDeepARInstance(instance);
+        setIsInitializingAR(false);
       } catch (err) {
+        window.clearTimeout(timer);
         console.error("DeepAR initialization error:", err);
-        if (!isActive) return;
-        setError(
-          "We couldn't start the camera. You can still browse shades here, or look through the catalog."
-        );
-      } finally {
-        if (isActive) setIsInitializingAR(false);
+        showFailure();
+        releaseOnce();
       }
     };
 
-    initializeDeepAR();
+    void initializeDeepAR();
     return () => {
       isActive = false;
-      deepARRelease(instance);
+      window.clearTimeout(timer);
+      releaseOnce();
+      setDeepARInstance(null);
     };
-  }, [cameraAttempt]);
+  }, [cameraAttempt, cameraRequested]);
 
   // ── Apply makeup to DeepAR ──────────────────────────────────────────────────
   const applyMakeupToDeepAR = async (
@@ -285,10 +316,26 @@ export default function TryOnPage() {
     applyMakeupToDeepAR(activeCategory, null, 0);
   };
 
+  const startCamera = () => {
+    const licenseKey = process.env.NEXT_PUBLIC_DEEPAR_LICENSE_KEY?.trim() ?? "";
+    if (!licenseKey) {
+      setError(null);
+      setPreviewUnavailable(true);
+      setIsInitializingAR(false);
+      setCameraRequested(false);
+      return;
+    }
+    setError(null);
+    setPreviewUnavailable(false);
+    setIsInitializingAR(true);
+    setCameraRequested(true);
+  };
+
   const retryCamera = () => {
     setError(null);
     setPreviewUnavailable(false);
     setIsInitializingAR(true);
+    setCameraRequested(true);
     setCameraAttempt((attempt) => attempt + 1);
   };
 
@@ -426,6 +473,19 @@ export default function TryOnPage() {
 
             {/* Camera */}
             <div className="camera-card">
+              {!cameraRequested && !previewUnavailable && !error && (
+                <div className="camera-overlay-state" style={{ padding: "32px", textAlign: "center" }}>
+                  <p style={{ fontWeight: 600, color: "#1a1a1a", marginBottom: 6 }}>
+                    Camera is off
+                  </p>
+                  <p style={{ fontSize: 13, color: "#9a8f8f", marginBottom: 4 }}>
+                    Shades stay available. Start the camera when you want a live preview.
+                  </p>
+                  <button type="button" className="camera-retry" onClick={startCamera}>
+                    Start camera
+                  </button>
+                </div>
+              )}
               {isInitializingAR && (
                 <div className="camera-overlay-state">
                   <Loader2 size={36} style={{ color: "#C06C84" }} className="spin" />
@@ -462,7 +522,7 @@ export default function TryOnPage() {
                 </div>
               )}
               <canvas ref={canvasRef} />
-              {!isInitializingAR && !error && (
+              {deepARInstance && !isInitializingAR && !error && !previewUnavailable && (
                 <div className="live-badge">
                   <div className="live-dot" />
                   Live Preview
@@ -503,6 +563,7 @@ export default function TryOnPage() {
                     {categoryProducts.length > 0 ? (
                       <select
                         className="product-select"
+                        aria-label="Select product"
                         value={currentProduct?.product_key ?? ""}
                         onChange={(e) =>
                           setSelectedProductKey((prev) => ({
