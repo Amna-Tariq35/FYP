@@ -10,7 +10,7 @@ export default function PrivacyPage() {
   return (
     <main className="min-h-[calc(100vh-72px)] bg-[#FAF7F5]">
       <div className="mx-auto max-w-2xl px-4 py-14">
-        <p className="text-xs font-medium tracking-wide text-[#C06C84]">Student project demo</p>
+        <p className="text-xs font-medium tracking-wide text-[var(--rose-primary)]">Student project demo</p>
         <h1 className="mt-2 text-3xl font-semibold text-[#1F1F1F]">Privacy</h1>
         <div className="mt-6 space-y-4 text-sm leading-6 text-[#5A5A5A]">
           <p>
@@ -30,7 +30,7 @@ export default function PrivacyPage() {
           </p>
           <p>
             More answers are on the{" "}
-            <Link href="/support" className="text-[#C06C84] underline-offset-2 hover:underline">
+            <Link href="/support" className="text-[var(--rose-primary)] underline-offset-2 hover:underline">
               help page
             </Link>
             .

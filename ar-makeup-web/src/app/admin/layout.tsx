@@ -78,7 +78,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       {/* Sidebar Navigation */}
       <aside className="w-64 bg-white border-r border-gray-200 flex flex-col flex-shrink-0">
         <div className="p-6 border-b border-gray-100">
-          <h2 className="text-2xl font-bold text-[#C06C84]">Admin Panel</h2>
+          <h2 className="text-2xl font-bold text-[var(--rose-primary)]">Admin Panel</h2>
         </div>
         
         <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
@@ -86,7 +86,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             href="/admin" 
             className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${
               pathname === '/admin' 
-                ? 'bg-[#F4C2C2] text-[#C06C84] font-medium' 
+                ? 'bg-[#F4C2C2] text-[var(--rose-primary)] font-medium' 
                 : 'text-gray-600 hover:bg-gray-50'
             }`}
           >
@@ -97,7 +97,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             href="/admin/products" 
             className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${
               pathname?.includes('/admin/products') 
-                ? 'bg-[#F4C2C2] text-[#C06C84] font-medium' 
+                ? 'bg-[#F4C2C2] text-[var(--rose-primary)] font-medium' 
                 : 'text-gray-600 hover:bg-gray-50'
             }`}
           >
@@ -108,7 +108,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             href="/admin/orders" 
             className={`flex items-center gap-3 px-4 py-3 rounded-xl transition-colors ${
               pathname?.includes('/admin/orders') 
-                ? 'bg-[#F4C2C2] text-[#C06C84] font-medium' 
+                ? 'bg-[#F4C2C2] text-[var(--rose-primary)] font-medium' 
                 : 'text-gray-600 hover:bg-gray-50'
             }`}
           >

@@ -99,7 +99,7 @@ export async function POST(req: Request) {
           </p>
           <div style="background:#FDF2F4;border-radius:10px;padding:16px;margin:20px 0;">
             <p style="margin:0;font-size:13px;color:#888;">Order reference</p>
-            <p style="margin:4px 0 0;font-size:16px;font-weight:bold;color:#C06C84;">#${shortId}</p>
+            <p style="margin:4px 0 0;font-size:16px;font-weight:bold;color:#9A4A64;">#${shortId}</p>
           </div>
           <table style="width:100%;border-collapse:collapse;margin-bottom:16px;">
             <thead>
@@ -112,7 +112,7 @@ export async function POST(req: Request) {
             <tbody>${rows}</tbody>
           </table>
           <div style="text-align:right;padding:12px 0;border-top:2px solid #f0e0e5;">
-            <span style="font-size:18px;font-weight:bold;color:#C06C84;">Total: $${escapeHtml(total.toFixed(2))}</span>
+            <span style="font-size:18px;font-weight:bold;color:#9A4A64;">Total: $${escapeHtml(total.toFixed(2))}</span>
           </div>
           <div style="background:#f9f9f9;border-radius:10px;padding:16px;margin-top:20px;">
             <p style="margin:0;font-size:13px;color:#666;">

@@ -31,9 +31,9 @@ async function sendRestockEmail(
     to: recipientEmail,
     subject: `${productDetails.name} is back in stock`,
     htmlContent: `<div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:24px;">
-        <h1 style="color:#C06C84;font-size:22px;">Back in stock</h1>
+        <h1 style="color:#9A4A64;font-size:22px;">Back in stock</h1>
         <p>${productDetails.name}${productDetails.brand ? ` by ${productDetails.brand}` : ""} is available again.</p>
-        <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/products/${encodeURIComponent(productKey)}" style="color:#C06C84;">Shop now</a></p>
+        <p><a href="${process.env.NEXT_PUBLIC_APP_URL}/products/${encodeURIComponent(productKey)}" style="color:#9A4A64;">Shop now</a></p>
       </div>`,
   });
 }

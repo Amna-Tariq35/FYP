@@ -70,7 +70,7 @@ export default function UpdatePasswordPage() {
           </div>
           <Link
             href="/auth/forgot-password"
-            className="block text-center text-sm font-semibold text-[#C06C84] hover:underline"
+            className="block text-center text-sm font-semibold text-[var(--rose-primary)] hover:underline"
           >
             Request a new link
           </Link>
@@ -115,7 +115,7 @@ export default function UpdatePasswordPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-2xl bg-[#C06C84] px-4 py-3 text-sm font-semibold text-white shadow-md shadow-[#C06C84]/15 transition hover:opacity-95 disabled:opacity-60"
+            className="w-full rounded-2xl bg-[var(--rose-primary)] px-4 py-3 text-sm font-semibold text-white shadow-md shadow-[#C06C84]/15 transition hover:opacity-95 disabled:opacity-60"
           >
             {loading ? "Saving…" : "Update password"}
           </button>

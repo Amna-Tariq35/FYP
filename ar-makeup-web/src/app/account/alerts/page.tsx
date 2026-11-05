@@ -35,7 +35,7 @@ export default function RestockAlertsPage() {
         <h1 className="text-2xl font-bold text-[var(--text-main)]">Restock alerts</h1>
         <p className="mt-2 text-sm text-[var(--text-muted)]">Products you asked to hear about when they are back.</p>
         {loading ? (
-          <div className="flex justify-center py-16"><Loader2 className="animate-spin text-[#C06C84]" /></div>
+          <div className="flex justify-center py-16"><Loader2 className="animate-spin text-[var(--rose-primary)]" /></div>
         ) : error ? (
           <p className="mt-6 text-sm text-red-600">{error}</p>
         ) : alerts.length === 0 ? (

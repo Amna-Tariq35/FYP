@@ -101,7 +101,7 @@ export default function ReceiptSummary({
 
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
                   {it.shade_name ? (
-                    <span className="inline-flex items-center rounded-full bg-[#FDF2F4] px-2 py-0.5 text-[10px] font-medium text-[#C06C84]">
+                    <span className="inline-flex items-center rounded-full bg-[#FDF2F4] px-2 py-0.5 text-[10px] font-medium text-[var(--rose-primary)]">
                       {it.shade_name}
                     </span>
                   ) : null}

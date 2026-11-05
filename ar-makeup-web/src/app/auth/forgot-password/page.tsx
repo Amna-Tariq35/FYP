@@ -39,7 +39,7 @@ export default function ForgotPasswordPage() {
           </div>
           <Link
             href="/auth/sign-in"
-            className="block text-center text-sm font-semibold text-[#C06C84] hover:underline"
+            className="block text-center text-sm font-semibold text-[var(--rose-primary)] hover:underline"
           >
             Back to sign in
           </Link>
@@ -71,7 +71,7 @@ export default function ForgotPasswordPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-2xl bg-[#C06C84] px-4 py-3 text-sm font-semibold text-white shadow-md shadow-[#C06C84]/15 transition hover:opacity-95 disabled:opacity-60"
+            className="w-full rounded-2xl bg-[var(--rose-primary)] px-4 py-3 text-sm font-semibold text-white shadow-md shadow-[#C06C84]/15 transition hover:opacity-95 disabled:opacity-60"
           >
             {loading ? "Sending…" : "Send reset link"}
           </button>
@@ -79,7 +79,7 @@ export default function ForgotPasswordPage() {
           <div className="text-center text-sm">
             <Link
               href="/auth/sign-in"
-              className="text-black/60 hover:text-[#C06C84] hover:underline transition-colors"
+              className="text-black/60 hover:text-[var(--rose-primary)] hover:underline transition-colors"
             >
               Back to sign in
             </Link>

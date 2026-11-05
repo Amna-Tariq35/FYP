@@ -13,7 +13,7 @@ export function AdminAccessDenied() {
       <Link
         href="/"
         className="mt-6 inline-flex rounded-xl px-5 py-2.5 text-sm font-medium text-white"
-        style={{ background: "var(--rose-primary, #C06C84)" }}
+        style={{ background: "var(--rose-primary)" }}
       >
         Back to home
       </Link>
@@ -34,7 +34,7 @@ export default function AdminSignInRequired({ nextPath }: { nextPath: string }) 
       <Link
         href={`/auth/sign-in?next=${encodeURIComponent(nextPath)}`}
         className="mt-6 inline-flex rounded-xl px-5 py-2.5 text-sm font-medium text-white"
-        style={{ background: "var(--rose-primary, #C06C84)" }}
+        style={{ background: "var(--rose-primary)" }}
       >
         Sign in
       </Link>

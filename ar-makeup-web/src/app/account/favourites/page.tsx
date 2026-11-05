@@ -168,7 +168,7 @@ export default function FavouritesPage() {
   if (loading) {
     return (
       <div className="flex min-h-[50vh] items-center justify-center">
-        <Loader2 className="animate-spin text-[#C06C84]" size={32} />
+        <Loader2 className="animate-spin text-[var(--rose-primary)]" size={32} />
       </div>
     );
   }
@@ -188,7 +188,7 @@ export default function FavouritesPage() {
         </p>
         <Link
           href="/products"
-          className="rounded-xl bg-[#C06C84] px-8 py-3.5 text-sm font-bold tracking-wide text-white transition-all hover:brightness-95 active:scale-95"
+          className="rounded-xl bg-[var(--rose-primary)] px-8 py-3.5 text-sm font-bold tracking-wide text-white transition-all hover:brightness-95 active:scale-95"
         >
           Explore Products
         </Link>
@@ -210,7 +210,7 @@ export default function FavouritesPage() {
 
         <button
           onClick={toggleSelectAll}
-          className="text-xs font-semibold text-[#C06C84] underline underline-offset-2 hover:opacity-75"
+          className="text-xs font-semibold text-[var(--rose-primary)] underline underline-offset-2 hover:opacity-75"
         >
           {allSelected ? "Deselect All" : "Select All"}
         </button>
@@ -244,7 +244,7 @@ export default function FavouritesPage() {
                 aria-label={isSelected ? "Deselect item" : "Select item"}
                 className={`absolute right-2.5 top-14 z-10 flex h-6 w-6 items-center justify-center rounded-full shadow-sm ring-1 transition-all ${
                   isSelected
-                    ? "bg-[#C06C84] ring-[#C06C84]"
+                    ? "bg-[var(--rose-primary)] ring-[var(--rose-primary)]"
                     : "bg-white/95 ring-black/10 hover:ring-[#C06C84]/50"
                 }`}
               >
@@ -258,7 +258,7 @@ export default function FavouritesPage() {
                 favShadeKey={line.shade_key || undefined}
               />
               {shadeLabel ? (
-                <p className="px-3 pb-3 text-xs font-medium text-[#C06C84]">{shadeLabel}</p>
+                <p className="px-3 pb-3 text-xs font-medium text-[var(--rose-primary)]">{shadeLabel}</p>
               ) : null}
             </div>
           );
@@ -280,7 +280,7 @@ export default function FavouritesPage() {
             <button
               onClick={handleAddSelectedToCart}
               disabled={adding}
-              className="flex items-center gap-2 whitespace-nowrap rounded-full bg-[#C06C84] px-5 py-2.5 text-xs font-bold text-white transition-all hover:brightness-95 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
+              className="flex items-center gap-2 whitespace-nowrap rounded-full bg-[var(--rose-primary)] px-5 py-2.5 text-xs font-bold text-white transition-all hover:brightness-95 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {adding ? (
                 <>

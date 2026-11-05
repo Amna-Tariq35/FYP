@@ -154,7 +154,7 @@ export default function AdminOrderDetailsPage() {
           <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
             <div className="flex items-center gap-2 mb-5 pb-3 border-b border-gray-100">
               <div className="w-8 h-8 rounded-lg bg-[#F4C2C2]/40 flex items-center justify-center">
-                <Package className="w-4 h-4 text-[#C06C84]" />
+                <Package className="w-4 h-4 text-[var(--rose-primary)]" />
               </div>
               <h2 className="text-base font-bold text-[var(--text-main)]">
                 Purchased Items
@@ -179,7 +179,7 @@ export default function AdminOrderDetailsPage() {
                     </p>
                     <p className="text-xs text-gray-400 mt-0.5">{item.brand}</p>
                     {item.shade_name && (
-                      <span className="mt-1.5 text-xs font-medium text-[#C06C84] bg-[#F4C2C2]/50 inline-flex items-center gap-1 px-2 py-0.5 rounded-md">
+                      <span className="mt-1.5 text-xs font-medium text-[var(--rose-primary)] bg-[#F4C2C2]/50 inline-flex items-center gap-1 px-2 py-0.5 rounded-md">
                         <span className="w-1.5 h-1.5 rounded-full bg-[#C06C84] inline-block" />
                         {item.shade_name}
                       </span>
@@ -189,7 +189,7 @@ export default function AdminOrderDetailsPage() {
                     <p className="text-xs text-gray-400">
                       ${Number(item.unit_price).toFixed(2)} × {item.quantity}
                     </p>
-                    <p className="font-bold text-[#C06C84] text-sm mt-0.5">
+                    <p className="font-bold text-[var(--rose-primary)] text-sm mt-0.5">
                       ${Number(item.line_total).toFixed(2)}
                     </p>
                   </div>
@@ -206,7 +206,7 @@ export default function AdminOrderDetailsPage() {
           <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
             <div className="flex items-center gap-2 mb-4 pb-3 border-b border-gray-100">
               <div className="w-8 h-8 rounded-lg bg-[#F4C2C2]/40 flex items-center justify-center">
-                <MapPin className="w-4 h-4 text-[#C06C84]" />
+                <MapPin className="w-4 h-4 text-[var(--rose-primary)]" />
               </div>
               <h2 className="text-base font-bold text-[var(--text-main)]">Shipping Info</h2>
             </div>
@@ -225,7 +225,7 @@ export default function AdminOrderDetailsPage() {
           <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
             <div className="flex items-center gap-2 mb-4 pb-3 border-b border-gray-100">
               <div className="w-8 h-8 rounded-lg bg-[#F4C2C2]/40 flex items-center justify-center">
-                <CreditCard className="w-4 h-4 text-[#C06C84]" />
+                <CreditCard className="w-4 h-4 text-[var(--rose-primary)]" />
               </div>
               <h2 className="text-base font-bold text-[var(--text-main)]">Payment Summary</h2>
             </div>
@@ -241,7 +241,7 @@ export default function AdminOrderDetailsPage() {
               </div>
               <div className="flex justify-between font-bold text-base pt-3 mt-1 border-t border-gray-100">
                 <span className="text-[var(--text-main)]">Total</span>
-                <span className="text-[#C06C84]">
+                <span className="text-[var(--rose-primary)]">
                   ${Number(order.total).toFixed(2)}{" "}
                   <span className="text-xs font-normal text-gray-400">{order.currency}</span>
                 </span>

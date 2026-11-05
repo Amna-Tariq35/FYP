@@ -52,7 +52,7 @@ export default function ShadeMatchCard() {
       )}
       {state.status === "signed-out" && (
         <p className="mt-2 text-sm text-[var(--text-muted)]">
-          <Link href="/auth/sign-in?next=/account" className="font-semibold text-[#C06C84]">
+          <Link href="/auth/sign-in?next=/account" className="font-semibold text-[var(--rose-primary)]">
             Sign in
           </Link>{" "}
           to see a shade saved from the app.
@@ -87,7 +87,7 @@ export default function ShadeMatchCard() {
                     {productKey && (
                       <Link
                         href={`/products/${encodeURIComponent(productKey)}${shade.shadeKey ? `?shade=${encodeURIComponent(shade.shadeKey)}` : ""}`}
-                        className="text-xs font-semibold text-[#C06C84]"
+                        className="text-xs font-semibold text-[var(--rose-primary)]"
                       >
                         View product
                       </Link>
@@ -95,7 +95,7 @@ export default function ShadeMatchCard() {
                     {shade.inStock && productKey && (
                       <button
                         type="button"
-                        className="rounded-full bg-[#C06C84] px-3 py-1 text-xs font-semibold text-white"
+                        className="rounded-full bg-[var(--rose-primary)] px-3 py-1 text-xs font-semibold text-white"
                         onClick={() => {
                           addToCart({
                             product_key: productKey,

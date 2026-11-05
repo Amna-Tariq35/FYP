@@ -573,7 +573,7 @@ export default function Chatbot() {
           onClick={() => setIsOpen(true)}
           aria-label="Open chat"
           className="text-white p-4 rounded-full shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center relative"
-          style={{ background: 'linear-gradient(135deg, #C06C84 0%, #e07a90 100%)' }}
+          style={{ background: 'linear-gradient(135deg, var(--rose-primary) 0%, #e07a90 100%)' }}
         >
           <MessageCircle size={26} />
           <span

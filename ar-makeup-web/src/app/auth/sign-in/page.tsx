@@ -96,7 +96,7 @@ function SignInForm() {
         <button
           type="submit"
           disabled={loading}
-          className="w-full rounded-2xl bg-[#C06C84] px-4 py-3 text-sm font-semibold text-white shadow-md shadow-[#C06C84]/15 transition hover:opacity-95 disabled:opacity-60"
+          className="w-full rounded-2xl bg-[var(--rose-primary)] px-4 py-3 text-sm font-semibold text-white shadow-md shadow-[#C06C84]/15 transition hover:opacity-95 disabled:opacity-60"
         >
           {loading ? "Signing in…" : "Sign in"}
         </button>
@@ -105,7 +105,7 @@ function SignInForm() {
         <div className="text-center text-sm">
           <Link
             href="/auth/forgot-password"
-            className="font-semibold text-[#C06C84] hover:underline"
+            className="font-semibold text-[var(--rose-primary)] hover:underline"
           >
             Forgot password?
           </Link>
@@ -114,13 +114,13 @@ function SignInForm() {
         <div className="flex items-center justify-between text-sm">
           <Link
             href="/"
-            className="text-black/60 hover:text-[#C06C84] hover:underline transition-colors"
+            className="text-black/60 hover:text-[var(--rose-primary)] hover:underline transition-colors"
           >
             Back to home
           </Link>
           <Link
             href={`/auth/sign-up?next=${encodeURIComponent(next)}`}
-            className="font-semibold text-[#C06C84] hover:underline"
+            className="font-semibold text-[var(--rose-primary)] hover:underline"
           >
             Create account
           </Link>

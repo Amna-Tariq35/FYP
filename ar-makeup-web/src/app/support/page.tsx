@@ -123,7 +123,7 @@ export default function SupportPage() {
                   viewBox="0 0 24 24"
                   fill="none"
                   aria-hidden="true"
-                  className="shrink-0 text-[#C06C84]/60 transition-transform group-open:rotate-180"
+                  className="shrink-0 text-[var(--rose-primary)]/60 transition-transform group-open:rotate-180"
                 >
                   <path
                     d="m6 9 6 6 6-6"

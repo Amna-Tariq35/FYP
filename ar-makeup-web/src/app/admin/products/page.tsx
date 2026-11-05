@@ -116,7 +116,7 @@ export default function AdminProductsPage() {
         </div>
         <button 
           className="flex items-center gap-2 px-4 py-2 rounded-xl text-white font-medium transition-all"
-          style={{ background: "var(--rose-primary, #C06C84)" }}
+          style={{ background: "var(--rose-primary)" }}
           onClick={() => router.push("/admin/products/new")}
         >
           <Plus className="w-4 h-4" />
@@ -224,7 +224,7 @@ export default function AdminProductsPage() {
                     <td className="py-4 px-6 text-right">
                       <button 
                         onClick={() => router.push(`/admin/products/${product.id}`)}
-                        className="p-2 text-gray-400 hover:text-[#C06C84] hover:bg-[#F4C2C2] rounded-lg transition-colors inline-flex items-center gap-1"
+                        className="p-2 text-gray-400 hover:text-[var(--rose-primary)] hover:bg-[#F4C2C2] rounded-lg transition-colors inline-flex items-center gap-1"
                         title="Edit Product & Shades"
                       >
                         <Edit className="w-4 h-4" />

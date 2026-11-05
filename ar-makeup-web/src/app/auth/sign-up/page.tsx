@@ -99,7 +99,7 @@ function SignUpForm() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full rounded-2xl bg-[#C06C84] px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:opacity-95 disabled:opacity-60"
+            className="w-full rounded-2xl bg-[var(--rose-primary)] px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:opacity-95 disabled:opacity-60"
           >
             {loading ? "Creating…" : "Create account"}
           </button>
@@ -108,13 +108,13 @@ function SignUpForm() {
           <div className="flex items-center justify-between text-xs text-black/55">
             <Link
               href="/"
-              className="hover:text-[#C06C84] hover:underline transition-colors"
+              className="hover:text-[var(--rose-primary)] hover:underline transition-colors"
             >
               Back to home
             </Link>
             <Link
               href={`/auth/sign-in?next=${encodeURIComponent(next)}`}
-              className="font-medium text-[#C06C84] hover:underline"
+              className="font-medium text-[var(--rose-primary)] hover:underline"
             >
               Sign in
             </Link>
@@ -131,7 +131,7 @@ function SignUpForm() {
             onClick={() =>
               router.push(`/auth/sign-in?next=${encodeURIComponent(next)}`)
             }
-            className="w-full rounded-2xl bg-[#C06C84] px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:opacity-95"
+            className="w-full rounded-2xl bg-[var(--rose-primary)] px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:opacity-95"
           >
             Continue to Sign in
           </button>

@@ -47,7 +47,7 @@ function statusBadgeClass(status: string) {
   if (s === "failed") return `${base} bg-red-100 text-red-600`;
   if (s === "cancelled") return `${base} bg-gray-100 text-gray-500`;
   if (s === "draft") return `${base} bg-gray-100 text-gray-400`;
-  return `${base} bg-[#F4C2C2]/60 text-[#C06C84]`;
+  return `${base} bg-[#F4C2C2]/60 text-[var(--rose-primary)]`;
 }
 
 function statusDotColor(status: string) {
@@ -173,7 +173,7 @@ export default function MyOrdersClient({ initialData }: MyOrdersClientProps) {
                   className={[
                     "whitespace-nowrap rounded-full border px-3 py-1.5 text-xs font-medium transition-all",
                     status === value
-                      ? "border-[#C06C84] bg-[#C06C84] text-white shadow-sm"
+                      ? "border-[var(--rose-primary)] bg-[var(--rose-primary)] text-white shadow-sm"
                       : "border-black/10 bg-white/60 text-black/60 hover:border-black/20 hover:text-black/80",
                   ].join(" ")}
                 >
@@ -287,7 +287,7 @@ export default function MyOrdersClient({ initialData }: MyOrdersClientProps) {
                         <BuyAgainButton orderId={o.id} />
                         <button
                           type="button"
-                          className="rounded-full border border-[#C06C84]/30 bg-[#F4C2C2]/20 px-3.5 py-1.5 text-xs font-medium text-[#C06C84] transition-all hover:bg-[#C06C84] hover:text-white hover:border-[#C06C84]"
+                          className="rounded-full border border-[#C06C84]/30 bg-[#F4C2C2]/20 px-3.5 py-1.5 text-xs font-medium text-[var(--rose-primary)] transition-all hover:bg-[var(--rose-primary)] hover:text-white hover:border-[var(--rose-primary)]"
                           onClick={() => router.push(`/my-orders/${o.id}`)}
                         >
                           View details →

@@ -24,7 +24,7 @@ export default function AuthShell({
           {/* Header */}
           <div className="mb-6 text-center">
             {/* Brand pill */}
-            <div className="mx-auto inline-flex items-center gap-2 rounded-full border border-[#C06C84]/20 bg-white/70 px-3.5 py-1.5 text-xs text-[#C06C84]/80 backdrop-blur shadow-sm">
+            <div className="mx-auto inline-flex items-center gap-2 rounded-full border border-[#C06C84]/20 bg-white/70 px-3.5 py-1.5 text-xs text-[var(--rose-primary)]/80 backdrop-blur shadow-sm">
               <span className="h-1.5 w-1.5 rounded-full bg-[#C06C84]" />
               AR Makeup
             </div>
@@ -48,11 +48,11 @@ export default function AuthShell({
           {/* Footer note */}
           <p className="mt-5 text-center text-xs text-black/40 leading-5">
             By continuing, you agree to our{" "}
-            <Link href="/terms" className="text-[#C06C84]/80 hover:text-[#C06C84] underline-offset-2 hover:underline transition-colors">
+            <Link href="/terms" className="text-[var(--rose-primary)]/80 hover:text-[var(--rose-primary)] underline-offset-2 hover:underline transition-colors">
               Terms of Service
             </Link>{" "}
             and{" "}
-            <Link href="/privacy" className="text-[#C06C84]/80 hover:text-[#C06C84] underline-offset-2 hover:underline transition-colors">
+            <Link href="/privacy" className="text-[var(--rose-primary)]/80 hover:text-[var(--rose-primary)] underline-offset-2 hover:underline transition-colors">
               Privacy Policy
             </Link>
             .

@@ -246,7 +246,7 @@ export default function PaymentPanel() {
       >
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 text-sm font-semibold text-[var(--text-main)]">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" className="text-[#C06C84]">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" className="text-[var(--rose-primary)]">
               <path
                 d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 1 1 18 0Z"
                 stroke="currentColor"
@@ -284,7 +284,7 @@ export default function PaymentPanel() {
               Email is required for guest checkout.{" "}
               <button
                 type="button"
-                className="text-[#C06C84] hover:underline"
+                className="text-[var(--rose-primary)] hover:underline"
                 onClick={() => router.push("/checkout/shipping")}
                 disabled={isPlacing}
               >
@@ -313,7 +313,7 @@ export default function PaymentPanel() {
             className={[
               "flex items-center gap-3 rounded-xl border px-4 py-3 text-sm font-medium transition-all text-left",
               selectedMethod === "card"
-                ? "border-[#C06C84] bg-[#FDF2F4] text-[#C06C84]"
+                ? "border-[#C06C84] bg-[#FDF2F4] text-[var(--rose-primary)]"
                 : "border-[var(--border-soft)] bg-white text-[var(--text-secondary)] hover:border-[#C06C84]/40",
             ].join(" ")}
           >
@@ -335,7 +335,7 @@ export default function PaymentPanel() {
             className={[
               "flex items-center gap-3 rounded-xl border px-4 py-3 text-sm font-medium transition-all text-left",
               selectedMethod === "cod"
-                ? "border-[#C06C84] bg-[#FDF2F4] text-[#C06C84]"
+                ? "border-[#C06C84] bg-[#FDF2F4] text-[var(--rose-primary)]"
                 : "border-[var(--border-soft)] bg-white text-[var(--text-secondary)] hover:border-[#C06C84]/40",
             ].join(" ")}
           >

@@ -20,7 +20,7 @@ function orderStatusStyle(status: string): StatusStyle {
     cancelled:  { bg: "rgba(0,0,0,0.07)",      text: "#6b7280" },
     failed:     { bg: "rgba(239,68,68,0.12)",  text: "#b91c1c" },
   };
-  return map[s] ?? { bg: "rgba(192,108,132,0.12)", text: "#C06C84" };
+  return map[s] ?? { bg: "rgba(192,108,132,0.12)", text: "var(--rose-primary)" };
 }
 
 type DashboardStats = {

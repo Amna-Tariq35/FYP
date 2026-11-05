@@ -61,7 +61,7 @@ function CheckoutCancelContent() {
           <button 
             onClick={() => router.push("/cart")}
             className="w-full py-3 rounded-xl text-white font-medium transition-all"
-            style={{ background: "var(--rose-primary, #C06C84)" }}
+            style={{ background: "var(--rose-primary)" }}
           >
             Return to Cart
           </button>

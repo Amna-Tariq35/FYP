@@ -198,7 +198,7 @@ function MakeupBagContent() {
   if (status === "loading" || (isSignedIn && loading && items.length === 0)) {
     return (
       <div className="flex min-h-[50vh] items-center justify-center">
-        <Loader2 className="animate-spin text-[#C06C84]" size={32} />
+        <Loader2 className="animate-spin text-[var(--rose-primary)]" size={32} />
       </div>
     );
   }
@@ -207,7 +207,7 @@ function MakeupBagContent() {
     <div className="mx-auto max-w-6xl px-4 py-12 pb-24">
       <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold tracking-[0.16em] text-[#C06C84]">
+          <p className="text-xs font-semibold tracking-[0.16em] text-[var(--rose-primary)]">
             OWNED, NOT WISHED
           </p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight text-[#1F1F1F]">
@@ -222,7 +222,7 @@ function MakeupBagContent() {
         <button
           type="button"
           onClick={() => setAddingOpen((v) => !v)}
-          className="rounded-xl bg-[#C06C84] px-5 py-3 text-sm font-bold text-white hover:brightness-95"
+          className="rounded-xl bg-[var(--rose-primary)] px-5 py-3 text-sm font-bold text-white hover:brightness-95"
         >
           {addingOpen ? "Close catalog" : "Add products"}
         </button>
@@ -285,16 +285,16 @@ function MakeupBagContent() {
                       {p.name}
                     </div>
                   </div>
-                  <Plus size={16} className="text-[#C06C84]" />
+                  <Plus size={16} className="text-[var(--rose-primary)]" />
                 </button>
                 {expandedKey === p.product_key && (
                   <div className="mt-3 flex flex-wrap gap-2 pl-15">
                     {shadesLoading ? (
-                      <Loader2 className="animate-spin text-[#C06C84]" size={16} />
+                      <Loader2 className="animate-spin text-[var(--rose-primary)]" size={16} />
                     ) : expandedShades.length === 0 ? (
                       <button
                         type="button"
-                        className="rounded-full bg-[#FDF2F4] px-3 py-1 text-xs font-semibold text-[#C06C84]"
+                        className="rounded-full bg-[#FDF2F4] px-3 py-1 text-xs font-semibold text-[var(--rose-primary)]"
                         onClick={async () => {
                           await addItem(p.product_key, "", "manual");
                           showToast("Added to bag");
@@ -316,7 +316,7 @@ function MakeupBagContent() {
                             }}
                             className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-semibold ring-1 ${
                               owned
-                                ? "bg-[#F4C2C2]/40 text-[#C06C84] ring-[#C06C84]/20"
+                                ? "bg-[#F4C2C2]/40 text-[var(--rose-primary)] ring-[#C06C84]/20"
                                 : "bg-white text-[#1F1F1F] ring-black/10 hover:ring-[#C06C84]/50"
                             }`}
                           >
@@ -353,7 +353,7 @@ function MakeupBagContent() {
           <button
             type="button"
             onClick={() => setAddingOpen(true)}
-            className="rounded-xl bg-[#C06C84] px-8 py-3.5 text-sm font-bold text-white"
+            className="rounded-xl bg-[var(--rose-primary)] px-8 py-3.5 text-sm font-bold text-white"
           >
             Add from catalog
           </button>
@@ -394,7 +394,7 @@ function MakeupBagContent() {
                   <div className="truncate text-sm font-bold text-[#1F1F1F]">
                     {product?.name ?? item.product_key}
                   </div>
-                  <div className="text-xs text-[#C06C84]">
+                  <div className="text-xs text-[var(--rose-primary)]">
                     {shadeName ? shadeName : "All shades"} · {bagSourceLabel(item.source)}
                   </div>
                 </div>

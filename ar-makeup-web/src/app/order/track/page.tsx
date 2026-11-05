@@ -25,7 +25,7 @@ function statusStyle(status: string): StatusStyle {
     failed:     { bg: "rgba(239,68,68,0.10)",  text: "#b91c1c", dot: "#ef4444" },
     cancelled:  { bg: "rgba(0,0,0,0.06)",      text: "#6b7280", dot: "#9ca3af" },
   };
-  return map[s] ?? { bg: "rgba(192,108,132,0.10)", text: "#C06C84", dot: "#C06C84" };
+  return map[s] ?? { bg: "rgba(192,108,132,0.10)", text: "var(--rose-primary)", dot: "#C06C84" };
 }
 
 function StatusBadge({ status }: { status: string }) {

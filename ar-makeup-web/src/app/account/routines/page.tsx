@@ -47,7 +47,7 @@ export default async function PastRoutinesPage() {
           <p className="mt-3 text-sm text-[var(--text-muted)]">
             Sign in to see your saved skin routines. This is not a diagnosis.
           </p>
-          <Link href="/auth/sign-in?next=/account/routines" className="mt-6 inline-block text-sm font-semibold text-[#C06C84]">
+          <Link href="/auth/sign-in?next=/account/routines" className="mt-6 inline-block text-sm font-semibold text-[var(--rose-primary)]">
             Sign in
           </Link>
         </div>
@@ -96,7 +96,7 @@ export default async function PastRoutinesPage() {
                         {log.skin_type?.trim() || "Skin type not stored"}
                       </h2>
                     </div>
-                    <Link href={`/skin-analysis/results/${log.id}`} className="text-sm font-semibold text-[#C06C84]">
+                    <Link href={`/skin-analysis/results/${log.id}`} className="text-sm font-semibold text-[var(--rose-primary)]">
                       Open results
                     </Link>
                   </div>

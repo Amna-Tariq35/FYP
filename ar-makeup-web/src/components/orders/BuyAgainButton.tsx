@@ -71,7 +71,7 @@ export default function BuyAgainButton({ orderId, itemId, label = "Buy again", c
         type="button"
         onClick={buyAgain}
         disabled={loading}
-        className={className || "inline-flex items-center gap-1.5 rounded-full border border-[#C06C84]/30 bg-[#F4C2C2]/20 px-3 py-1.5 text-xs font-medium text-[#C06C84] hover:bg-[#C06C84] hover:text-white disabled:opacity-60"}
+        className={className || "inline-flex items-center gap-1.5 rounded-full border border-[#C06C84]/30 bg-[#F4C2C2]/20 px-3 py-1.5 text-xs font-medium text-[var(--rose-primary)] hover:bg-[var(--rose-primary)] hover:text-white disabled:opacity-60"}
       >
         <ShoppingCart size={13} />
         {loading ? "Checking…" : label}

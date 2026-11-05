@@ -44,7 +44,7 @@ function statusBadgeClass(status: string) {
   if (s === "failed")      return `${base} bg-red-100 text-red-600`;
   if (s === "cancelled")   return `${base} bg-gray-100 text-gray-500`;
   if (s === "draft")       return `${base} bg-gray-100 text-gray-400`;
-  return                          `${base} bg-[#F4C2C2]/60 text-[#C06C84]`;
+  return                          `${base} bg-[#F4C2C2]/60 text-[var(--rose-primary)]`;
 }
 
 function statusDotColor(status: string) {
@@ -327,7 +327,7 @@ export default function OrderDetailClient({ orderId }: { orderId: string }) {
                           {canReviewPurchase && item.product_key ? (
                             <Link
                               href={`/products/${encodeURIComponent(item.product_key)}#reviews`}
-                              className="text-xs font-semibold text-[#C06C84]"
+                              className="text-xs font-semibold text-[var(--rose-primary)]"
                             >
                               Review this purchase
                             </Link>

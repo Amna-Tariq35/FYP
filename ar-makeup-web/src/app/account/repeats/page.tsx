@@ -68,16 +68,16 @@ export default function RepeatsPage() {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
-              <Repeat2 className="text-[#C06C84]" size={22} />
+              <Repeat2 className="text-[var(--rose-primary)]" size={22} />
               <h1 className="text-2xl font-bold text-[var(--text-main)]">Your repeats</h1>
             </div>
             <p className="mt-1 text-sm text-[var(--text-muted)]">Products you have bought more than once or may be ready to replenish.</p>
           </div>
-          <Link href="/my-orders" className="text-sm font-medium text-[#C06C84] hover:underline">View my orders</Link>
+          <Link href="/my-orders" className="text-sm font-medium text-[var(--rose-primary)] hover:underline">View my orders</Link>
         </div>
 
         {loading ? (
-          <div className="flex justify-center py-20"><Loader2 className="animate-spin text-[#C06C84]" /></div>
+          <div className="flex justify-center py-20"><Loader2 className="animate-spin text-[var(--rose-primary)]" /></div>
         ) : error ? (
           <div className="mt-8 rounded-2xl border border-red-200 bg-red-50 p-5 text-sm text-red-700">{error}</div>
         ) : repeats.length === 0 ? (
@@ -104,8 +104,8 @@ export default function RepeatsPage() {
                       <span>Stock: {item.stock_quantity}</span>
                     </div>
                     <div className="flex items-center justify-between gap-3">
-                      <span className="font-semibold text-[#C06C84]">{item.price === null ? "Unavailable" : `$${item.price.toFixed(2)}`}</span>
-                      <button type="button" disabled={unavailable} onClick={() => addRepeat(item)} className="inline-flex items-center gap-1.5 rounded-full bg-[#C06C84] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-gray-300">
+                      <span className="font-semibold text-[var(--rose-primary)]">{item.price === null ? "Unavailable" : `$${item.price.toFixed(2)}`}</span>
+                      <button type="button" disabled={unavailable} onClick={() => addRepeat(item)} className="inline-flex items-center gap-1.5 rounded-full bg-[var(--rose-primary)] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-gray-300">
                         <ShoppingCart size={13} /> {added === `${item.product_key}:${item.shade_key ?? ""}` ? "Added" : unavailable ? "Unavailable" : (!item.shade_key || item.shade_key === "no-shade") && item.has_shades ? "Choose shade" : "Add again"}
                       </button>
                     </div>

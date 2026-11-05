@@ -219,7 +219,7 @@ export default function AdminOrdersPage() {
         </div>
         <button
           onClick={() => mutate()}
-          className="p-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 transition-colors text-gray-400 hover:text-[#C06C84]"
+          className="p-2.5 rounded-xl border border-gray-200 hover:bg-gray-50 transition-colors text-gray-400 hover:text-[var(--rose-primary)]"
           title="Refresh orders"
           aria-label="Refresh"
         >
@@ -347,7 +347,7 @@ export default function AdminOrdersPage() {
                           onClick={() =>
                             router.push(`/admin/orders/${order.id}`)
                           }
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-[#C06C84] hover:bg-[#F4C2C2]/30 rounded-lg transition-colors"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-[var(--rose-primary)] hover:bg-[#F4C2C2]/30 rounded-lg transition-colors"
                           aria-label="View order details"
                         >
                           <Eye className="w-3.5 h-3.5" />

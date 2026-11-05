@@ -112,7 +112,7 @@ export default function BridgeClient() {
       </div>
 
       <div className="relative w-full max-w-sm rounded-3xl border border-black/[0.08] bg-white/78 p-8 text-center shadow-[0_20px_60px_rgba(0,0,0,0.09)] backdrop-blur-sm">
-        <div className="mx-auto inline-flex items-center gap-2 rounded-full border border-[#C06C84]/20 bg-white/70 px-3.5 py-1.5 text-xs text-[#C06C84]/80 shadow-sm backdrop-blur">
+        <div className="mx-auto inline-flex items-center gap-2 rounded-full border border-[#C06C84]/20 bg-white/70 px-3.5 py-1.5 text-xs text-[var(--rose-primary)]/80 shadow-sm backdrop-blur">
           <span className="h-1.5 w-1.5 rounded-full bg-[#C06C84]" />
           AR Makeup
         </div>
@@ -141,13 +141,13 @@ export default function BridgeClient() {
             </p>
             <Link
               href={`/auth/sign-in?next=${encodeURIComponent(fallback)}`}
-              className="mt-6 inline-flex w-full items-center justify-center rounded-xl bg-[#C06C84] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[#a85a70]"
+              className="mt-6 inline-flex w-full items-center justify-center rounded-xl bg-[var(--rose-primary)] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[#a85a70]"
             >
               Sign in
             </Link>
             <Link
               href="/"
-              className="mt-3 inline-block text-xs text-black/40 underline-offset-2 transition-colors hover:text-[#C06C84] hover:underline"
+              className="mt-3 inline-block text-xs text-black/40 underline-offset-2 transition-colors hover:text-[var(--rose-primary)] hover:underline"
             >
               Continue without signing in
             </Link>

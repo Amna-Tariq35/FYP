@@ -260,7 +260,7 @@ export default function EditProductPage() {
           onClick={handleSave}
           disabled={saving}
           className="flex items-center gap-2 px-6 py-2.5 rounded-xl text-white text-sm font-medium transition-all disabled:opacity-60 shadow-sm hover:shadow-md"
-          style={{ background: "var(--rose-primary, #C06C84)" }}
+          style={{ background: "var(--rose-primary)" }}
         >
           <Save className="w-4 h-4" />
           {saving ? "Saving…" : "Save Changes"}
@@ -447,7 +447,7 @@ export default function EditProductPage() {
         <div className="flex items-center justify-between pb-3 border-b border-gray-100">
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-lg bg-[#F4C2C2]/40 flex items-center justify-center">
-              <Palette className="w-4 h-4 text-[#C06C84]" />
+              <Palette className="w-4 h-4 text-[var(--rose-primary)]" />
             </div>
             <div>
               <h2 className="text-base font-bold text-[var(--text-main)]">
@@ -460,7 +460,7 @@ export default function EditProductPage() {
           </div>
           <button
             onClick={handleAddNewShade}
-            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium text-[#C06C84] bg-[#F4C2C2]/50 hover:bg-[#F4C2C2]/80 transition-colors"
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium text-[var(--rose-primary)] bg-[#F4C2C2]/50 hover:bg-[#F4C2C2]/80 transition-colors"
           >
             <Plus className="w-4 h-4" />
             Add Shade
@@ -588,7 +588,7 @@ export default function EditProductPage() {
           {existingShades.length === 0 && newShades.length === 0 && (
             <div className="text-center py-10 text-gray-400 text-sm border border-dashed border-gray-200 rounded-xl">
               No shades yet. Click{" "}
-              <span className="text-[#C06C84] font-medium">Add Shade</span> to
+              <span className="text-[var(--rose-primary)] font-medium">Add Shade</span> to
               create one.
             </div>
           )}
