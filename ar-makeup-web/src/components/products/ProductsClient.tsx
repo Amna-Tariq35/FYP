@@ -14,6 +14,7 @@ import {
   DollarSign,
   Heart,
   Clock,
+  ChevronDown,
 } from "lucide-react";
 import ProductCard from "./ProductCard";
 import { MakeupProduct } from "@/src/types/catalog";
@@ -35,6 +36,39 @@ import {
 } from "@/src/lib/catalog/list-contract";
 
 type MainFilter = "All" | "makeup" | "skincare";
+
+function FilterDisclosure({
+  title,
+  icon,
+  children,
+  defaultOpen = false,
+  active = false,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+  defaultOpen?: boolean;
+  active?: boolean;
+}) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+  const panelId = `filter-section-${title.toLowerCase().replace(/\s+/g, "-")}`;
+  return (
+    <div className="filter-group">
+      <button
+        type="button"
+        className="filter-group-header"
+        aria-expanded={isOpen}
+        aria-controls={panelId}
+        onClick={() => setIsOpen((open) => !open)}
+      >
+        <span className="filter-group-title">{icon}<span>{title}</span></span>
+        {active && <span className="price-active-dot" title="Filter active" />}
+        <ChevronDown className={`filter-chevron ${isOpen ? "open" : ""}`} aria-hidden="true" />
+      </button>
+      {isOpen && <div id={panelId}>{children}</div>}
+    </div>
+  );
+}
 
 const RECENTLY_VIEWED_KEY = "fyp_recently_viewed";
 const MAX_RECENT = 6;
@@ -101,13 +135,23 @@ function FilterGroup({
   name: string;
   labelFor?: (opt: string) => string;
 }) {
+  const [isOpen, setIsOpen] = useState(title === "Category" || selected !== "All");
+  const panelId = `filter-options-${name}`;
+
   return (
     <div className="filter-group">
-      <div className="filter-group-header">
-        {icon}
-        <span>{title}</span>
-      </div>
-      <div className="filter-options-list">
+      <button
+        type="button"
+        className="filter-group-header"
+        aria-expanded={isOpen}
+        aria-controls={panelId}
+        onClick={() => setIsOpen((open) => !open)}
+      >
+        <span className="filter-group-title">{icon}<span>{title}</span></span>
+        {selected !== "All" && <span className="filter-selection-label">{labelFor ? labelFor(selected) : selected}</span>}
+        <ChevronDown className={`filter-chevron ${isOpen ? "open" : ""}`} aria-hidden="true" />
+      </button>
+      {isOpen && <div id={panelId} className="filter-options-list">
         {options.map((opt) => (
           <label key={opt} className="filter-radio-label">
             <input
@@ -124,7 +168,7 @@ function FilterGroup({
             </span>
           </label>
         ))}
-      </div>
+      </div>}
     </div>
   );
 }
@@ -507,13 +551,7 @@ export default function ProductsClient({
 
   const renderSidebarContent = () => (
     <div className="sidebar-content">
-      <div className="filter-group">
-        <div className="filter-group-header">
-          <DollarSign className="w-3.5 h-3.5" />
-          <span>Price Range</span>
-          {priceChipActive && <span className="price-active-dot" title="Filter active" />}
-        </div>
-
+      <FilterDisclosure title="Price Range" icon={<DollarSign className="w-3.5 h-3.5" />} defaultOpen active={priceChipActive}>
         <div className="price-inputs-row">
           <div className="price-input-group">
             <span className="price-input-prefix">$</span>
@@ -581,11 +619,11 @@ export default function ProductsClient({
             className="dual-slider"
           />
         </div>
-      </div>
+      </FilterDisclosure>
 
       <div className="sidebar-divider" />
 
-      <div className="filter-group">
+      <FilterDisclosure title="More filters" icon={<Filter className="w-3.5 h-3.5" />} defaultOpen active={inStockOnly || skinFriendlyOnly || hasReviewsOnly}>
         <label className="filter-toggle">
           <input
             type="checkbox"
@@ -610,7 +648,7 @@ export default function ProductsClient({
           />
           <span>Has reviews</span>
         </label>
-      </div>
+      </FilterDisclosure>
 
       <div className="sidebar-divider" />
 
@@ -742,13 +780,47 @@ export default function ProductsClient({
         .filter-group-header {
           display: flex;
           align-items: center;
+          width: 100%;
+          min-height: 38px;
+          padding: 7px 2px;
+          border: 0;
+          background: transparent;
+          text-align: left;
+          cursor: pointer;
+          border-radius: 8px;
+          transition: background 0.15s, color 0.15s;
+        }
+        .filter-group-header:hover { background: var(--bg-base); color: var(--text-main); }
+        .filter-group-header:focus-visible { outline: 2px solid var(--rose-primary); outline-offset: 2px; }
+        .filter-group-title {
+          display: inline-flex;
+          align-items: center;
           gap: 6px;
           font-size: 10px;
           font-weight: 700;
           letter-spacing: 0.08em;
           text-transform: uppercase;
           color: var(--text-muted);
-          margin-bottom: 10px;
+          flex: 1;
+        }
+        .filter-chevron {
+          width: 15px;
+          height: 15px;
+          flex-shrink: 0;
+          transition: transform 0.18s ease;
+        }
+        .filter-chevron.open { transform: rotate(180deg); }
+        .filter-selection-label {
+          max-width: 42%;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          color: var(--rose-primary);
+          font-size: 11px;
+          font-weight: 600;
+          letter-spacing: 0;
+          text-transform: none;
+          margin-right: 6px;
         }
         .price-active-dot {
           width: 6px;
@@ -763,6 +835,7 @@ export default function ProductsClient({
           display: flex;
           flex-direction: column;
           gap: 2px;
+          padding: 2px 0 8px;
         }
         .filter-radio-label {
           display: flex;
