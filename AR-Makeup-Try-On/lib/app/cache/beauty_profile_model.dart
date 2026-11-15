@@ -63,6 +63,11 @@ class UserBeautyProfile {
       skinType == null &&
       undertone == null &&
       depthLevel == null &&
+      skinToneHex == null &&
+      monkScale == null &&
+      coveragePreference == null &&
+      finishPreference == null &&
+      (allergies == null || allergies!.isEmpty) &&
       (concerns == null || concerns!.isEmpty);
 
   /// Human-readable time since last update, e.g. "15 minutes ago", "3 days ago"

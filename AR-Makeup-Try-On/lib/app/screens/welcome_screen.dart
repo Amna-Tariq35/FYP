@@ -192,7 +192,11 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                           Navigator.push(
                             context,
                             _fadeRoute(
-                                const AuthScreen(isLoginMode: true)),
+                              const AuthScreen(
+                                isLoginMode: true,
+                                continueToCameraAfterSignIn: true,
+                              ),
+                            ),
                           );
                         },
                       ),

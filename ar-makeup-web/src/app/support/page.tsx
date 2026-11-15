@@ -150,7 +150,7 @@ export default function SupportPage() {
             about an order, include the order number.
           </p>
           <a
-            href="mailto:support@armakeup.app?subject=Support%20request"
+            href="mailto:supportarmakeup@gmail.com?subject=Support%20request"
             className="mt-5 inline-flex items-center justify-center rounded-xl bg-[var(--rose-primary)] px-5 py-2.5 text-sm font-medium text-white transition-colors hover:brightness-95"
           >
             Email support

@@ -167,6 +167,7 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
       _stage = _Stage.signIn;
     }
     _loadCached();
+    unawaited(_recoverLostGallerySelection());
   }
 
   bool get _signedIn => Supabase.instance.client.auth.currentSession != null;
@@ -203,13 +204,40 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
     setState(() => _cached = cached);
   }
 
+  /// Android may destroy the activity while the system photo picker is open.
+  /// image_picker keeps the result natively; recover it when this screen is
+  /// recreated instead of leaving the user with a restarted app.
+  Future<void> _recoverLostGallerySelection() async {
+    try {
+      final response = await _picker.retrieveLostData();
+      if (!mounted || response.isEmpty) return;
+      final files = response.files;
+      if (files == null || files.isEmpty) {
+        setState(() {
+          _stage = _Stage.intake;
+          _errorMessage = "Couldn't restore the selected photo.";
+          _errorHint = 'Please choose the photo again.';
+        });
+        return;
+      }
+      await _matchPaths([files.first.path], fromGallery: true);
+    } catch (e) {
+      debugPrint('[FoundationMatch] lost picker data recovery failed: $e');
+    }
+  }
+
   // ── Run ────────────────────────────────────────────────────────────────────
 
   Future<void> _runGallery() async {
     if (_busy) return;
     XFile? picked;
     try {
-      picked = await _picker.pickImage(source: ImageSource.gallery);
+      picked = await _picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 2048,
+        maxHeight: 2048,
+        imageQuality: 92,
+      );
     } catch (e) {
       debugPrint('[FoundationMatch] picker failed: $e');
       if (!mounted) return;
@@ -273,8 +301,26 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
         paths,
         seekWhiteReference: _havePaper,
         fromGallery: fromGallery,
+        onFrameDiagnostics: kDebugMode
+            ? (diagnostics) =>
+                debugPrint('[FoundationMatch][diag] ${diagnostics.toString()}')
+            : null,
+        onFrameFailure: kDebugMode
+            ? (frameNumber, reason) => debugPrint(
+                  '[FoundationMatch][diag] frame=$frameNumber samplingFailed="$reason"',
+                )
+            : null,
       );
       if (!mounted) return;
+
+      if (kDebugMode) {
+        debugPrint(
+          '[FoundationMatch][diag] sampled '
+          'source=${fromGallery ? 'gallery' : 'camera'} '
+          'frames=${paths.length} acceptedPatches=${sampled.patches.length} '
+          'illuminant=${sampled.illuminant == null ? 'missing' : 'available'}',
+        );
+      }
 
       Map<String, int>? paper = sampled.whiteReference;
       if (_havePaper && paper == null) {
@@ -289,6 +335,19 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
         finishPreference: BeautyProfileService.getCachedProfile()?.finishPreference,
         whiteReference: paper,
       );
+
+      if (kDebugMode) {
+        debugPrint(
+          '[FoundationMatch][diag] serverResult '
+          'needsRetake=${result.needsRetake} '
+          'reason="${result.retakeReason ?? 'none'}" '
+          'hint="${result.retakeHint ?? 'none'}" '
+          'expectedError=${result.expectedError?.toStringAsFixed(2) ?? 'n/a'} '
+          'confidence=${result.confidence.toStringAsFixed(2)} '
+          'label=${result.confidenceLabel} calibration=${result.calibration} '
+          'warnings=${result.warnings}',
+        );
+      }
 
       if (!mounted) return;
 
@@ -316,6 +375,9 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
         _errorHint = e.hint;
       });
     } on SkinSampleException catch (e) {
+      if (kDebugMode) {
+        debugPrint('[FoundationMatch][diag] samplingRejected reason="${e.message}"');
+      }
       if (!mounted) return;
       setState(() {
         _busy = false;
@@ -867,13 +929,35 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
 
   Widget _buildRetake() {
     final result = _result;
-    final uneven = result?.expectedError != null && result!.expectedError! > _unevenDeltaE;
+    final serverReason = result?.retakeReason?.trim();
+    final hasServerReason = serverReason != null && serverReason.isNotEmpty;
+    final spreadIsHigh =
+        result?.expectedError != null && result!.expectedError! > _unevenDeltaE;
+    final normalizedServerReason = serverReason?.toLowerCase() ?? '';
+    final isRegionMismatch =
+        spreadIsHigh ||
+        normalizedServerReason.contains('region') ||
+        normalizedServerReason.contains('δe') ||
+        normalizedServerReason.contains('delta e');
+    final reason = isRegionMismatch
+        ? 'The colour looks different across parts of your face, so we can’t '
+            'match it reliably from this photo.'
+        : hasServerReason
+            ? serverReason
+            : 'That photo could not be measured.';
+    final serverHint = result?.retakeHint?.trim();
+    final hint = isRegionMismatch
+        ? 'Try again facing a window or evenly lit area. Keep your face straight '
+            'and avoid light coming from just one side.'
+        : serverHint != null && serverHint.isNotEmpty
+            ? serverHint
+            : 'Take another photo in even daylight, facing a window.';
     return ListView(
       padding: const EdgeInsets.fromLTRB(24, 28, 24, 32),
       physics: const BouncingScrollPhysics(),
       children: [
         Text(
-          uneven ? 'The light is uneven.' : (result?.retakeReason ?? 'That photo could not be measured.'),
+          reason,
           style: TextStyle(
             color: AppColors.textMain,
             fontSize: 22,
@@ -883,9 +967,7 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
         ),
         const SizedBox(height: 10),
         Text(
-          uneven
-              ? "The two sides of your face don't agree, so a shade from this photo would be a guess."
-              : (result?.retakeHint ?? 'Take another photo in even daylight, facing a window.'),
+          hint,
           style: TextStyle(color: AppColors.textMuted, fontSize: 15, height: 1.45),
         ),
         const SizedBox(height: 28),

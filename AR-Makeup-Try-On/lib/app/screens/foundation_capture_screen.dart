@@ -15,12 +15,14 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
 import '../services/skin_sampler.dart';
 import '../utils/app_colors.dart';
+import '../utils/skin_color.dart';
 import '../widgets/app_loader.dart';
 
 class FoundationCaptureResult {
@@ -38,10 +40,55 @@ class FoundationCaptureResult {
 }
 
 class _LightLine {
-  const _LightLine(this.text, this.ready);
+  const _LightLine(
+    this.text,
+    this.ready, {
+    this.mean,
+    this.leftRightDifference,
+    this.rawReady,
+    this.recoveryReady,
+    this.severeFailure = false,
+  });
 
   final String text;
   final bool ready;
+  final double? mean;
+  final double? leftRightDifference;
+  final bool? rawReady;
+  final bool? recoveryReady;
+  final bool severeFailure;
+}
+
+class _PreviewFaceBounds {
+  const _PreviewFaceBounds({
+    required this.box,
+    required this.frameWidth,
+    required this.frameHeight,
+    required this.rotation,
+    required this.measuredAt,
+  });
+
+  final Rect box;
+  final double frameWidth;
+  final double frameHeight;
+  final InputImageRotation rotation;
+  final DateTime measuredAt;
+}
+
+class _CheekColourLine {
+  const _CheekColourLine({
+    required this.deltaE,
+    required this.deltaChroma,
+    required this.maxRegionDeltaE,
+  });
+
+  final double deltaE;
+  final double deltaChroma;
+  final double maxRegionDeltaE;
+
+  bool get ready =>
+      deltaE <= _FoundationCaptureScreenState._maxLiveCheekDeltaE &&
+      maxRegionDeltaE <= _FoundationCaptureScreenState._maxLiveRegionDeltaE;
 }
 
 class _FaceGate {
@@ -56,11 +103,13 @@ class _PreparedFace {
     required this.image,
     required this.frameWidth,
     required this.frameHeight,
+    required this.rotation,
   });
 
   final InputImage image;
   final double frameWidth;
   final double frameHeight;
+  final InputImageRotation rotation;
 }
 
 class FoundationCaptureScreen extends StatefulWidget {
@@ -72,7 +121,8 @@ class FoundationCaptureScreen extends StatefulWidget {
   static bool cameraPluginTookDevice = false;
 
   @override
-  State<FoundationCaptureScreen> createState() => _FoundationCaptureScreenState();
+  State<FoundationCaptureScreen> createState() =>
+      _FoundationCaptureScreenState();
 }
 
 class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
@@ -93,16 +143,32 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
   bool _closing = false;
   bool _released = false;
   DateTime? _lastJudge;
+  DateTime? _lastPreviewDiagnosticAt;
   DateTime? _lastFaceAt;
   bool _faceBusy = false;
   int _faceFailures = 0;
   bool _faceOk = false;
+  int _facePassStreak = 0;
+  int _faceFailStreak = 0;
+  int _lightPassStreak = 0;
+  int _lightFailStreak = 0;
+  String? _lightMessageCandidate;
+  int _lightMessageCandidateStreak = 0;
+  String? _stableLightMessage;
+  int _cheekPassStreak = 0;
+  int _cheekFailStreak = 0;
+  bool _cheekGateInitialized = false;
+  bool _cheekGateReady = false;
   String _faceHint = 'Move your face into the oval.';
   _LightLine? _pendingLight;
+  _CheekColourLine? _pendingCheekColour;
+  _PreviewFaceBounds? _previewFaceBounds;
   Size? _viewSize;
   FaceDetector? _faces;
 
   static const _good = 'Good light. Hold still.';
+  static const double _maxLiveCheekDeltaE = 6.0;
+  static const double _maxLiveRegionDeltaE = 8.0;
   static const _fallbackLine =
       'Face a window, keep your bare face inside the oval, and hold still.';
 
@@ -132,7 +198,8 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
     }
     if (controller == null) return;
     try {
-      if (controller.value.isInitialized && controller.value.isStreamingImages) {
+      if (controller.value.isInitialized &&
+          controller.value.isStreamingImages) {
         await controller.stopImageStream();
       }
     } catch (e) {
@@ -175,7 +242,9 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
         camera,
         ResolutionPreset.medium,
         enableAudio: false,
-        imageFormatGroup: Platform.isIOS ? ImageFormatGroup.bgra8888 : ImageFormatGroup.yuv420,
+        imageFormatGroup: Platform.isIOS
+            ? ImageFormatGroup.bgra8888
+            : ImageFormatGroup.yuv420,
       );
       // Set before initialize: a failed open can still unbind DeepAR.
       FoundationCaptureScreen.cameraPluginTookDevice = true;
@@ -195,7 +264,8 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
           await controller?.dispose();
         } catch (_) {}
       }
-      final denied = e.code.toLowerCase().contains('denied') ||
+      final denied =
+          e.code.toLowerCase().contains('denied') ||
           (e.description ?? '').toLowerCase().contains('permission');
       _fail(
         denied
@@ -233,13 +303,17 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
     if (last == null || now.difference(last).inMilliseconds >= 200) {
       _lastJudge = now;
       try {
-        final line = _judgeLight(image);
-        if (line == null) {
+        final rawLine = _judgeLight(image);
+        if (rawLine == null) {
           _useWrittenHints();
           return;
         }
+        final line = _stabilizeLight(rawLine);
         _pendingLight = line;
+        _pendingCheekColour = _judgeCheekColour(image, now);
+        _stabilizeCheekColour(_pendingCheekColour);
         _publishGate();
+        _logPreviewDiagnostics(rawLine, line, _pendingCheekColour, now);
       } catch (e) {
         debugPrint('[FoundationCapture] light check failed: $e');
         _useWrittenHints();
@@ -262,6 +336,14 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
     } else if (!_faceOk) {
       status = _faceHint;
       ready = false;
+    } else if (!_cheekGateInitialized) {
+      status = 'Light looks usable. Checking colour across your face…';
+      ready = true;
+    } else if (!_cheekGateReady) {
+      status = (_pendingCheekColour?.deltaE ?? 0) > _liveCheekPassDeltaE
+          ? 'Light looks usable, but face the light straight on for a better match.'
+          : 'Light looks usable. You can capture; hold still for a better match.';
+      ready = true;
     } else {
       status = _good;
       ready = true;
@@ -293,16 +375,320 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
     final stats = _faceStats(image);
     if (stats == null) return null;
 
+    final leftRightDifference = (stats.leftMean - stats.rightMean).abs();
+    // Use the same practical limits for initial readiness and recovery. The
+    // extra-tight recovery band made ordinary indoor light keep the shutter
+    // disabled even when the live check considered it usable.
+    final recoveryReady =
+        stats.mean >= 50 &&
+        stats.mean <= 200 &&
+        stats.darkFraction <= 0.45 &&
+        stats.blownFraction <= 0.15 &&
+        leftRightDifference <= 30;
     if (stats.mean < 50 || stats.darkFraction > 0.45) {
-      return const _LightLine('Too dark. Face a window.', false);
+      return _LightLine(
+        'Too dark. Face a window.',
+        false,
+        mean: stats.mean,
+        leftRightDifference: leftRightDifference,
+        recoveryReady: recoveryReady,
+        severeFailure: stats.mean < 40 || stats.darkFraction > 0.55,
+      );
     }
     if (stats.mean > 200 || stats.blownFraction > 0.15) {
-      return const _LightLine('Too bright. Step out of direct sun.', false);
+      return _LightLine(
+        'Too bright. Step out of direct sun.',
+        false,
+        mean: stats.mean,
+        leftRightDifference: leftRightDifference,
+        recoveryReady: recoveryReady,
+        severeFailure: stats.mean > 215 || stats.blownFraction > 0.25,
+      );
     }
-    if ((stats.leftMean - stats.rightMean).abs() > 30) {
-      return const _LightLine('This side is brighter. Turn to face the light.', false);
+    if (leftRightDifference > 30) {
+      return _LightLine(
+        'This side is brighter. Turn to face the light.',
+        false,
+        mean: stats.mean,
+        leftRightDifference: leftRightDifference,
+        recoveryReady: recoveryReady,
+        severeFailure: leftRightDifference > 40,
+      );
     }
-    return const _LightLine(_good, true);
+    return _LightLine(
+      _good,
+      true,
+      mean: stats.mean,
+      leftRightDifference: leftRightDifference,
+      recoveryReady: recoveryReady,
+    );
+  }
+
+  void _logPreviewDiagnostics(
+    _LightLine rawLight,
+    _LightLine stableLight,
+    _CheekColourLine? cheekColour,
+    DateTime now,
+  ) {
+    if (!kDebugMode) return;
+    final last = _lastPreviewDiagnosticAt;
+    if (last != null && now.difference(last).inSeconds < 1) return;
+    _lastPreviewDiagnosticAt = now;
+    debugPrint(
+      '[FoundationCapture][diag] preview '
+      'mean=${rawLight.mean?.toStringAsFixed(1) ?? 'n/a'} '
+      'leftRightΔ=${rawLight.leftRightDifference?.toStringAsFixed(1) ?? 'n/a'} '
+      'lightRaw=${rawLight.ready} lightStable=${stableLight.ready} facePass=$_faceOk '
+      'cheekΔE=${cheekColour?.deltaE.toStringAsFixed(1) ?? 'n/a'} '
+      'cheekΔC=${cheekColour?.deltaChroma.toStringAsFixed(1) ?? 'n/a'} '
+      'faceRegionsMaxΔE=${cheekColour?.maxRegionDeltaE.toStringAsFixed(1) ?? 'n/a'} '
+      'cheekRaw=${cheekColour?.ready ?? false} '
+      'cheekStable=$_cheekGateReady fallback=$_gateFallback status="$_status"',
+    );
+  }
+
+  _LightLine _stabilizeLight(_LightLine raw) {
+    if (raw.ready) {
+      _lightFailStreak = 0;
+      _lightMessageCandidate = null;
+      _lightMessageCandidateStreak = 0;
+      if (raw.recoveryReady == true) {
+        _lightPassStreak++;
+        if (_lightPassStreak >= 3) {
+          _readyLightState = true;
+          _stableLightMessage = null;
+        }
+      } else {
+        _lightPassStreak = 0;
+      }
+    } else {
+      _lightPassStreak = 0;
+      if (_lightMessageCandidate == raw.text) {
+        _lightMessageCandidateStreak++;
+      } else {
+        _lightMessageCandidate = raw.text;
+        _lightMessageCandidateStreak = 1;
+      }
+      if (_lightMessageCandidateStreak >= 3) _stableLightMessage = raw.text;
+      _lightFailStreak++;
+      final failuresToClose = raw.severeFailure ? 3 : 6;
+      if (_lightFailStreak >= failuresToClose) {
+        _readyLightState = false;
+        _stableLightMessage = raw.text;
+      }
+    }
+
+    final stableReady = _readyLightState;
+    final text = stableReady
+        ? _good
+        : raw.ready
+        ? 'Move to even, front-facing light and hold still…'
+        : _stableLightMessage ?? 'Checking light stability…';
+    return _LightLine(
+      text,
+      stableReady,
+      mean: raw.mean,
+      leftRightDifference: raw.leftRightDifference,
+      rawReady: raw.ready,
+      recoveryReady: raw.recoveryReady,
+      severeFailure: raw.severeFailure,
+    );
+  }
+
+  bool _readyLightState = false;
+
+  static const double _liveCheekPassDeltaE = 5.5;
+  static const double _liveCheekFailDeltaE = 8.0;
+  static const double _liveRegionPassDeltaE = 7.5;
+  static const double _liveRegionFailDeltaE = 10.0;
+
+  bool _liveColourPasses(_CheekColourLine sample) =>
+      sample.deltaE <= _liveCheekPassDeltaE &&
+      sample.maxRegionDeltaE <= _liveRegionPassDeltaE;
+
+  bool _liveColourFailsHard(_CheekColourLine sample) =>
+      sample.deltaE >= _liveCheekFailDeltaE ||
+      sample.maxRegionDeltaE >= _liveRegionFailDeltaE;
+
+  void _stabilizeCheekColour(_CheekColourLine? sample) {
+    if (sample == null) return;
+    if (_cheekGateReady) {
+      if (!_liveColourPasses(sample)) {
+        _cheekFailStreak++;
+        final failuresToClose = _liveColourFailsHard(sample) ? 3 : 6;
+        if (_cheekFailStreak >= failuresToClose) {
+          _cheekGateReady = false;
+          _cheekGateInitialized = true;
+        }
+      } else {
+        _cheekFailStreak = 0;
+      }
+      return;
+    }
+
+    if (_liveColourPasses(sample)) {
+      _cheekPassStreak++;
+      if (_cheekPassStreak >= 3) {
+        _cheekGateReady = true;
+        _cheekGateInitialized = true;
+        _cheekFailStreak = 0;
+      }
+    } else {
+      _cheekPassStreak = 0;
+      _cheekFailStreak++;
+      if (_cheekFailStreak >= 3) _cheekGateInitialized = true;
+    }
+  }
+
+  /// Samples five approximate skin zones in the detected face box. This is a
+  /// preview proxy for the five-region still-image sampler, not a match result.
+  _CheekColourLine? _judgeCheekColour(CameraImage image, DateTime now) {
+    final face = _previewFaceBounds;
+    if (face == null || now.difference(face.measuredAt).inMilliseconds > 1200) {
+      return null;
+    }
+
+    final left = _meanFaceRegionLab(image, face, 0.20, 0.43, 0.52, 0.71);
+    final right = _meanFaceRegionLab(image, face, 0.57, 0.80, 0.52, 0.71);
+    final forehead = _meanFaceRegionLab(image, face, 0.34, 0.66, 0.25, 0.40);
+    final glabella = _meanFaceRegionLab(image, face, 0.44, 0.56, 0.41, 0.50);
+    final jaw = _meanFaceRegionLab(image, face, 0.34, 0.66, 0.72, 0.84);
+    if ([left, right, forehead, glabella, jaw].any((lab) => lab == null)) {
+      return null;
+    }
+    final leftLab = left!;
+    final rightLab = right!;
+    final regions = [leftLab, rightLab, forehead!, glabella!, jaw!];
+
+    final chromaDelta = math.sqrt(
+      math.pow(leftLab.a - rightLab.a, 2) + math.pow(leftLab.b - rightLab.b, 2),
+    );
+    final centre = Lab(
+      regions.fold<double>(0, (sum, lab) => sum + lab.l) / regions.length,
+      regions.fold<double>(0, (sum, lab) => sum + lab.a) / regions.length,
+      regions.fold<double>(0, (sum, lab) => sum + lab.b) / regions.length,
+    );
+    final maxRegionDeltaE = regions
+        .map((lab) => deltaE2000(lab, centre))
+        .reduce((a, b) => a > b ? a : b);
+    return _CheekColourLine(
+      deltaE: deltaE2000(leftLab, rightLab),
+      deltaChroma: chromaDelta,
+      maxRegionDeltaE: maxRegionDeltaE,
+    );
+  }
+
+  Lab? _meanFaceRegionLab(
+    CameraImage image,
+    _PreviewFaceBounds face,
+    double xStart,
+    double xEnd,
+    double yStart,
+    double yEnd,
+  ) {
+    var red = 0.0;
+    var green = 0.0;
+    var blue = 0.0;
+    var count = 0;
+
+    for (var row = 0; row < 5; row++) {
+      for (var col = 0; col < 5; col++) {
+        final orientedX =
+            face.box.left +
+            face.box.width * (xStart + (xEnd - xStart) * (col + 0.5) / 5);
+        final orientedY =
+            face.box.top +
+            face.box.height * (yStart + (yEnd - yStart) * (row + 0.5) / 5);
+        final raw = _orientedToRaw(image, face, orientedX, orientedY);
+        if (raw == null) continue;
+        red += raw.$1;
+        green += raw.$2;
+        blue += raw.$3;
+        count++;
+      }
+    }
+
+    if (count < 10) return null;
+    return rgbToLab(
+      (red / count).round(),
+      (green / count).round(),
+      (blue / count).round(),
+    );
+  }
+
+  (int, int, int)? _orientedToRaw(
+    CameraImage image,
+    _PreviewFaceBounds face,
+    double orientedX,
+    double orientedY,
+  ) {
+    final rawWidth = image.width;
+    final rawHeight = image.height;
+    late double rawX;
+    late double rawY;
+    switch (face.rotation) {
+      case InputImageRotation.rotation0deg:
+        rawX = orientedX;
+        rawY = orientedY;
+        break;
+      case InputImageRotation.rotation90deg:
+        rawX = orientedY;
+        rawY = rawHeight - 1 - orientedX;
+        break;
+      case InputImageRotation.rotation180deg:
+        rawX = rawWidth - 1 - orientedX;
+        rawY = rawHeight - 1 - orientedY;
+        break;
+      case InputImageRotation.rotation270deg:
+        rawX = rawWidth - 1 - orientedY;
+        rawY = orientedX;
+        break;
+    }
+
+    final x = rawX.round().clamp(0, rawWidth - 1).toInt();
+    final y = rawY.round().clamp(0, rawHeight - 1).toInt();
+    final format = image.format.group;
+
+    if (format == ImageFormatGroup.bgra8888) {
+      if (image.planes.isEmpty) return null;
+      final plane = image.planes.first;
+      final bytesPerPixel = plane.bytesPerPixel ?? 4;
+      final index = y * plane.bytesPerRow + x * bytesPerPixel;
+      if (index < 0 || index + 2 >= plane.bytes.length) return null;
+      return (
+        plane.bytes[index + 2],
+        plane.bytes[index + 1],
+        plane.bytes[index],
+      );
+    }
+
+    if (format != ImageFormatGroup.yuv420 || image.planes.length < 3) {
+      return null;
+    }
+    final yPlane = image.planes[0];
+    final uPlane = image.planes[1];
+    final vPlane = image.planes[2];
+    final yIndex = y * yPlane.bytesPerRow + x;
+    final uIndex =
+        (y ~/ 2) * uPlane.bytesPerRow + (x ~/ 2) * (uPlane.bytesPerPixel ?? 1);
+    final vIndex =
+        (y ~/ 2) * vPlane.bytesPerRow + (x ~/ 2) * (vPlane.bytesPerPixel ?? 1);
+    if (yIndex >= yPlane.bytes.length ||
+        uIndex >= uPlane.bytes.length ||
+        vIndex >= vPlane.bytes.length) {
+      return null;
+    }
+
+    final luminance = math.max(0, yPlane.bytes[yIndex] - 16);
+    final u = uPlane.bytes[uIndex] - 128;
+    final v = vPlane.bytes[vIndex] - 128;
+    final r = (1.164 * luminance + 1.596 * v).round().clamp(0, 255).toInt();
+    final g = (1.164 * luminance - 0.392 * u - 0.813 * v)
+        .round()
+        .clamp(0, 255)
+        .toInt();
+    final b = (1.164 * luminance + 2.017 * u).round().clamp(0, 255).toInt();
+    return (r, g, b);
   }
 
   _FaceStats? _faceStats(CameraImage image) {
@@ -404,10 +790,46 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
       );
       final faces = await detector.processImage(prepared.image);
       if (!mounted || _busy || _gateFallback || _closing || _released) return;
+      if (faces.length == 1) {
+        final nextBounds = _PreviewFaceBounds(
+          box: faces.first.boundingBox,
+          frameWidth: prepared.frameWidth,
+          frameHeight: prepared.frameHeight,
+          rotation: prepared.rotation,
+          measuredAt: DateTime.now(),
+        );
+        if (_faceMoved(_previewFaceBounds, nextBounds)) {
+          _resetCheekGate();
+        }
+        _previewFaceBounds = nextBounds;
+      }
       final gate = _interpretFaces(faces, prepared);
       _faceFailures = 0;
-      _faceOk = gate.ok;
-      _faceHint = gate.line;
+      if (gate.ok) {
+        _facePassStreak++;
+        _faceFailStreak = 0;
+        if (_facePassStreak >= 2) {
+          _faceOk = true;
+          _faceHint = _good;
+        } else if (!_faceOk) {
+          _faceHint = 'Hold still while the face check settles…';
+        }
+      } else {
+        _faceFailStreak++;
+        _facePassStreak = 0;
+        if (_faceOk && _faceFailStreak >= 2) {
+          _faceOk = false;
+          _faceHint = gate.line;
+        } else if (!_faceOk && _faceFailStreak >= 2) {
+          _faceHint = gate.line;
+        } else if (!_faceOk) {
+          _faceHint = 'Checking face position…';
+        }
+        if (!_faceOk && _faceFailStreak >= 2) {
+          _previewFaceBounds = null;
+          _resetCheekGate();
+        }
+      }
       _publishGate();
     } catch (e) {
       debugPrint('[FoundationCapture] face check failed: $e');
@@ -420,6 +842,40 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
     }
   }
 
+  bool _faceMoved(_PreviewFaceBounds? previous, _PreviewFaceBounds next) {
+    if (previous == null ||
+        previous.frameWidth <= 0 ||
+        next.frameWidth <= 0 ||
+        previous.frameHeight <= 0 ||
+        next.frameHeight <= 0) {
+      return true;
+    }
+    final horizontalShift =
+        (previous.box.center.dx / previous.frameWidth -
+                next.box.center.dx / next.frameWidth)
+            .abs();
+    final verticalShift =
+        (previous.box.center.dy / previous.frameHeight -
+                next.box.center.dy / next.frameHeight)
+            .abs();
+    if (previous.box.width <= 0 ||
+        next.box.width <= 0 ||
+        previous.frameHeight <= 0 ||
+        next.frameHeight <= 0) {
+      return true;
+    }
+    final widthChange = (previous.box.width / next.box.width - 1).abs();
+    return horizontalShift > 0.20 || verticalShift > 0.20 || widthChange > 0.35;
+  }
+
+  void _resetCheekGate() {
+    _cheekGateReady = false;
+    _cheekGateInitialized = false;
+    _cheekPassStreak = 0;
+    _cheekFailStreak = 0;
+    _pendingCheekColour = null;
+  }
+
   /// One instruction. Count, then size, then angle, then the oval.
   _FaceGate _interpretFaces(List<Face> faces, _PreparedFace prepared) {
     if (faces.length > 1) {
@@ -430,7 +886,9 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
     }
     final face = faces.first;
     final box = face.boundingBox;
-    final ratio = prepared.frameWidth <= 0 ? 0.0 : box.width / prepared.frameWidth;
+    final ratio = prepared.frameWidth <= 0
+        ? 0.0
+        : box.width / prepared.frameWidth;
     if (ratio < skinMinFaceWidthRatio) {
       return const _FaceGate('Move closer.', false);
     }
@@ -449,7 +907,9 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
   bool _faceCenterInOval(Rect box, double frameW, double frameH) {
     final view = _viewSize;
     final controller = _controller;
-    if (view == null || frameW <= 0 || frameH <= 0 || controller == null) return false;
+    if (view == null || frameW <= 0 || frameH <= 0 || controller == null) {
+      return false;
+    }
     if (view.width < 2 || view.height < 2) return false;
     final aspect = _displayedAspect(controller);
     if (aspect == null) return false;
@@ -457,14 +917,18 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
     var nx = box.center.dx / frameW;
     final ny = box.center.dy / frameH;
     if (_camera?.lensDirection == CameraLensDirection.front) nx = 1 - nx;
-    final point = Offset(preview.left + nx * preview.width, preview.top + ny * preview.height);
+    final point = Offset(
+      preview.left + nx * preview.width,
+      preview.top + ny * preview.height,
+    );
     return _pointInOval(point, _ovalRect(view));
   }
 
   double? _displayedAspect(CameraController controller) {
     final ratio = controller.value.aspectRatio;
     if (ratio <= 0) return null;
-    final landscape = controller.value.deviceOrientation == DeviceOrientation.landscapeLeft ||
+    final landscape =
+        controller.value.deviceOrientation == DeviceOrientation.landscapeLeft ||
         controller.value.deviceOrientation == DeviceOrientation.landscapeRight;
     return landscape ? ratio : 1 / ratio;
   }
@@ -480,7 +944,12 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
       width = view.width;
       height = width / aspect;
     }
-    return Rect.fromLTWH((view.width - width) / 2, (view.height - height) / 2, width, height);
+    return Rect.fromLTWH(
+      (view.width - width) / 2,
+      (view.height - height) / 2,
+      width,
+      height,
+    );
   }
 
   Rect _ovalRect(Size size) {
@@ -503,7 +972,8 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
   _PreparedFace? _prepareFaceImage(CameraImage image) {
     final rotation = _inputRotation();
     if (rotation == null || image.width < 16 || image.height < 16) return null;
-    final quarterTurn = rotation == InputImageRotation.rotation90deg ||
+    final quarterTurn =
+        rotation == InputImageRotation.rotation90deg ||
         rotation == InputImageRotation.rotation270deg;
     final frameWidth = (quarterTurn ? image.height : image.width).toDouble();
     final frameHeight = (quarterTurn ? image.width : image.height).toDouble();
@@ -524,6 +994,7 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
         ),
         frameWidth: frameWidth,
         frameHeight: frameHeight,
+        rotation: rotation,
       );
     }
 
@@ -541,6 +1012,7 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
       ),
       frameWidth: frameWidth,
       frameHeight: frameHeight,
+      rotation: rotation,
     );
   }
 
@@ -589,7 +1061,10 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
       for (var col = 0; col < width ~/ 2; col++) {
         final uIndex = row * uPlane.bytesPerRow + col * uStride;
         final vIndex = row * vPlane.bytesPerRow + col * vStride;
-        if (uIndex < 0 || vIndex < 0 || uIndex >= uBytes.length || vIndex >= vBytes.length) {
+        if (uIndex < 0 ||
+            vIndex < 0 ||
+            uIndex >= uBytes.length ||
+            vIndex >= vBytes.length) {
           return null;
         }
         nv21[offset++] = vBytes[vIndex];
@@ -621,7 +1096,26 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
 
   Future<void> _capture() async {
     final controller = _controller;
-    if (controller == null || _busy || !_ready || !controller.value.isInitialized) return;
+    if (controller == null ||
+        _busy ||
+        !_ready ||
+        !controller.value.isInitialized) {
+      return;
+    }
+    if (kDebugMode) {
+      final light = _pendingLight;
+      final cheekColour = _pendingCheekColour;
+      debugPrint(
+        '[FoundationCapture][diag] shutter '
+        'previewMean=${light?.mean?.toStringAsFixed(1) ?? 'n/a'} '
+        'previewLeftRightΔ=${light?.leftRightDifference?.toStringAsFixed(1) ?? 'n/a'} '
+        'cheekΔE=${cheekColour?.deltaE.toStringAsFixed(1) ?? 'n/a'} '
+        'cheekΔC=${cheekColour?.deltaChroma.toStringAsFixed(1) ?? 'n/a'} '
+        'facePass=$_faceOk fallback=$_gateFallback '
+        'focusBefore=${controller.value.focusMode} '
+        'exposureBefore=${controller.value.exposureMode}',
+      );
+    }
     setState(() {
       _busy = true;
       _status = 'Hold steady…';
@@ -636,9 +1130,18 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
     try {
       await controller.setExposureMode(ExposureMode.locked);
     } catch (_) {}
+    if (kDebugMode) {
+      debugPrint(
+        '[FoundationCapture][diag] capture setup '
+        'focusAfter=${controller.value.focusMode} '
+        'exposureAfter=${controller.value.exposureMode} '
+        'streaming=${controller.value.isStreamingImages}',
+      );
+    }
 
     final paths = <String>[];
     Object? lastError;
+    final captureClock = Stopwatch()..start();
     for (var i = 0; i < 3; i++) {
       if (!mounted) return;
       setState(() => _taken = i + 1);
@@ -682,6 +1185,14 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
       }
       return;
     }
+    captureClock.stop();
+    if (kDebugMode) {
+      debugPrint(
+        '[FoundationCapture][diag] captured '
+        'frames=${paths.length}/3 elapsedMs=${captureClock.elapsedMilliseconds} '
+        'shutterError=${lastError?.runtimeType ?? 'none'}',
+      );
+    }
     await _close(FoundationCaptureResult(paths: paths));
   }
 
@@ -708,103 +1219,115 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
         _close();
       },
       child: Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
         backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-        elevation: 0,
-        title: const Text('Line your face up'),
-      ),
-      body: _error != null
-          ? _ErrorBody(
-              message: _error!,
-              hint: _hint,
-              onClose: () => _close(FoundationCaptureResult(error: _error, hint: _hint)),
-              onGallery: () => _close(const FoundationCaptureResult(chooseGallery: true)),
-            )
-          : controller == null || !controller.value.isInitialized
-              ? const Center(
-                  child: AppLoader(size: 36, color: Colors.white),
-                )
-              : LayoutBuilder(
-                  builder: (context, constraints) {
-                    _viewSize = constraints.biggest;
-                    return Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    CameraPreview(controller),
-                    const CustomPaint(painter: _OvalGuidePainter()),
-                    Align(
-                      alignment: Alignment.bottomCenter,
-                      child: SafeArea(
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Semantics(
-                                liveRegion: true,
-                                label: _busy ? 'Photo $_taken of 3' : _status,
-                                child: ExcludeSemantics(
-                                  child: DecoratedBox(
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xEB1A1020),
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 14,
-                                        vertical: 8,
+        appBar: AppBar(
+          backgroundColor: Colors.black,
+          foregroundColor: Colors.white,
+          elevation: 0,
+          title: const Text('Line your face up'),
+        ),
+        body: _error != null
+            ? _ErrorBody(
+                message: _error!,
+                hint: _hint,
+                onClose: () =>
+                    _close(FoundationCaptureResult(error: _error, hint: _hint)),
+                onGallery: () =>
+                    _close(const FoundationCaptureResult(chooseGallery: true)),
+              )
+            : controller == null || !controller.value.isInitialized
+            ? const Center(child: AppLoader(size: 36, color: Colors.white))
+            : LayoutBuilder(
+                builder: (context, constraints) {
+                  _viewSize = constraints.biggest;
+                  return Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      CameraPreview(controller),
+                      const CustomPaint(painter: _OvalGuidePainter()),
+                      Align(
+                        alignment: Alignment.bottomCenter,
+                        child: SafeArea(
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Semantics(
+                                  liveRegion: true,
+                                  label: _busy ? 'Photo $_taken of 3' : _status,
+                                  child: ExcludeSemantics(
+                                    child: DecoratedBox(
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xEB1A1020),
+                                        borderRadius: BorderRadius.circular(12),
                                       ),
-                                      child: Text(
-                                        _busy ? 'Photo $_taken of 3' : _status,
-                                        textAlign: TextAlign.center,
-                                        style: const TextStyle(
-                                          color: Colors.white,
-                                          fontSize: 15,
-                                          fontWeight: FontWeight.w600,
-                                          height: 1.35,
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 14,
+                                          vertical: 8,
+                                        ),
+                                        child: Text(
+                                          _busy
+                                              ? 'Photo $_taken of 3'
+                                              : _status,
+                                          textAlign: TextAlign.center,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w600,
+                                            height: 1.35,
+                                          ),
                                         ),
                                       ),
                                     ),
                                   ),
                                 ),
-                              ),
-                              if (_gateFallback && !_busy) ...[
-                                const SizedBox(height: 6),
+                                if (_gateFallback && !_busy) ...[
+                                  const SizedBox(height: 6),
+                                  const Text(
+                                    'Move to brighter light if the room is dim.',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      color: Colors.white70,
+                                      fontSize: 13,
+                                      height: 1.35,
+                                    ),
+                                  ),
+                                ],
+                                const SizedBox(height: 8),
                                 const Text(
-                                  'Move to brighter light if the room is dim.',
+                                  'Your photo is measured on this phone and is not uploaded. '
+                                  'Colour numbers are sent to match a shade, and that reading '
+                                  'can be saved on this phone and to your profile.',
                                   textAlign: TextAlign.center,
-                                  style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.35),
+                                  style: TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 12,
+                                    height: 1.35,
+                                  ),
+                                ),
+                                const SizedBox(height: 16),
+                                FilledButton(
+                                  onPressed: (_busy || !_ready)
+                                      ? null
+                                      : _capture,
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: AppColors.primary,
+                                    disabledBackgroundColor: Colors.white24,
+                                    minimumSize: const Size.fromHeight(48),
+                                  ),
+                                  child: Text(_busy ? 'Capturing…' : 'Capture'),
                                 ),
                               ],
-                              const SizedBox(height: 8),
-                              const Text(
-                                'Your photo is measured on this phone and is not uploaded. '
-                                'Colour numbers are sent to match a shade, and that reading '
-                                'can be saved on this phone and to your profile.',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(color: Colors.white70, fontSize: 12, height: 1.35),
-                              ),
-                              const SizedBox(height: 16),
-                              FilledButton(
-                                onPressed: (_busy || !_ready) ? null : _capture,
-                                style: FilledButton.styleFrom(
-                                  backgroundColor: AppColors.primary,
-                                  disabledBackgroundColor: Colors.white24,
-                                  minimumSize: const Size.fromHeight(48),
-                                ),
-                                child: Text(_busy ? 'Capturing…' : 'Capture'),
-                              ),
-                            ],
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                  ],
-                    );
-                  },
-                ),
+                    ],
+                  );
+                },
+              ),
       ),
     );
   }
@@ -849,11 +1372,19 @@ class _ErrorBody extends StatelessWidget {
           Text(
             message,
             textAlign: TextAlign.center,
-            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           if (hint != null) ...[
             const SizedBox(height: 10),
-            Text(hint!, textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)),
+            Text(
+              hint!,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white70),
+            ),
           ],
           const SizedBox(height: 24),
           FilledButton(
@@ -932,7 +1463,9 @@ class _PaperTapScreenState extends State<PaperTapScreen> {
     codec.dispose();
 
     final box = Size(constraints.maxWidth, constraints.maxHeight);
-    final scale = (box.width / iw) < (box.height / ih) ? box.width / iw : box.height / ih;
+    final scale = (box.width / iw) < (box.height / ih)
+        ? box.width / iw
+        : box.height / ih;
     final dw = iw * scale;
     final dh = ih * scale;
     final left = (box.width - dw) / 2;
@@ -941,13 +1474,17 @@ class _PaperTapScreenState extends State<PaperTapScreen> {
     final nx = (local.dx - left) / dw;
     final ny = (local.dy - top) / dh;
     if (nx < 0 || ny < 0 || nx > 1 || ny > 1) {
-      setState(() => _error = 'Tap the white paper, not the border around the photo.');
+      setState(
+        () => _error = 'Tap the white paper, not the border around the photo.',
+      );
       return;
     }
     final rgb = await SkinSampler.colorNear(widget.imagePath, nx, ny);
     if (!mounted) return;
     if (rgb == null) {
-      setState(() => _error = "Couldn't read that spot. Tap the middle of the paper.");
+      setState(
+        () => _error = "Couldn't read that spot. Tap the middle of the paper.",
+      );
       return;
     }
     final nav = Navigator.of(context);
@@ -975,7 +1512,10 @@ class _PaperTapScreenState extends State<PaperTapScreen> {
           if (_error != null)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Text(_error!, style: const TextStyle(color: Colors.orangeAccent)),
+              child: Text(
+                _error!,
+                style: const TextStyle(color: Colors.orangeAccent),
+              ),
             ),
           Expanded(
             child: LayoutBuilder(

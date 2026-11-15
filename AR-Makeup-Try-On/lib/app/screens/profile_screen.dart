@@ -11,7 +11,7 @@ import '../utils/app_colors.dart';
 import '../utils/image_url.dart';
 import '../widgets/app_loader.dart';
 import 'auth_screen.dart';
-import 'beauty_profile_questionnaire_screen.dart';
+import 'beauty_profile_overview_screen.dart';
 import 'edit_profile_screen.dart';
 import 'foundation_match_screen.dart';
 import 'notifications_inbox_screen.dart';
@@ -290,6 +290,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     try {
       showDialog(
         context: context,
+        useRootNavigator: false,
         barrierDismissible: false,
         builder: (context) => const Center(child: AppLoader()),
       );
@@ -381,9 +382,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           _ProfileTile(
                             icon: Icons.face_retouching_natural_outlined,
                             title: 'Beauty profile',
-                            subtitle: 'Skin type and preferences',
+                            subtitle: 'View your skin details and preferences',
                             onTap: () => _openSignedInPage(
-                              const BeautyProfileQuestionnaireScreen(),
+                              const BeautyProfileOverviewScreen(),
                             ),
                           ),
                         ],

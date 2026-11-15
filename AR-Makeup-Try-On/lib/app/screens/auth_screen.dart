@@ -14,7 +14,13 @@ import '../cache/makeup_bag_cache.dart';
 
 class AuthScreen extends StatefulWidget {
   final bool isLoginMode;
-  const AuthScreen({super.key, this.isLoginMode = true});
+  final bool continueToCameraAfterSignIn;
+
+  const AuthScreen({
+    super.key,
+    this.isLoginMode = true,
+    this.continueToCameraAfterSignIn = false,
+  });
 
   @override
   State<AuthScreen> createState() => _AuthScreenState();
@@ -92,13 +98,13 @@ class _AuthScreenState extends State<AuthScreen>
           // own navigation could prevent that, since the duplicate
           // instance was being created here.
           //
-          // Fix: if we can pop (case 1), just pop — that reveals the
-          // original, still-running TryOnScreen with zero re-init and no
-          // duplicate SurfaceView. Only fall back to creating a
-          // TryOnScreen/CameraPermissionScreen when there is nothing to
-          // pop back to (case 2).
+          // Try On calls leave this false so successful sign-in pops the
+          // overlay and reveals the original live camera. Welcome explicitly
+          // sets it true: its AuthScreen also has a route beneath it, but must
+          // continue into camera permission / Try On instead of returning to
+          // Welcome.
           final navigator = Navigator.of(context);
-          if (navigator.canPop()) {
+          if (!widget.continueToCameraAfterSignIn && navigator.canPop()) {
             navigator.pop();
             return;
           }
@@ -110,20 +116,23 @@ class _AuthScreenState extends State<AuthScreen>
 
           // 🆕 CRITICAL FIX: Zero duration ki jagah normal transition do
           // Zero duration mein Android surface attach hone ka waqt nahi milta
-          Navigator.pushReplacement(
-            context,
-            PageRouteBuilder(
-              pageBuilder: (_, __, ___) => cameraStatus.isGranted
-                  ? const TryOnScreen()
-                  : const CameraPermissionScreen(),
+          final destination = cameraStatus.isGranted
+              ? const TryOnScreen()
+              : const CameraPermissionScreen();
+          final route = PageRouteBuilder<void>(
+            pageBuilder: (_, __, ___) => destination,
               // 🆕 300ms transition — surface ko settle hone ka waqt milta hai
-              transitionDuration: const Duration(milliseconds: 300),
-              reverseTransitionDuration: const Duration(milliseconds: 300),
-              transitionsBuilder: (_, animation, __, child) {
-                return FadeTransition(opacity: animation, child: child);
-              },
-            ),
+            transitionDuration: const Duration(milliseconds: 300),
+            reverseTransitionDuration: const Duration(milliseconds: 300),
+            transitionsBuilder: (_, animation, __, child) {
+              return FadeTransition(opacity: animation, child: child);
+            },
           );
+          if (widget.continueToCameraAfterSignIn) {
+            navigator.pushAndRemoveUntil(route, (_) => false);
+          } else {
+            navigator.pushReplacement(route);
+          }
         }
       });
 }

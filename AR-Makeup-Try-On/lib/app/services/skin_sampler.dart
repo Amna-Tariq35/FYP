@@ -117,6 +117,43 @@ class SkinSampleResult {
   final double? headRoll;
 }
 
+/// Image-free diagnostics for one sampled camera frame. Colour values are
+/// deliberately omitted; only quality spreads and sample coverage are exposed.
+class SkinFrameDiagnostics {
+  const SkinFrameDiagnostics({
+    required this.frameNumber,
+    required this.patchCount,
+    required this.minPatchPixels,
+    required this.meanPatchTexture,
+    required this.maxPatchTexture,
+    required this.maxRegionDeltaE,
+    required this.regionLightnessRange,
+    required this.regionChromaRange,
+    required this.illuminantLightness,
+  });
+
+  final int frameNumber;
+  final int patchCount;
+  final int minPatchPixels;
+  final double meanPatchTexture;
+  final double maxPatchTexture;
+  final double maxRegionDeltaE;
+  final double regionLightnessRange;
+  final double regionChromaRange;
+  final double? illuminantLightness;
+
+  @override
+  String toString() =>
+      'frame=$frameNumber patches=$patchCount minPixels=$minPatchPixels '
+      'patchTexture(mean/max)=${meanPatchTexture.toStringAsFixed(1)}/'
+      '${maxPatchTexture.toStringAsFixed(1)} '
+      'preWbRegionSpread(maxΔE/ΔL*/ΔC*)='
+      '${maxRegionDeltaE.toStringAsFixed(1)}/'
+      '${regionLightnessRange.toStringAsFixed(1)}/'
+      '${regionChromaRange.toStringAsFixed(1)} '
+      'illuminantL*=${illuminantLightness?.toStringAsFixed(1) ?? 'missing'}';
+}
+
 /// A refusal the user can act on. Never thrown for programmer errors — those
 /// propagate so they show up in development rather than being shown as advice.
 class SkinSampleException implements Exception {
@@ -376,6 +413,8 @@ class SkinSampler {
     List<String> imagePaths, {
     bool seekWhiteReference = false,
     bool fromGallery = false,
+    void Function(SkinFrameDiagnostics diagnostics)? onFrameDiagnostics,
+    void Function(int frameNumber, String reason)? onFrameFailure,
   }) async {
     if (imagePaths.isEmpty) {
       throw const SkinSampleException(
@@ -385,17 +424,32 @@ class SkinSampler {
     }
     final results = <SkinSampleResult>[];
     SkinSampleException? lastError;
-    for (final path in imagePaths) {
+    for (var i = 0; i < imagePaths.length; i++) {
+      final path = imagePaths[i];
       try {
-        results.add(
-          await sample(
-            path,
-            seekWhiteReference: seekWhiteReference,
-            fromGallery: fromGallery,
-          ),
+        final result = await sample(
+          path,
+          seekWhiteReference: seekWhiteReference,
+          fromGallery: fromGallery,
         );
+        results.add(result);
+        if (onFrameDiagnostics != null) {
+          try {
+            onFrameDiagnostics(_diagnoseFrame(i + 1, result));
+          } catch (_) {
+            // Diagnostics must never change the measurement outcome.
+          }
+        }
       } on SkinSampleException catch (e) {
         lastError = e;
+        try {
+          onFrameFailure?.call(i + 1, e.message);
+        } catch (_) {}
+      } catch (e) {
+        try {
+          onFrameFailure?.call(i + 1, e.runtimeType.toString());
+        } catch (_) {}
+        rethrow;
       }
     }
     if (results.isEmpty) {
@@ -407,6 +461,59 @@ class SkinSampler {
     }
     if (results.length == 1) return results.first;
     return _mergeFrames(results);
+  }
+
+  static SkinFrameDiagnostics _diagnoseFrame(
+    int frameNumber,
+    SkinSampleResult result,
+  ) {
+    if (result.patches.isEmpty) {
+      return SkinFrameDiagnostics(
+        frameNumber: frameNumber,
+        patchCount: 0,
+        minPatchPixels: 0,
+        meanPatchTexture: 0,
+        maxPatchTexture: 0,
+        maxRegionDeltaE: 0,
+        regionLightnessRange: 0,
+        regionChromaRange: 0,
+        illuminantLightness: null,
+      );
+    }
+    final labs = result.patches
+        .map((patch) => rgbToLab(patch.r, patch.g, patch.b))
+        .toList(growable: false);
+    final meanL = labs.fold<double>(0, (sum, lab) => sum + lab.l) / labs.length;
+    final meanA = labs.fold<double>(0, (sum, lab) => sum + lab.a) / labs.length;
+    final meanB = labs.fold<double>(0, (sum, lab) => sum + lab.b) / labs.length;
+    final centre = Lab(meanL, meanA, meanB);
+    final lightness = labs.map((lab) => lab.l).toList(growable: false);
+    final chroma = labs.map((lab) => lab.chroma).toList(growable: false);
+    final textures = result.patches.map((patch) => patch.luminanceStdDev).toList();
+    final illuminant = result.illuminant;
+    final illuminantLightness = illuminant == null
+        ? null
+        : rgbToLab(illuminant['r']!, illuminant['g']!, illuminant['b']!).l;
+
+    return SkinFrameDiagnostics(
+      frameNumber: frameNumber,
+      patchCount: result.patches.length,
+      minPatchPixels: result.patches
+          .map((patch) => patch.pixels)
+          .reduce((a, b) => a < b ? a : b),
+      meanPatchTexture: textures.reduce((a, b) => a + b) / textures.length,
+      maxPatchTexture: textures.reduce((a, b) => a > b ? a : b),
+      maxRegionDeltaE: labs
+          .map((lab) => deltaE2000(lab, centre))
+          .reduce((a, b) => a > b ? a : b),
+      regionLightnessRange:
+          lightness.reduce((a, b) => a > b ? a : b) -
+              lightness.reduce((a, b) => a < b ? a : b),
+      regionChromaRange:
+          chroma.reduce((a, b) => a > b ? a : b) -
+              chroma.reduce((a, b) => a < b ? a : b),
+      illuminantLightness: illuminantLightness,
+    );
   }
 
   /// Median colour of a small disc. [nx] and [ny] are 0–1 across the decoded frame.

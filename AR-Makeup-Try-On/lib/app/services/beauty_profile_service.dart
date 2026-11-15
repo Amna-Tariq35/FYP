@@ -62,6 +62,41 @@ class BeautyProfileService {
     }
   }
 
+  /// Fetch every field used by the saved-profile overview and edit form.
+  ///
+  /// The existing API exposes skin type and concerns through its prefill
+  /// response, while the regular response contains the remaining profile data.
+  /// Keep this method strict so the overview can show a retry state instead of
+  /// mistaking a network error for a brand-new profile.
+  static Future<UserBeautyProfile> fetchCompleteProfile() async {
+    final headers = await _authHeaders;
+    final responses = await Future.wait<http.Response>([
+      http.get(Uri.parse(_apiUrl), headers: headers).timeout(
+        const Duration(seconds: 10),
+      ),
+      http.get(
+        Uri.parse(_apiUrl).replace(queryParameters: {'prefill': 'true'}),
+        headers: headers,
+      ).timeout(const Duration(seconds: 10)),
+    ]);
+
+    if (responses.any((response) => response.statusCode != 200)) {
+      throw Exception('Could not load beauty profile');
+    }
+
+    final profile = jsonDecode(responses[0].body) as Map<String, dynamic>;
+    final prefill = jsonDecode(responses[1].body) as Map<String, dynamic>;
+    return UserBeautyProfile.fromJson({
+      ...profile,
+      'skin_type': prefill['skin_type'],
+      'concerns': prefill['concerns'],
+      'undertone': prefill['undertone'] ?? profile['undertone'],
+      'depth_level': prefill['depth_level'] ?? profile['depth_level'],
+      'source': prefill['source'] ?? profile['source'],
+      'updated_at': profile['updated_at'] ?? prefill['last_analysis_date'],
+    });
+  }
+
   /// Fetch pre-fill data from web analysis.
   /// Used to populate questionnaire defaults if user has already done web analysis.
   static Future<Map<String, dynamic>> fetchPreFillData() async {

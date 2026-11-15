@@ -16,7 +16,12 @@ import '../widgets/app_loader.dart';
 // ── SCREEN ────────────────────────────────────────────────────────────────────
 
 class BeautyProfileQuestionnaireScreen extends StatefulWidget {
-  const BeautyProfileQuestionnaireScreen({super.key});
+  const BeautyProfileQuestionnaireScreen({
+    super.key,
+    this.isEditing = false,
+  });
+
+  final bool isEditing;
 
   @override
   State<BeautyProfileQuestionnaireScreen> createState() =>
@@ -29,6 +34,7 @@ class _BeautyProfileQuestionnaireScreenState
 
   int _currentStep = 0; // 0-3 for steps 1-4
   bool _isLoading = false;
+  bool _isPrefillLoading = true;
   String? _errorMessage;
 
   // Step 1: Skin Type
@@ -94,7 +100,9 @@ class _BeautyProfileQuestionnaireScreenState
         }
       });
     } catch (_) {
-      return;
+      // The questionnaire remains available if saved answers cannot be loaded.
+    } finally {
+      if (mounted) setState(() => _isPrefillLoading = false);
     }
   }
 
@@ -177,13 +185,20 @@ class _BeautyProfileQuestionnaireScreenState
 
     try {
       // Build profile
+      final existingProfile = BeautyProfileService.getCachedProfile();
       final profile = UserBeautyProfile(
         skinType: _selectedSkinType,
         undertone: _calculatedUndertone,
         depthLevel: _selectedDepth,
-        skinToneHex: BeautyProfileService.depthToHex(_selectedDepth),
+        skinToneHex: BeautyProfileService.depthToHex(_selectedDepth) ??
+            existingProfile?.skinToneHex,
+        monkScale: existingProfile?.monkScale,
+        coveragePreference: existingProfile?.coveragePreference,
+        finishPreference: existingProfile?.finishPreference,
+        allergies: existingProfile?.allergies,
         concerns: _selectedConcerns.toList(),
         source: 'manual',
+        updatedAt: DateTime.now().toUtc(),
       );
 
       // Save to backend
@@ -229,7 +244,10 @@ class _BeautyProfileQuestionnaireScreenState
     AppColors.watch(context);
     return Scaffold(
       appBar: AppBar(
-        title: Text('Beauty Profile · Step ${_currentStep + 1} of 4'),
+        title: Text(
+          '${widget.isEditing ? 'Update profile' : 'Beauty profile'} · '
+          'Step ${_currentStep + 1} of 4',
+        ),
         centerTitle: true,
       ),
       body: FadeTransition(
@@ -289,16 +307,18 @@ class _BeautyProfileQuestionnaireScreenState
 
             // Step content
             Expanded(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(16),
-                child: switch (_currentStep) {
-                  0 => _buildStep1SkinType(),
-                  1 => _buildStep2Undertone(),
-                  2 => _buildStep3Depth(),
-                  3 => _buildStep4Concerns(),
-                  _ => const SizedBox(),
-                },
-              ),
+              child: _isPrefillLoading
+                  ? const Center(child: AppLoader(size: 32))
+                  : SingleChildScrollView(
+                      padding: const EdgeInsets.all(16),
+                      child: switch (_currentStep) {
+                        0 => _buildStep1SkinType(),
+                        1 => _buildStep2Undertone(),
+                        2 => _buildStep3Depth(),
+                        3 => _buildStep4Concerns(),
+                        _ => const SizedBox(),
+                      },
+                    ),
             ),
 
           ],
@@ -319,7 +339,9 @@ class _BeautyProfileQuestionnaireScreenState
               if (_currentStep > 0)
                 Expanded(
                   child: OutlinedButton(
-                    onPressed: _isLoading ? null : _previousStep,
+                    onPressed: (_isLoading || _isPrefillLoading)
+                        ? null
+                        : _previousStep,
                     style: OutlinedButton.styleFrom(
                       minimumSize: const Size.fromHeight(48),
                     ),
@@ -329,7 +351,7 @@ class _BeautyProfileQuestionnaireScreenState
               if (_currentStep > 0) const SizedBox(width: 12),
               Expanded(
                 child: ElevatedButton(
-                  onPressed: _isLoading
+                  onPressed: (_isLoading || _isPrefillLoading)
                       ? null
                       : (_currentStep == 3 ? _saveProfile : _nextStep),
                   style: ElevatedButton.styleFrom(
@@ -343,7 +365,13 @@ class _BeautyProfileQuestionnaireScreenState
                           strokeWidth: 2,
                           color: Colors.white,
                         )
-                      : Text(_currentStep == 3 ? 'Save Profile' : 'Next'),
+                      : Text(
+                          _isPrefillLoading
+                              ? 'Loading profile…'
+                              : _currentStep == 3
+                                  ? (widget.isEditing ? 'Save changes' : 'Save profile')
+                                  : 'Next',
+                        ),
                 ),
               ),
             ],
