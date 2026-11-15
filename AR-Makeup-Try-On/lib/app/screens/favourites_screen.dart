@@ -6,6 +6,9 @@ import '../cache/products_cache.dart';
 import '../config/app_config.dart';
 import '../services/web_bridge.dart';
 import '../utils/app_colors.dart';
+import '../widgets/app_loader.dart';
+import '../utils/app_image_cache.dart';
+import '../utils/image_url.dart';
 
 class FavouritesScreen extends StatefulWidget {
   const FavouritesScreen({super.key});
@@ -18,10 +21,8 @@ class _FavouritesScreenState extends State<FavouritesScreen> {
   @override
   void initState() {
     super.initState();
-    // Cache agar empty hai toh background fetch start karo
-    if (ProductsCache.instance.isEmpty) {
-      ProductsCache.instance.prefetch();
-    }
+    // Disk copy shows immediately. A stale catalog refreshes in the background.
+    ProductsCache.instance.prefetch();
 
     // Favourites ko fresh karo aur realtime listener guarantee karo
     final userId = Supabase.instance.client.auth.currentUser?.id;
@@ -77,9 +78,7 @@ class _FavouritesScreenState extends State<FavouritesScreen> {
           final favs = FavouritesCache.instance.favourites;
 
           if (FavouritesCache.instance.isLoading && favs.isEmpty) {
-            return Center(
-              child: CircularProgressIndicator(color: AppColors.primary),
-            );
+            return const AppLoader.centered();
           }
 
           if (favs.isEmpty) {
@@ -254,25 +253,19 @@ class _FavouriteCard extends StatelessWidget {
             borderRadius: BorderRadius.circular(12),
             child: product?.imageUrl != null
                 ? CachedNetworkImage(
-                    imageUrl: product!.imageUrl!,
+                    imageUrl: upgradeImageUrl(product!.imageUrl!),
+                    cacheManager: AppImageCache.manager,
                     width: 70,
                     height: 70,
                     fit: BoxFit.cover,
-                    memCacheWidth: 140, // 🆕 card size ke hisaab se downscale — memory/decoding bachao
+                    memCacheWidth: 140, // 2x the 70px thumbnail
                     fadeInDuration: const Duration(milliseconds: 150),
                     placeholder: (context, url) => Container(
                       width: 70,
                       height: 70,
                       color: AppColors.background,
                       child: Center(
-                        child: SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: AppColors.primary,
-                          ),
-                        ),
+                        child: const AppLoader.inline(size: 16),
                       ),
                     ),
                     errorWidget: (context, url, error) => Container(

@@ -11,10 +11,12 @@ import 'package:deepar_flutter/deepar_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:vector_math/vector_math_64.dart' as vector;
 import '../utils/app_colors.dart';
+import '../utils/face_guidance.dart';
 import '../utils/color_utils.dart';
 import '../utils/demo_looks.dart';
 import '../utils/skin_color.dart';
 import '../cache/looks_cache.dart';
+import '../cache/shade_disk_cache.dart';
 import '../config/app_config.dart';
 import '../cache/pending_looks_queue.dart';
 import '../services/beauty_profile_service.dart';
@@ -29,6 +31,7 @@ import '../cache/favourites_cache.dart';
 import '../cache/makeup_bag_cache.dart';
 import '../cache/products_cache.dart';
 import '../services/web_bridge.dart';
+import '../widgets/app_loader.dart';
 
 // ── MODELS ───────────────────────────────────────────────────────────────────
 
@@ -184,6 +187,12 @@ class _TryOnScreenState extends State<TryOnScreen>
   /// Android count of `faceDetected` faces. Null until the first callback, and
   /// always null on iOS, where only [_faceVisible] is used.
   int? _trackedFaceCount;
+
+  /// Debounced banner. The callbacks below only write the raw flags, then this.
+  FaceGuidanceState _faceGuidance = const FaceGuidanceState();
+
+  /// Wakes the grace / debounce when no further face callback arrives.
+  Timer? _faceGuidanceTimer;
   bool _surfaceReady = false;
   // Guards against concurrent init calls (navigation races, resumed events)
   bool _initInProgress = false;
@@ -214,6 +223,8 @@ class _TryOnScreenState extends State<TryOnScreen>
 
   List<DbShade> _allDbShades = [];
   Map<String, DbLashConfig> _lashConfigs = {};
+  /// False until the lash-config read finishes, including a timeout.
+  bool _lashConfigsSettled = false;
   TryOnCategory _currentCategory = TryOnCategory.lipstick;
   bool _showOnlyMyBag = false;
 
@@ -460,6 +471,7 @@ class _TryOnScreenState extends State<TryOnScreen>
       _deepArController.destroy();
     } catch (_) {}
     _initWatchdog?.cancel();
+    _faceGuidanceTimer?.cancel();
     _panelController.dispose();
     _topBarController.dispose();
     super.dispose();
@@ -571,51 +583,42 @@ class _TryOnScreenState extends State<TryOnScreen>
     // the old surface to linger while new one is being created, causing
     // EGL_BAD_NATIVE_WINDOW errors. Instead, keep the same widget and just
     // swap the controller. The same SurfaceView will reattach its surface.
+    _faceGuidanceTimer?.cancel();
+    _faceGuidanceTimer = null;
     if (mounted) {
       setState(() {
         _isInitialized = false;
         _initFailed = false;
         _faceVisible = false;
         _trackedFaceCount = null;
+        _faceGuidance = const FaceGuidanceState();
         _cameraAccessOff = false;
       });
     }
   }
 
-  Future<File> get _shadesCacheFile async {
-    final dir = await getApplicationSupportDirectory();
-    return File('${dir.path}/product_shades_cache.json');
-  }
-
-  Future<void> _loadShadesFromCache() async {
+  Future<ShadeDiskSnapshot> _loadShadesFromCache() async {
     try {
-      final file = await _shadesCacheFile;
-      if (!await file.exists()) return;
-
-      final contents = await file.readAsString();
-      if (contents.isEmpty) return;
-
-      final jsonData = jsonDecode(contents) as List<dynamic>;
-      final cachedShades = jsonData
-          .map(
-            (item) => DbShade.fromMap(
-              Map<String, dynamic>.from(item as Map<String, dynamic>),
-            ),
-          )
-          .toList();
-
-      if (cachedShades.isNotEmpty && mounted) {
-        setState(() => _allDbShades = cachedShades);
+      final disk = await ShadeDiskCache.read();
+      if (disk.shades.isNotEmpty && mounted) {
+        setState(() {
+          _allDbShades = disk.shades
+              .map((item) => DbShade.fromMap(item))
+              .toList();
+          _shadeLoadSettled = true;
+          _shadeLoadError = null;
+        });
       }
+      return disk;
     } catch (e) {
       debugPrint('❌ Shade cache load failed: $e');
+      return const ShadeDiskSnapshot(cachedAt: null, shades: []);
     }
   }
 
   Future<void> _saveShadesToCache(List<Map<String, dynamic>> shades) async {
     try {
-      final file = await _shadesCacheFile;
-      await file.writeAsString(jsonEncode(shades), flush: true);
+      await ShadeDiskCache.write(shades, DateTime.now());
     } catch (e) {
       debugPrint('❌ Shade cache write failed: $e');
     }
@@ -842,12 +845,15 @@ class _TryOnScreenState extends State<TryOnScreen>
     _initInProgress = false;
 
     // 🆕 Surface flag bhi reset karo
+    _faceGuidanceTimer?.cancel();
+    _faceGuidanceTimer = null;
     if (mounted)
       setState(() {
         _isInitialized = false;
         _surfaceReady = false; // 🆕
         _faceVisible = false;
         _trackedFaceCount = null;
+        _faceGuidance = const FaceGuidanceState();
       });
 
     try {
@@ -862,22 +868,68 @@ class _TryOnScreenState extends State<TryOnScreen>
   void _bindFaceVisibility(DeepArController controller) {
     controller.onFaceVisibilityChanged = (visible) {
       if (!mounted || _faceVisible == visible) return;
-      setState(() => _faceVisible = visible);
+      final now = DateTime.now();
+      setState(() {
+        _faceVisible = visible;
+        _faceGuidance = reduceFaceGuidance(
+          _faceGuidance,
+          faceVisible: visible,
+          now: now,
+        );
+      });
+      _armFaceGuidanceTimer();
     };
     controller.onFaceCountChanged = (count) {
       if (!mounted || _trackedFaceCount == count) return;
-      setState(() => _trackedFaceCount = count);
+      final now = DateTime.now();
+      setState(() {
+        _trackedFaceCount = count;
+        _faceGuidance = reduceFaceGuidance(
+          _faceGuidance,
+          faceCount: count,
+          countEvent: true,
+          now: now,
+        );
+      });
+      _armFaceGuidanceTimer();
     };
   }
 
-  /// Why a save is blocked, or null when the face gate is open.
+  /// Lets grace and the several-faces debounce finish with no new callback.
+  /// Does not start, stop, or rebind DeepAR.
+  void _armFaceGuidanceTimer() {
+    _faceGuidanceTimer?.cancel();
+    final wake = _faceGuidance.wakeAt;
+    if (wake == null) {
+      _faceGuidanceTimer = null;
+      return;
+    }
+    var delay = wake.difference(DateTime.now());
+    if (delay < Duration.zero) delay = Duration.zero;
+    _faceGuidanceTimer = Timer(delay, () {
+      if (!mounted) return;
+      setState(() {
+        _faceGuidance = reduceFaceGuidance(_faceGuidance, now: DateTime.now());
+      });
+      _armFaceGuidanceTimer();
+    });
+  }
+
+  /// Why Save, Hold, and Compare capture are blocked, or null when exactly
+  /// one face is accepted.
   ///
   /// A missing count (no callback yet, or iOS) keeps the visibility check only.
-  String? _faceBlockReason() {
-    if (!_faceVisible) return 'Look at the camera.';
-    final count = _trackedFaceCount;
-    if (count != null && count > 1) return 'One face at a time.';
-    return null;
+  /// A count from before the face left is not treated as several faces.
+  /// Try-on has no Share control; this is the gate for Save look.
+  String? _faceBlockReason() => _faceGuidance.blockReason;
+
+  /// Shows the existing no-face or several-faces line and reports that the
+  /// frame must not be taken. Category chips do not call this.
+  bool _rejectFrameCapture({required bool allowed}) {
+    if (allowed) return false;
+    final message = _faceBlockReason();
+    if (message != null) _showSnack(message);
+    return true;
   }
 
   bool _isHighlighter({TryOnCategory? category, String? productKey}) {
@@ -972,6 +1024,12 @@ class _TryOnScreenState extends State<TryOnScreen>
         return null;
     }
   }
+
+  /// Mascara shares the lash mesh and draws nothing without a config row.
+  /// Stay hidden until that row is known to exist.
+  bool get _showMascaraChip =>
+      _lashConfigsSettled &&
+      _lashConfigs.keys.any((key) => key.startsWith('mas_'));
 
   String _getCategoryName(TryOnCategory cat) {
     switch (cat) {
@@ -1113,7 +1171,7 @@ class _TryOnScreenState extends State<TryOnScreen>
     if (deltaE < 3) return const Color(0xFF2E9E5B); // very close
     if (deltaE < 5) return const Color(0xFF7FA82E); // close
     if (deltaE < 8) return const Color(0xFFD98324); // noticeably different
-    return const Color(0xFFD9534F); // clearly different
+    return AppColors.error; // clearly different
   }
 
   /// Applies a `tryOn:<productKey>:<shadeKey>` request popped by another screen.
@@ -1415,8 +1473,10 @@ class _TryOnScreenState extends State<TryOnScreen>
   // ── DB LOAD ───────────────────────────────────────────────────────────────
 
   Future<void> _loadDataFromDb() async {
-    await _loadShadesFromCache();
+    final disk = await _loadShadesFromCache();
+    final shadesAreFresh = disk.isFreshAt(DateTime.now()) && disk.shades.isNotEmpty;
 
+    if (!shadesAreFresh) {
     try {
       final shadeRes = await Supabase.instance.client
           .from('product_shades')
@@ -1458,21 +1518,31 @@ class _TryOnScreenState extends State<TryOnScreen>
           _shadeLoadSettled = true;
           _shadeLoadError = 'Shades did not load. Check your connection and try again.';
         });
+      } else if (mounted) {
+        setState(() => _shadeLoadSettled = true);
       }
+    }
     }
 
     try {
       final lashRes = await Supabase.instance.client
           .from('ar_lash_configs')
-          .select();
+          .select()
+          .timeout(const Duration(seconds: 10));
       final configsMap = <String, DbLashConfig>{};
       for (var row in (lashRes as List<dynamic>)) {
         final config = DbLashConfig.fromMap(row);
         configsMap[config.productKey] = config;
       }
-      if (mounted) setState(() => _lashConfigs = configsMap);
+      if (mounted) {
+        setState(() {
+          _lashConfigs = configsMap;
+          _lashConfigsSettled = true;
+        });
+      }
     } catch (e) {
       debugPrint('❌ Error loading lash configs: $e');
+      if (mounted) setState(() => _lashConfigsSettled = true);
     }
   }
 
@@ -1825,6 +1895,7 @@ class _TryOnScreenState extends State<TryOnScreen>
 
   Future<void> _beginBareHold() async {
     if (_bareHoldActive || _compareOpen || _shadeCaptureBusy) return;
+    if (_rejectFrameCapture(allowed: _faceGuidance.canHold)) return;
     if (!_selectedShades.values.any((shade) => shade != null)) {
       _showSnack('Apply a shade first.');
       return;
@@ -1869,6 +1940,7 @@ class _TryOnScreenState extends State<TryOnScreen>
 
   Future<void> _openBareStills() async {
     if (_shadeCaptureBusy || _compareOpen) return;
+    if (_rejectFrameCapture(allowed: _faceGuidance.canHold)) return;
     if (!_isInitialized) {
       _showSnack('Could not capture a bare-face photo.');
       return;
@@ -1886,6 +1958,11 @@ class _TryOnScreenState extends State<TryOnScreen>
         return;
       }
       await _settleFrame();
+      if (_rejectFrameCapture(allowed: _faceGuidance.canHold)) {
+        await _deleteShot(withMakeup);
+        await _reapplySelectedShades();
+        return;
+      }
       bare = await _takeShot();
       await _reapplySelectedShades();
       if (bare == null) {
@@ -1913,6 +1990,7 @@ class _TryOnScreenState extends State<TryOnScreen>
 
   void _startShadeCompare(TryOnCategory category) {
     if (_shadeCaptureBusy || _compareOpen) return;
+    if (_rejectFrameCapture(allowed: _faceGuidance.canCapture)) return;
     final available = _allDbShades
         .where((shade) => shade.productKey.startsWith(_prefixFor(category)))
         .length;
@@ -1952,6 +2030,10 @@ class _TryOnScreenState extends State<TryOnScreen>
       _showSnack('Pick a different second shade.');
       return;
     }
+    if (_comparePicks.isNotEmpty &&
+        _rejectFrameCapture(allowed: _faceGuidance.canCapture)) {
+      return;
+    }
     setState(() {
       _comparePicks.add(shade);
       _selectedShades[_comparePickCategory] = shade;
@@ -1972,11 +2054,21 @@ class _TryOnScreenState extends State<TryOnScreen>
     DbShade shadeA,
     DbShade shadeB,
   ) async {
+    final previous = _shadeBeforeCompare;
+    if (_rejectFrameCapture(allowed: _faceGuidance.canCapture)) {
+      await _restoreShade(category, previous);
+      if (mounted) {
+        setState(() {
+          _comparePicks.clear();
+          _demoStatus = null;
+        });
+      }
+      return;
+    }
     if (!_isInitialized) {
       _showSnack("Couldn't capture those shades. Back on the camera.");
       return;
     }
-    final previous = _shadeBeforeCompare;
     _shadeCaptureBusy = true;
     File? fileA;
     File? fileB;
@@ -1987,6 +2079,10 @@ class _TryOnScreenState extends State<TryOnScreen>
       });
       await _applyColorToDeepAR(shadeA, category);
       await _settleFrame();
+      if (_rejectFrameCapture(allowed: _faceGuidance.canCapture)) {
+        await _restoreShade(category, previous);
+        return;
+      }
       fileA = await _takeShot();
       if (fileA == null) {
         await _restoreShade(category, previous);
@@ -1996,6 +2092,11 @@ class _TryOnScreenState extends State<TryOnScreen>
       setState(() => _selectedShades[category] = shadeB);
       await _applyColorToDeepAR(shadeB, category);
       await _settleFrame();
+      if (_rejectFrameCapture(allowed: _faceGuidance.canCapture)) {
+        await _deleteShot(fileA);
+        await _restoreShade(category, previous);
+        return;
+      }
       fileB = await _takeShot();
       if (fileB == null) {
         await _deleteShot(fileA);
@@ -2315,8 +2416,8 @@ class _TryOnScreenState extends State<TryOnScreen>
     if (userId == null) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
+        SnackBar(
+          content: const Text(
             'Please sign in to save looks.',
             style: TextStyle(color: Colors.white),
           ),
@@ -2328,8 +2429,8 @@ class _TryOnScreenState extends State<TryOnScreen>
     if (!_selectedShades.values.any((s) => s != null)) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
+        SnackBar(
+          content: const Text(
             'Please apply some makeup first!',
             style: TextStyle(color: Colors.white),
           ),
@@ -2700,7 +2801,7 @@ class _TryOnScreenState extends State<TryOnScreen>
                                   ),
                                   SizedBox(width: 7),
                                   Text(
-                                    'Save Look',
+                                    'Save look',
                                     style: TextStyle(
                                       color: Colors.white,
                                       fontWeight: FontWeight.w700,
@@ -2862,12 +2963,15 @@ class _TryOnScreenState extends State<TryOnScreen>
                           if (_initInProgress || _reinitCycleActive) return;
                           _reinitCycleActive = true;
                           _lastReinitAt = DateTime.now();
+                          _faceGuidanceTimer?.cancel();
+                          _faceGuidanceTimer = null;
                           setState(() {
                             _isInitialized = false;
                             _initFailed = false;
                             _cameraAccessOff = false;
                             _faceVisible = false;
                             _trackedFaceCount = null;
+                            _faceGuidance = const FaceGuidanceState();
                             _surfaceReady = false;
                           });
                           _destroyAndResetController().then((_) {
@@ -2888,19 +2992,42 @@ class _TryOnScreenState extends State<TryOnScreen>
                     : const _LoadingView(),
               ),
 
-            if (_isInitialized && _faceBlockReason() != null)
+            if (_isInitialized && _faceGuidance.bannerMessage != null)
               Positioned(
                 top: topPad + 72,
                 left: 24,
                 right: 24,
-                child: Text(
-                  _faceBlockReason()!,
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    shadows: [Shadow(blurRadius: 8, color: Colors.black54)],
+                child: Semantics(
+                  liveRegion: true,
+                  label: _faceGuidance.bannerMessage,
+                  child: ExcludeSemantics(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        // Dark in both themes: the banner sits on the camera,
+                        // and white on this scrim stays above 4.5:1 even if
+                        // the preview behind it is white.
+                        color: AppColors.isDark
+                            ? const Color(0xEB000000)
+                            : const Color(0xEB1A1020),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 10,
+                        ),
+                        child: Text(
+                          _faceGuidance.bannerMessage!,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            height: 1.35,
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -2980,6 +3107,7 @@ class _TryOnScreenState extends State<TryOnScreen>
                       ),
                       const SizedBox(width: 8),
                       _TopBarButton(
+                        label: isLoggedIn ? 'Profile' : 'Sign in',
                         onTap: () async {
                           if (isLoggedIn) {
                             final result = await _pushOverlay<Object>(
@@ -3102,8 +3230,12 @@ class _TryOnScreenState extends State<TryOnScreen>
                                                     .where(
                                                       (cat) =>
                                                           cat !=
-                                                          TryOnCategory
-                                                              .highlighter,
+                                                              TryOnCategory
+                                                                  .highlighter &&
+                                                          (cat !=
+                                                                  TryOnCategory
+                                                                      .mascara ||
+                                                              _showMascaraChip),
                                                     )
                                                     .map(_buildCategoryTab)
                                                     .toList(),
@@ -3114,6 +3246,7 @@ class _TryOnScreenState extends State<TryOnScreen>
                                             icon: _showOnlyMyBag
                                                 ? Icons.shopping_bag
                                                 : Icons.shopping_bag_outlined,
+                                            label: 'My bag',
                                             selected: _showOnlyMyBag,
                                             onTap: () {
                                               if (!isLoggedIn) {
@@ -3130,29 +3263,37 @@ class _TryOnScreenState extends State<TryOnScreen>
                                           ),
                                           if (_currentCategory ==
                                               TryOnCategory.foundation)
-                                            GestureDetector(
-                                              onTap: _openFoundationMatcher,
-                                              child: Container(
-                                                height: 32,
-                                                margin: const EdgeInsets.only(
-                                                  left: 6,
-                                                ),
-                                                padding:
-                                                    const EdgeInsets.symmetric(
-                                                  horizontal: 10,
-                                                ),
-                                                alignment: Alignment.center,
-                                                decoration: BoxDecoration(
-                                                  color: AppColors.primary,
-                                                  borderRadius:
-                                                      BorderRadius.circular(50),
-                                                ),
-                                                child: const Text(
-                                                  'Find my shade',
-                                                  style: TextStyle(
-                                                    color: Colors.white,
-                                                    fontSize: 12,
-                                                    fontWeight: FontWeight.w700,
+                                            Semantics(
+                                              button: true,
+                                              label: 'Find my shade',
+                                              child: GestureDetector(
+                                                onTap: _openFoundationMatcher,
+                                                behavior: HitTestBehavior.opaque,
+                                                child: Container(
+                                                  height: 48,
+                                                  margin: const EdgeInsets.only(
+                                                    left: 6,
+                                                  ),
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                    horizontal: 10,
+                                                  ),
+                                                  alignment: Alignment.center,
+                                                  decoration: BoxDecoration(
+                                                    color: AppColors.primary,
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                      50,
+                                                    ),
+                                                  ),
+                                                  child: const Text(
+                                                    'Find my shade',
+                                                    style: TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 12,
+                                                      fontWeight:
+                                                          FontWeight.w700,
+                                                    ),
                                                   ),
                                                 ),
                                               ),
@@ -3830,10 +3971,15 @@ class _TryOnScreenState extends State<TryOnScreen>
 
   Widget _panelIcon({
     required IconData icon,
+    required String label,
     required VoidCallback onTap,
     bool selected = false,
   }) {
-    return GestureDetector(
+    return Semantics(
+      button: true,
+      label: label,
+      selected: selected,
+      child: GestureDetector(
       onTap: onTap,
       child: Container(
         width: 32,
@@ -3852,6 +3998,7 @@ class _TryOnScreenState extends State<TryOnScreen>
           color: selected ? Colors.white : AppColors.textMain,
         ),
       ),
+    ),
     );
   }
 
@@ -3859,7 +4006,11 @@ class _TryOnScreenState extends State<TryOnScreen>
     final isSelected = _currentCategory == cat;
     final hasShade = _selectedShades[cat] != null;
 
-    return GestureDetector(
+    return Semantics(
+      button: true,
+      selected: isSelected,
+      label: _getCategoryName(cat),
+      child: GestureDetector(
       onTap: () {
         if (_comparePicking && cat != _comparePickCategory) {
           _cancelShadeComparePick();
@@ -3937,6 +4088,7 @@ class _TryOnScreenState extends State<TryOnScreen>
           ],
         ),
       ),
+      ),
     );
   }
 }
@@ -3965,11 +4117,8 @@ class _LoadingView extends StatelessWidget {
                   width: 1.5,
                 ),
               ),
-              child: Center(
-                child: CircularProgressIndicator(
-                  color: AppColors.primary,
-                  strokeWidth: 1.5,
-                ),
+              child: const Center(
+                child: AppLoader(size: 32, strokeWidth: 1.5),
               ),
             ),
             const SizedBox(height: 20),
@@ -4097,7 +4246,10 @@ class _ShutterSave extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
+    return Semantics(
+      button: true,
+      label: 'Save',
+      child: Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8),
       child: GestureDetector(
         onTap: onTap,
@@ -4146,6 +4298,7 @@ class _ShutterSave extends StatelessWidget {
           ],
         ),
       ),
+      ),
     );
   }
 }
@@ -4164,7 +4317,10 @@ class _ShutterSide extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return Semantics(
+      button: true,
+      label: label,
+      child: GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
       child: Padding(
@@ -4197,6 +4353,7 @@ class _ShutterSide extends StatelessWidget {
             ),
           ],
         ),
+      ),
       ),
     );
   }
@@ -4355,12 +4512,20 @@ class _StillCompareOverlay extends StatelessWidget {
 
 class _TopBarButton extends StatelessWidget {
   final VoidCallback onTap;
+  final String label;
   final Widget child;
-  const _TopBarButton({required this.onTap, required this.child});
+  const _TopBarButton({
+    required this.onTap,
+    required this.label,
+    required this.child,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return Semantics(
+      button: true,
+      label: label,
+      child: GestureDetector(
       onTap: onTap,
       child: ClipOval(
         child: BackdropFilter(
@@ -4380,6 +4545,7 @@ class _TopBarButton extends StatelessWidget {
           ),
         ),
       ),
+      ),
     );
   }
 }
@@ -4396,7 +4562,10 @@ class _TopBarPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return Semantics(
+      button: true,
+      label: label,
+      child: GestureDetector(
       onTap: onTap,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(50),
@@ -4429,6 +4598,7 @@ class _TopBarPill extends StatelessWidget {
             ),
           ),
         ),
+      ),
       ),
     );
   }
@@ -4821,10 +4991,10 @@ class _BuyThisLookSheetState extends State<_BuyThisLookSheet> {
                       ? const SizedBox(
                           width: 20,
                           height: 20,
-                          child: CircularProgressIndicator(
+                          child: AppLoader.inline(
+                            size: 20,
                             strokeWidth: 2.2,
-                            valueColor:
-                                AlwaysStoppedAnimation<Color>(Colors.white),
+                            color: Colors.white,
                           ),
                         )
                       : const Row(

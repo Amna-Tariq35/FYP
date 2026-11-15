@@ -35,6 +35,8 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'cache_policy.dart';
+
 // ── MODEL ────────────────────────────────────────────────────────────────────
 
 class DbProduct {
@@ -120,6 +122,7 @@ class ProductsCache implements Listenable {
   bool _loaded = false;
   bool _loading = false;
   Completer<void>? _prefetchCompleter;
+  DateTime? _cachedAt;
 
   List<DbProduct> get products => List.unmodifiable(_products);
   List<DbProduct> get activeProducts =>
@@ -192,13 +195,11 @@ class ProductsCache implements Listenable {
       final contents = await file.readAsString();
       if (contents.isEmpty) return;
 
-      final jsonData = jsonDecode(contents) as List<dynamic>;
-      final cached = jsonData
-          .map(
-            (item) => DbProduct.fromMap(
-              Map<String, dynamic>.from(item as Map<String, dynamic>),
-            ),
-          )
+      final envelope = CacheEnvelope.decode(jsonDecode(contents), itemsKey: 'products');
+      _cachedAt = envelope.cachedAt;
+      final cached = envelope.items
+          .whereType<Map>()
+          .map((item) => DbProduct.fromMap(Map<String, dynamic>.from(item)))
           .where((p) => p.productKey.isNotEmpty)
           .toList();
 
@@ -214,10 +215,11 @@ class ProductsCache implements Listenable {
   Future<void> _saveToCacheFile() async {
     try {
       final file = await _cacheFile;
-      await file.writeAsString(
-        jsonEncode(_products.map((p) => p.toMap()).toList()),
-        flush: true,
-      );
+      final payload = CacheEnvelope(
+        cachedAt: _cachedAt ?? DateTime.now(),
+        items: _products.map((p) => p.toMap()).toList(),
+      ).encode(itemsKey: 'products');
+      await file.writeAsString(jsonEncode(payload), flush: true);
     } catch (e) {
       debugPrint('⚠️ Products cache write failed: $e');
     }
@@ -234,8 +236,11 @@ class ProductsCache implements Listenable {
   ///
   /// Safe to call from anywhere — concurrent callers share one in-flight fetch,
   /// and it never throws: a failed refresh just leaves the cached copy in place.
+  bool _isFresh() =>
+      CachePolicy.isFresh(_cachedAt, CachePolicy.productsTtl, DateTime.now());
+
   Future<void> prefetch({bool force = false}) async {
-    if (_loaded && !force) return;
+    if (_loaded && !force && _isFresh()) return;
 
     if (_loading && _prefetchCompleter != null) {
       return _prefetchCompleter!.future;
@@ -250,9 +255,20 @@ class ProductsCache implements Listenable {
         if (_products.isNotEmpty) _notify();
       }
 
+      if (!force && _products.isNotEmpty && _isFresh()) {
+        _loaded = true;
+        _notify();
+        return;
+      }
+
       final fetched = await _fetchAllFromNetwork();
-      if (fetched != null && fetched.isNotEmpty) {
-        _setProducts(fetched);
+      final next = CachePolicy.afterRefresh(
+        _products.isEmpty ? null : _products,
+        fetched,
+      );
+      if (fetched != null && next != null && next.isNotEmpty) {
+        _setProducts(next);
+        _cachedAt = DateTime.now();
         await _saveToCacheFile();
       }
 

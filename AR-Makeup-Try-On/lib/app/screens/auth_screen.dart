@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../config/app_config.dart';
 import '../services/web_bridge.dart';
 import '../utils/app_colors.dart';
+import '../widgets/app_loader.dart';
 import 'camera_permission_screen.dart';
 import 'dart:async';
 import '../cache/looks_cache.dart';
@@ -525,13 +526,10 @@ class _AuthScreenState extends State<AuthScreen>
           elevation: 0,
         ),
         child: isLoading
-            ? const SizedBox(
-                width: 22,
-                height: 22,
-                child: CircularProgressIndicator(
-                  color: Colors.white,
-                  strokeWidth: 2.5,
-                ),
+            ? const AppLoader.inline(
+                size: 22,
+                color: Colors.white,
+                strokeWidth: 2.5,
               )
             : Text(
                 isSignIn ? 'Sign In' : 'Create Account',
@@ -560,13 +558,10 @@ class _AuthScreenState extends State<AuthScreen>
           ),
         ),
         child: isGoogleLoading
-            ? SizedBox(
-                width: 22,
-                height: 22,
-                child: CircularProgressIndicator(
-                  color: AppColors.primary,
-                  strokeWidth: 2.5,
-                ),
+            ? AppLoader.inline(
+                size: 22,
+                color: AppColors.primary,
+                strokeWidth: 2.5,
               )
             : Row(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -575,6 +570,7 @@ class _AuthScreenState extends State<AuthScreen>
                     'https://img.icons8.com/color/48/000000/google-logo.png',
                     width: 22,
                     height: 22,
+                    cacheWidth: 96,
                     errorBuilder: (_, __, ___) => Icon(
                       Icons.g_mobiledata_rounded,
                       color: AppColors.textMuted,
@@ -643,10 +639,7 @@ Widget _buildGoogleLoadingScreen() {
             ),
           ),
           const SizedBox(height: 20),
-          CircularProgressIndicator(
-            color: AppColors.primary,
-            strokeWidth: 1.5,
-          ),
+          const AppLoader(size: 36, strokeWidth: 1.5),
           const SizedBox(height: 16),
           Text(
             'Signing you in…',

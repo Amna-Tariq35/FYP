@@ -2,12 +2,25 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../utils/app_colors.dart';
-import 'saved_looks_screen.dart';
+import '../widgets/app_loader.dart';
+import 'home_screen.dart';
 import 'try_on_screen.dart';
 import 'welcome_screen.dart';
 
 class CameraPermissionScreen extends StatefulWidget {
-  const CameraPermissionScreen({super.key});
+  const CameraPermissionScreen({
+    super.key,
+    this.returnGrantedToCaller = false,
+    this.isSignedIn,
+  });
+
+  /// Home asks for the camera and then opens try-on itself, so a grant
+  /// pops back instead of pushing a second camera onto the overlay.
+  final bool returnGrantedToCaller;
+
+  /// Widget tests pass this so Maybe later does not touch Supabase.
+  @visibleForTesting
+  final bool Function()? isSignedIn;
 
   @override
   State<CameraPermissionScreen> createState() =>
@@ -55,8 +68,12 @@ class _CameraPermissionScreenState extends State<CameraPermissionScreen>
     setState(() => _isRequesting = false);
 
     if (status.isGranted) {
-      Navigator.pushReplacement(
-        context,
+      final navigator = Navigator.of(context);
+      if (widget.returnGrantedToCaller && navigator.canPop()) {
+        navigator.pop(true);
+        return;
+      }
+      navigator.pushReplacement(
         MaterialPageRoute(builder: (_) => const TryOnScreen()),
       );
     } else if (status.isPermanentlyDenied) {
@@ -92,14 +109,21 @@ class _CameraPermissionScreenState extends State<CameraPermissionScreen>
       navigator.pop();
       return;
     }
-    final signedIn = Supabase.instance.client.auth.currentSession != null;
+    final signedIn = widget.isSignedIn?.call() ?? _sessionSignedIn();
     navigator.pushReplacement(
       MaterialPageRoute(
-        builder: (_) => signedIn
-            ? const SavedLooksScreen()
-            : const WelcomeScreen(),
+        builder: (_) =>
+            signedIn ? const HomeScreen() : const WelcomeScreen(),
       ),
     );
+  }
+
+  bool _sessionSignedIn() {
+    try {
+      return Supabase.instance.client.auth.currentSession != null;
+    } catch (_) {
+      return false;
+    }
   }
 
   @override
@@ -219,13 +243,10 @@ class _CameraPermissionScreenState extends State<CameraPermissionScreen>
                             elevation: 0,
                           ),
                           child: _isRequesting
-                              ? const SizedBox(
-                                  width: 22,
-                                  height: 22,
-                                  child: CircularProgressIndicator(
-                                    color: Colors.white,
-                                    strokeWidth: 2.5,
-                                  ),
+                              ? const AppLoader.inline(
+                                  size: 22,
+                                  color: Colors.white,
+                                  strokeWidth: 2.5,
                                 )
                               : const Text(
                                   'Allow Camera',
@@ -245,11 +266,12 @@ class _CameraPermissionScreenState extends State<CameraPermissionScreen>
                         onPressed: _isRequesting ? null : _maybeLater,
                         style: TextButton.styleFrom(
                           foregroundColor: AppColors.textMuted,
+                          minimumSize: const Size(48, 48),
                           padding: const EdgeInsets.symmetric(
                               horizontal: 24, vertical: 12),
                         ),
                         child: const Text(
-                          'Maybe Later',
+                          'Maybe later',
                           style: TextStyle(
                             fontSize: 15,
                             fontWeight: FontWeight.w500,

@@ -26,7 +26,7 @@
 //     await is followed by a `mounted` check, and the whole result model tolerates
 //     missing fields — see `foundation_match_service.dart`.
 
-import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -34,17 +34,18 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../cache/makeup_bag_cache.dart';
+import '../cache/shade_disk_cache.dart';
 import '../config/app_config.dart';
 import '../services/beauty_profile_service.dart';
 import '../services/foundation_match_service.dart';
 import '../services/skin_sampler.dart';
 import '../services/web_bridge.dart';
 import '../utils/app_colors.dart';
+import '../widgets/app_loader.dart';
 import '../utils/demo_looks.dart';
 import 'auth_screen.dart';
 import 'foundation_capture_screen.dart';
@@ -271,6 +272,7 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
       final sampled = await SkinSampler.sampleFrames(
         paths,
         seekWhiteReference: _havePaper,
+        fromGallery: fromGallery,
       );
       if (!mounted) return;
 
@@ -424,22 +426,41 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
   }
 
   /// Read-only. Never writes shade_hex or shade_key.
+  /// Shows the disk copy immediately. A stale copy is refreshed in the background.
   Future<List<Map<String, dynamic>>> _readShadeMaps() async {
     try {
-      final dir = await getApplicationSupportDirectory();
-      final file = File('${dir.path}/product_shades_cache.json');
-      if (await file.exists()) {
-        final decoded = jsonDecode(await file.readAsString());
-        if (decoded is List && decoded.isNotEmpty) {
-          return decoded
-              .whereType<Map>()
-              .map((row) => Map<String, dynamic>.from(row))
-              .toList();
+      final disk = await ShadeDiskCache.read();
+      if (disk.shades.isNotEmpty) {
+        if (!disk.isFreshAt(DateTime.now())) {
+          unawaited(_refreshShadeDisk());
         }
+        return disk.shades;
       }
     } catch (e) {
       debugPrint('[FoundationMatch] shade cache read failed: $e');
     }
+    final rows = await _fetchShadeMaps();
+    if (rows.isNotEmpty) {
+      try {
+        await ShadeDiskCache.write(rows, DateTime.now());
+      } catch (e) {
+        debugPrint('[FoundationMatch] shade cache write failed: $e');
+      }
+    }
+    return rows;
+  }
+
+  Future<void> _refreshShadeDisk() async {
+    final rows = await _fetchShadeMaps();
+    if (rows.isEmpty) return;
+    try {
+      await ShadeDiskCache.write(rows, DateTime.now());
+    } catch (e) {
+      debugPrint('[FoundationMatch] shade cache write failed: $e');
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchShadeMaps() async {
     try {
       final rows = await Supabase.instance.client
           .from('product_shades')
@@ -815,13 +836,10 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            SizedBox(
+            const SizedBox(
               width: 46,
               height: 46,
-              child: CircularProgressIndicator(
-                strokeWidth: 3,
-                color: AppColors.primary,
-              ),
+              child: AppLoader(size: 46, strokeWidth: 3),
             ),
             const SizedBox(height: 28),
             Text(
@@ -1714,7 +1732,7 @@ class _NoticeCard extends StatelessWidget {
     final colour = switch (tone) {
       _NoticeTone.info => AppColors.primary,
       _NoticeTone.warning => const Color(0xFFD98324),
-      _NoticeTone.error => const Color(0xFFD9534F),
+      _NoticeTone.error => AppColors.error,
     };
 
     return Container(
@@ -1843,7 +1861,7 @@ class _ConfidencePill extends StatelessWidget {
     final colour = switch (label) {
       'high' => const Color(0xFF2E9E5B),
       'moderate' => const Color(0xFFD98324),
-      _ => const Color(0xFFD9534F),
+      _ => AppColors.error,
     };
 
     return Container(

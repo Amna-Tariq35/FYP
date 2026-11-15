@@ -7,6 +7,7 @@
 // - Pre-fill questionnaire from web analysis data
 
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -54,7 +55,9 @@ class BeautyProfileService {
 
       return UserBeautyProfile();
     } catch (e) {
-      print('[BeautyProfileService] fetchProfile error: $e');
+      debugPrint(
+        '[BeautyProfileService] fetchProfile failed (${e.runtimeType})',
+      );
       return UserBeautyProfile();
     }
   }
@@ -74,7 +77,9 @@ class BeautyProfileService {
 
       return {};
     } catch (e) {
-      print('[BeautyProfileService] fetchPreFillData error: $e');
+      debugPrint(
+        '[BeautyProfileService] fetchPreFillData failed (${e.runtimeType})',
+      );
       return {};
     }
   }
@@ -109,11 +114,13 @@ class BeautyProfileService {
       return true;
     } on PostgrestException catch (e) {
       lastSaveError = _publicSaveError(e.message);
-      print('[BeautyProfileService] saveProfile error: ${e.message}');
+      debugPrint('[BeautyProfileService] saveProfile failed (${e.code})');
       return false;
     } catch (e) {
       lastSaveError = 'Could not save your beauty profile.';
-      print('[BeautyProfileService] saveProfile error: $e');
+      debugPrint(
+        '[BeautyProfileService] saveProfile failed (${e.runtimeType})',
+      );
       return false;
     }
   }
@@ -168,7 +175,9 @@ class BeautyProfileService {
           rethrow;
         }
         payload.remove(missing);
-        print('[BeautyProfileService] schema cache has no $missing; retrying without it');
+        debugPrint(
+          '[BeautyProfileService] schema cache has no $missing; retrying without it',
+        );
       }
     }
     if (last != null) throw last;

@@ -95,6 +95,25 @@ void main() {
     });
   });
 
+  group('WebBridge.urlAfterRefresh — expired session', () {
+    test('a failed refresh opens the public URL without the old access token', () {
+      const staleAccess = 'expired-access-token';
+      const staleRefresh = 'maybe-still-valid-refresh';
+      final url = WebBridge.urlAfterRefresh(
+        path: '/looks/42',
+        refreshFailed: true,
+        accessToken: staleAccess,
+        refreshToken: staleRefresh,
+      );
+
+      expect(url, AppConfig.publicUrl('/looks/42'));
+      expect(url.contains('#'), isFalse);
+      expect(url.contains(staleAccess), isFalse);
+      expect(url.contains(staleRefresh), isFalse);
+      expect(url.contains('at='), isFalse);
+    });
+  });
+
   group('AppConfig.isEphemeralWebHost', () {
     test('flags the current build so a demo cannot silently use a tunnel', () {
       // Not an assertion about which value is correct — both are legitimate

@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import '../cache/beauty_profile_model.dart';
 import '../services/beauty_profile_service.dart';
 import '../utils/app_colors.dart';
+import '../widgets/app_loader.dart';
 
 // ── SCREEN ────────────────────────────────────────────────────────────────────
 
@@ -337,13 +338,10 @@ class _BeautyProfileQuestionnaireScreenState
                     foregroundColor: Colors.white,
                   ),
                   child: _isLoading
-                      ? const SizedBox(
-                          height: 20,
-                          width: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
+                      ? const AppLoader.inline(
+                          size: 20,
+                          strokeWidth: 2,
+                          color: Colors.white,
                         )
                       : Text(_currentStep == 3 ? 'Save Profile' : 'Next'),
                 ),

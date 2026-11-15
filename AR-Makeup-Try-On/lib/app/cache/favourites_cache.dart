@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'cache_policy.dart';
+
 class FavouritesCache extends ChangeNotifier {
   FavouritesCache._();
   static final FavouritesCache instance = FavouritesCache._();
@@ -17,6 +19,8 @@ class FavouritesCache extends ChangeNotifier {
   String? _listeningUserId;
   int _generation = 0;
   String? _activeUserId;
+  DateTime? _cachedAt;
+  Future<void>? _inflight;
 
   bool _isCurrent(int generation, String userId) =>
       generation == _generation && _activeUserId == userId;
@@ -37,25 +41,48 @@ class FavouritesCache extends ChangeNotifier {
     return _favouriteKeys.contains(key);
   }
 
-  Future<void> prefetch(String userId) async {
+  bool _isFresh() =>
+      CachePolicy.isFresh(_cachedAt, CachePolicy.userListTtl, DateTime.now());
+
+  Future<void> prefetch(String userId, {bool force = false}) {
+    if (!force && _inflight != null && _activeUserId == userId) {
+      return _inflight!;
+    }
+    final run = _prefetch(userId, force: force);
+    _inflight = run;
+    return run.whenComplete(() {
+      if (identical(_inflight, run)) _inflight = null;
+    });
+  }
+
+  Future<void> _prefetch(String userId, {bool force = false}) async {
     final generation = _generation;
     _activeUserId = userId;
-    _isLoading = true;
-    notifyListeners();
     await _loadFromDisk(generation, userId);
     if (!_isCurrent(generation, userId)) return;
+    if (!force && _isFresh()) {
+      _isLoading = false;
+      notifyListeners();
+      return;
+    }
+    if (_rawFavourites.isEmpty) {
+      _isLoading = true;
+      notifyListeners();
+    }
     try {
       final res = await Supabase.instance.client
           .from('user_favourites')
           .select('id, product_key, shade_key, created_at')
           .eq('user_id', userId)
-          .order('created_at', ascending: false);
+          .order('created_at', ascending: false)
+          .timeout(const Duration(seconds: 10));
 
       if (!_isCurrent(generation, userId)) return;
-      _rawFavourites = _dedupe(
-        List<Map<String, dynamic>>.from(res),
-      );
+      final fetched = _dedupe(List<Map<String, dynamic>>.from(res));
+      final next = CachePolicy.afterRefresh(_rawFavourites, fetched);
+      _rawFavourites = next ?? _rawFavourites;
       _rebuildKeys();
+      _cachedAt = DateTime.now();
       await _saveToDisk(generation, userId);
     } catch (e) {
       debugPrint('❌ Favourites fetch failed: $e');
@@ -82,10 +109,11 @@ class FavouritesCache extends ChangeNotifier {
       if (!_isCurrent(generation, userId)) return;
       final cached = prefs.getString(prefsKeyFor(userId));
       if (cached == null || cached.isEmpty) return;
-      final decoded = jsonDecode(cached);
-      if (decoded is! List || !_isCurrent(generation, userId)) return;
+      final envelope = CacheEnvelope.decode(jsonDecode(cached));
+      if (!_isCurrent(generation, userId)) return;
+      _cachedAt = envelope.cachedAt;
       _rawFavourites = _dedupe(
-        decoded.map((e) => Map<String, dynamic>.from(e as Map)).toList(),
+        envelope.items.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList(),
       );
       _rebuildKeys();
       notifyListeners();
@@ -99,7 +127,12 @@ class FavouritesCache extends ChangeNotifier {
       if (!_isCurrent(generation, userId)) return;
       final prefs = await SharedPreferences.getInstance();
       if (!_isCurrent(generation, userId)) return;
-      await prefs.setString(prefsKeyFor(userId), jsonEncode(_rawFavourites));
+      await prefs.setString(
+        prefsKeyFor(userId),
+        jsonEncode(
+          CacheEnvelope(cachedAt: _cachedAt ?? DateTime.now(), items: _rawFavourites).encode(),
+        ),
+      );
       if (!_isCurrent(generation, userId)) {
         await prefs.remove(prefsKeyFor(userId));
       }
@@ -274,6 +307,8 @@ void stopListening() {
     final previousUser = _activeUserId;
     _generation++;
     _activeUserId = null;
+    _cachedAt = null;
+    _inflight = null;
     _favouriteKeys.clear();
     _rawFavourites.clear();
     stopListening();

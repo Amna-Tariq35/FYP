@@ -427,12 +427,64 @@ class FoundationMatchService {
     return result;
   }
 
+  /// One automatic retry, and only for HTTP 503.
+  @visibleForTesting
+  static const Duration serviceUnavailableRetryDelay = Duration(seconds: 2);
+
+  @visibleForTesting
+  static bool retriesServiceUnavailable(int statusCode) => statusCode == 503;
+
+  /// Maps a matcher status onto a user-facing error.
+  ///
+  /// Returns null for HTTP 200. 401 keeps the sign-in message. 429 is a
+  /// friendly wait, not the server's rate-limit body.
+  @visibleForTesting
+  static FoundationMatchException? exceptionForHttpStatus(
+    int statusCode,
+    String body,
+  ) {
+    if (statusCode == 200) return null;
+    if (statusCode == 401) {
+      return const FoundationMatchException(
+        'Please sign in to save your shade match.',
+        needsSignIn: true,
+      );
+    }
+    if (statusCode == 429) {
+      return const FoundationMatchException(
+        'Please wait a moment and try again.',
+      );
+    }
+
+    String? serverMessage;
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map && decoded['error'] is String) {
+        serverMessage = decoded['error'] as String;
+      }
+    } catch (_) {
+      // Not JSON — an HTML error page from a proxy, most likely.
+    }
+    return FoundationMatchException(
+      serverMessage ?? "The shade matcher couldn't complete that request.",
+      hint: serverMessage == null ? 'Please try again in a moment.' : null,
+    );
+  }
+
+  static Future<http.Response> _send(Map<String, dynamic> body) {
+    return http
+        .post(Uri.parse(_endpoint), headers: _headers(), body: jsonEncode(body))
+        .timeout(_timeout);
+  }
+
   static Future<FoundationMatchResult> _post(Map<String, dynamic> body) async {
     http.Response response;
     try {
-      response = await http
-          .post(Uri.parse(_endpoint), headers: _headers(), body: jsonEncode(body))
-          .timeout(_timeout);
+      response = await _send(body);
+      if (retriesServiceUnavailable(response.statusCode)) {
+        await Future.delayed(serviceUnavailableRetryDelay);
+        response = await _send(body);
+      }
     } on FoundationMatchException {
       rethrow;
     } catch (e) {
@@ -443,33 +495,15 @@ class FoundationMatchService {
       );
     }
 
-    if (response.statusCode == 401) {
-      throw const FoundationMatchException(
-        'Please sign in to save your shade match.',
-        needsSignIn: true,
-      );
-    }
-
-    if (response.statusCode != 200) {
-      // Surface the server's own message when it sent one — those are written to
-      // be readable, and hiding them behind a generic string loses the reason.
-      String? serverMessage;
-      try {
-        final decoded = jsonDecode(response.body);
-        if (decoded is Map && decoded['error'] is String) {
-          serverMessage = decoded['error'] as String;
-        }
-      } catch (_) {
-        // Not JSON — an HTML error page from a proxy, most likely.
+    final failure = exceptionForHttpStatus(response.statusCode, response.body);
+    if (failure != null) {
+      if (response.statusCode != 401 && response.statusCode != 429) {
+        debugPrint(
+          '[FoundationMatchService] HTTP ${response.statusCode}: '
+          '${response.body.length > 300 ? response.body.substring(0, 300) : response.body}',
+        );
       }
-      debugPrint(
-        '[FoundationMatchService] HTTP ${response.statusCode}: '
-        '${response.body.length > 300 ? response.body.substring(0, 300) : response.body}',
-      );
-      throw FoundationMatchException(
-        serverMessage ?? "The shade matcher couldn't complete that request.",
-        hint: serverMessage == null ? 'Please try again in a moment.' : null,
-      );
+      throw failure;
     }
 
     try {

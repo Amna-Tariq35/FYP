@@ -77,16 +77,35 @@ class WebBridge {
   /// makeup bag) can pre-compute a destination before showing a confirmation
   /// sheet, and so it can be unit-tested.
   static Future<String> buildAuthenticatedUrl(String path) async {
-    final session = await _freshSession();
-    if (session == null) return AppConfig.publicUrl(path);
+    final handoff = await _freshSession();
+    return urlAfterRefresh(
+      path: path,
+      refreshFailed: handoff.refreshFailed,
+      accessToken: handoff.session?.accessToken,
+      refreshToken: handoff.session?.refreshToken,
+    );
+  }
 
-    final refreshToken = session.refreshToken;
-    if (refreshToken == null || refreshToken.isEmpty) {
+  /// Bridge URL after a refresh attempt, or the public URL when the attempt
+  /// failed. A failed refresh must not place the previous access token in the
+  /// fragment — the website shows its own sign-in instead.
+  @visibleForTesting
+  static String urlAfterRefresh({
+    required String path,
+    required bool refreshFailed,
+    String? accessToken,
+    String? refreshToken,
+  }) {
+    if (refreshFailed ||
+        accessToken == null ||
+        accessToken.isEmpty ||
+        refreshToken == null ||
+        refreshToken.isEmpty) {
       return AppConfig.publicUrl(path);
     }
 
     final fragment = <String>[
-      'at=${Uri.encodeComponent(session.accessToken)}',
+      'at=${Uri.encodeComponent(accessToken)}',
       'rt=${Uri.encodeComponent(refreshToken)}',
       'next=${Uri.encodeComponent(normalizeNext(path))}',
     ].join('&');
@@ -97,21 +116,27 @@ class WebBridge {
   // ── Internals ──────────────────────────────────────────────────────────────
 
   /// Current session, refreshed first if it is expired or about to expire.
-  static Future<Session?> _freshSession() async {
+  ///
+  /// [refreshFailed] is true only when a needed refresh threw. The previous
+  /// access token is dropped in that case so it cannot be copied into a URL.
+  static Future<({Session? session, bool refreshFailed})> _freshSession() async {
     final auth = Supabase.instance.client.auth;
     final session = auth.currentSession;
-    if (session == null) return null;
+    if (session == null) return (session: null, refreshFailed: false);
 
-    if (!_needsRefresh(session)) return session;
+    if (!_needsRefresh(session)) {
+      return (session: session, refreshFailed: false);
+    }
 
     try {
       final res = await auth.refreshSession();
-      return res.session ?? auth.currentSession;
-    } catch (e) {
-      debugPrint('⚠️ WebBridge: session refresh failed: $e');
-      // An expired access token is useless to the browser, but the refresh
-      // token may still be valid — let the web side try setSession() anyway.
-      return auth.currentSession;
+      return (
+        session: res.session ?? auth.currentSession,
+        refreshFailed: false,
+      );
+    } catch (_) {
+      debugPrint('⚠️ WebBridge: session refresh failed');
+      return (session: null, refreshFailed: true);
     }
   }
 

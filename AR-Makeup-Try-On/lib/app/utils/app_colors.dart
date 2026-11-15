@@ -32,14 +32,22 @@ class AppColors {
   }
 
   // Main Brand Colors
-  static const Color primary = Color(0xFFC06C84);
+  /// Light rose. White labels on it are 5.94:1. Dark keeps the previous rose.
+  static const Color primaryLight = Color(0xFF9A4A64);
+  static const Color primaryDark = Color(0xFFB75672);
+  static Color get primary => isDark ? primaryDark : primaryLight;
   static const Color secondary = Color(0xFFF4C2C2);
+
+  /// Light error is #B42318. Dark stays #D9534F, which is 4.73:1 as text on #121212.
+  static const Color errorLight = Color(0xFFB42318);
+  static const Color errorDark = Color(0xFFD9534F);
+  static Color get error => isDark ? errorDark : errorLight;
 
   // Background aur Text colors
   static Color get background => isDark ? const Color(0xFF121212) : const Color(0xFFFAF7F5);
   static Color get surface => isDark ? const Color(0xFF1E1E1E) : const Color(0xFFFFFFFF);
   static Color get textMain => isDark ? const Color(0xFFFFFFFF) : const Color(0xFF1F1F1F);
-  static Color get textMuted => isDark ? const Color(0xFFA0A0A0) : const Color(0xFF8A8A8A);
+  static Color get textMuted => isDark ? const Color(0xFFA0A0A0) : const Color(0xFF645E5C);
   static Color get border => isDark ? Colors.white.withOpacity(0.1) : Colors.black.withOpacity(0.05);
 
   // ── Accent ────────────────────────────────────────────────────────────────
@@ -50,7 +58,7 @@ class AppColors {
   /// as the same brand rose. Lifted in dark mode because #C06C84 on a #121212
   /// background is too dim to register as "selected".
   static Color get accentPink =>
-      isDark ? const Color(0xFFE38FA8) : const Color(0xFFC06C84);
+      isDark ? const Color(0xFFE38FA8) : primary;
 
   // ── Neutral ramp ──────────────────────────────────────────────────────────
   //
@@ -71,7 +79,7 @@ class AppColors {
   /// Disabled and placeholder text. Deliberately mid-grey in both themes: a
   /// disabled control should be equally unavailable-looking either way.
   static Color get neutral500 =>
-      isDark ? const Color(0xFF8A8A8A) : const Color(0xFF9A9290);
+      isDark ? const Color(0xFF8A8A8A) : const Color(0xFF76706E);
 
   /// Secondary body text — softer than [textMain], still fully readable.
   static Color get neutral700 =>

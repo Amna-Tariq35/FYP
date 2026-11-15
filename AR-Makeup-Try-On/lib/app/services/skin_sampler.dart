@@ -211,6 +211,7 @@ class SkinSampler {
   static Future<SkinSampleResult> sample(
     String imagePath, {
     bool seekWhiteReference = false,
+    bool fromGallery = false,
   }) async {
     final file = File(imagePath);
     if (!await file.exists()) {
@@ -260,6 +261,11 @@ class SkinSampler {
     }
 
     if (faces.isEmpty) {
+      if (fromGallery) {
+        throw const SkinSampleException(
+          'We could not find a face in this photo. Try a clear, front-facing photo.',
+        );
+      }
       throw const SkinSampleException(
         "No face was found in that photo.",
         hint: 'Look straight at the camera with your whole face in frame.',
@@ -269,7 +275,7 @@ class SkinSampler {
     if (faces.length != 1) {
       throw const SkinSampleException(
         'One face at a time.',
-        hint: 'One face at a time.',
+        hint: 'Please retake with only one face in the photo.',
       );
     }
 
@@ -369,6 +375,7 @@ class SkinSampler {
   static Future<SkinSampleResult> sampleFrames(
     List<String> imagePaths, {
     bool seekWhiteReference = false,
+    bool fromGallery = false,
   }) async {
     if (imagePaths.isEmpty) {
       throw const SkinSampleException(
@@ -380,7 +387,13 @@ class SkinSampler {
     SkinSampleException? lastError;
     for (final path in imagePaths) {
       try {
-        results.add(await sample(path, seekWhiteReference: seekWhiteReference));
+        results.add(
+          await sample(
+            path,
+            seekWhiteReference: seekWhiteReference,
+            fromGallery: fromGallery,
+          ),
+        );
       } on SkinSampleException catch (e) {
         lastError = e;
       }

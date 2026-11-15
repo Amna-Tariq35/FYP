@@ -5,6 +5,7 @@ import '../cache/products_cache.dart';
 import '../config/app_config.dart';
 import '../services/web_bridge.dart';
 import '../utils/app_colors.dart';
+import '../widgets/app_loader.dart';
 
 /// In-app inbox for the signed-in phone session.
 ///
@@ -101,7 +102,8 @@ class _NotificationsInboxScreenState extends State<NotificationsInboxScreen> {
           .from('orders')
           .select('id,status,created_at,total,currency')
           .eq('user_id', userId)
-          .order('created_at', ascending: false);
+          .order('created_at', ascending: false)
+          .timeout(const Duration(seconds: 10));
       return _asMaps(rows);
     } catch (e) {
       debugPrint('NotificationsInbox: order totals unavailable: $e');
@@ -109,7 +111,8 @@ class _NotificationsInboxScreenState extends State<NotificationsInboxScreen> {
           .from('orders')
           .select('id,status,created_at')
           .eq('user_id', userId)
-          .order('created_at', ascending: false);
+          .order('created_at', ascending: false)
+          .timeout(const Duration(seconds: 10));
       return _asMaps(rows);
     }
   }
@@ -120,7 +123,8 @@ class _NotificationsInboxScreenState extends State<NotificationsInboxScreen> {
         .select('product_key,shade_key,notified_at')
         .eq('user_id', userId)
         .not('notified_at', 'is', null)
-        .order('notified_at', ascending: false);
+        .order('notified_at', ascending: false)
+        .timeout(const Duration(seconds: 10));
     return _asMaps(rows);
   }
 
@@ -193,7 +197,7 @@ class _NotificationsInboxScreenState extends State<NotificationsInboxScreen> {
         ),
       ),
       body: _loading
-          ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+          ? const AppLoader.centered()
           : ListView(
               padding: const EdgeInsets.all(24),
               children: [

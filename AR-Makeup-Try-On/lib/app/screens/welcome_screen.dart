@@ -76,7 +76,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
           // Hero image
           Positioned.fill(
             child: Image.asset(
-              'assets/images/hero_model.png',
+              'assets/images/hero_model.webp',
               fit: BoxFit.cover,
               alignment: Alignment.topCenter,
             ),

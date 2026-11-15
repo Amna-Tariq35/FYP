@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import '../utils/app_colors.dart';
+import '../widgets/app_loader.dart';
 
 class EditProfileScreen extends StatefulWidget {
   const EditProfileScreen({super.key});
@@ -277,13 +278,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                   shadowColor: AppColors.primary.withValues(alpha: 0.35),
                 ),
                 child: _isLoading
-                    ? const SizedBox(
-                        height: 22,
-                        width: 22,
-                        child: CircularProgressIndicator(
-                          color: Colors.white,
-                          strokeWidth: 2,
-                        ),
+                    ? const AppLoader.inline(
+                        size: 22,
+                        color: Colors.white,
+                        strokeWidth: 2,
                       )
                     : const Text(
                         'Save Changes',

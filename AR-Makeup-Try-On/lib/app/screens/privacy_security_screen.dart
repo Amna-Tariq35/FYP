@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../utils/app_colors.dart';
+import '../widgets/app_loader.dart';
 import 'auth_screen.dart';
 
 class PrivacySecurityScreen extends StatefulWidget {
@@ -197,11 +198,10 @@ class _PrivacySecurityScreenState extends State<PrivacySecurityScreen> {
                 elevation: 0,
               ),
               child: _isLoading
-                  ? const SizedBox(
-                      height: 18,
-                      width: 18,
-                      child: CircularProgressIndicator(
-                          color: Colors.white, strokeWidth: 2),
+                  ? const AppLoader.inline(
+                      size: 18,
+                      color: Colors.white,
+                      strokeWidth: 2,
                     )
                   : const Text(
                       'Update',

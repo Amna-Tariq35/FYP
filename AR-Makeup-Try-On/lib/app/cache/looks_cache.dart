@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'cache_policy.dart';
+
 typedef LooksFetcher = Future<List<Map<String, dynamic>>> Function(String userId);
 
 class LooksCache {
@@ -30,6 +32,7 @@ class LooksCache {
   /// write the previous user's looks back after sign-out.
   int _generation = 0;
   String? _activeUserId;
+  DateTime? _cachedAt;
 
   // Expose read-only view
   List<Map<String, dynamic>> get looks => List.unmodifiable(_looks);
@@ -83,10 +86,12 @@ class LooksCache {
       if (!_isCurrent(generation, userId)) return;
       if (contents.isEmpty) return;
 
-      final jsonData = jsonDecode(contents) as List<dynamic>;
+      final envelope = CacheEnvelope.decode(jsonDecode(contents));
       if (!_isCurrent(generation, userId)) return;
-      _looks = jsonData
-          .map((item) => Map<String, dynamic>.from(item as Map<String, dynamic>))
+      _cachedAt = envelope.cachedAt;
+      _looks = envelope.items
+          .whereType<Map>()
+          .map((item) => Map<String, dynamic>.from(item))
           .toList();
       debugPrint('✓ Loaded ${_looks.length} looks from offline cache');
     } catch (e) {
@@ -102,7 +107,9 @@ class LooksCache {
       if (!_isCurrent(generation, userId)) return;
       final file = await _cacheFileFor(userId);
       if (!_isCurrent(generation, userId)) return;
-      final payload = jsonEncode(_looks);
+      final payload = jsonEncode(
+        CacheEnvelope(cachedAt: _cachedAt ?? DateTime.now(), items: _looks).encode(),
+      );
       if (!_isCurrent(generation, userId)) return;
       await file.writeAsString(payload, flush: true);
       if (!_isCurrent(generation, userId)) {
@@ -154,8 +161,11 @@ class LooksCache {
   }
 
   // ── Prefetch (from network, fallback to offline) ────────────────────────────
+  bool _isFresh() =>
+      CachePolicy.isFresh(_cachedAt, CachePolicy.userListTtl, DateTime.now());
+
   Future<void> prefetch(String userId, {bool force = false}) async {
-    if (_loaded && !force && _activeUserId == userId) return;
+    if (_loaded && !force && _activeUserId == userId && _isFresh()) return;
 
     // A forced refresh must not adopt the in-flight result it is replacing.
     if (force && _loading) {
@@ -180,11 +190,22 @@ class LooksCache {
     try {
       await _loadFromCacheFile(generation, userId);
       if (!_isCurrent(generation, userId)) return;
+      if (_looks.isNotEmpty) {
+        _loaded = true;
+        _notify();
+      }
+      if (!force && _isFresh()) {
+        _loaded = true;
+        _notify();
+        return;
+      }
 
       try {
         final response = await _fetchLooks(userId);
         if (!_isCurrent(generation, userId)) return;
-        _looks = response;
+        final next = CachePolicy.afterRefresh(_looks, response);
+        _looks = next ?? _looks;
+        if (response != null) _cachedAt = DateTime.now();
         _loaded = true;
         await _saveToCacheFile(generation, userId);
         if (!_isCurrent(generation, userId)) {
@@ -262,7 +283,6 @@ class LooksCache {
 
   // ── Hard refresh ───────────────────────────────────────────────────────────
   Future<void> refresh(String userId) {
-    _loaded = false;
     return prefetch(userId, force: true);
   }
 
@@ -274,6 +294,7 @@ class LooksCache {
     _loaded = false;
     _loading = false;
     _activeUserId = null;
+    _cachedAt = null;
     final pending = _prefetchCompleter;
     _prefetchCompleter = null;
     _notify();

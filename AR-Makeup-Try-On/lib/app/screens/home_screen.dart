@@ -1,28 +1,85 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../cache/looks_cache.dart';
 import '../config/app_config.dart';
 import '../services/web_bridge.dart';
 import '../utils/app_colors.dart';
+import '../utils/app_image_cache.dart';
+import '../utils/image_url.dart';
 import 'auth_screen.dart';
-import 'beauty_profile_questionnaire_screen.dart';
+import 'camera_permission_screen.dart';
 import 'favourites_screen.dart';
 import 'foundation_match_screen.dart';
 import 'makeup_bag_screen.dart';
-import 'notifications_inbox_screen.dart';
 import 'profile_screen.dart';
 import 'saved_looks_screen.dart';
+import 'try_on_screen.dart';
 
-/// Calm front door. The camera stays the live try-on; this screen only links out.
-class HomeScreen extends StatelessWidget {
-  const HomeScreen({super.key});
+/// Front door. The live camera stays on [TryOnScreen]; this screen only links out.
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({
+    super.key,
+    this.signedInOverride,
+    this.greetingNameOverride,
+    this.looksOverride,
+    this.cameraGrantedOverride,
+  });
 
-  bool _signedIn() => Supabase.instance.client.auth.currentUser != null;
+  /// Widget tests pass this so the screen can render without Supabase.
+  @visibleForTesting
+  final bool? signedInOverride;
 
-  Future<void> _openAccount(
-    BuildContext context,
-    Widget page,
-  ) async {
+  /// First name already resolved. Empty means the "Welcome" greeting.
+  @visibleForTesting
+  final String? greetingNameOverride;
+
+  /// Recent looks already in hand. Skips [LooksCache] when set.
+  @visibleForTesting
+  final List<Map<String, dynamic>>? looksOverride;
+
+  /// Widget tests pass this so Try on does not touch the permission plugin.
+  @visibleForTesting
+  final bool? cameraGrantedOverride;
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  @override
+  void initState() {
+    super.initState();
+    if (widget.looksOverride == null) {
+      LooksCache.instance.addListener(_onLooks);
+    }
+  }
+
+  void _onLooks() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    if (widget.looksOverride == null) {
+      LooksCache.instance.removeListener(_onLooks);
+    }
+    super.dispose();
+  }
+
+  bool _signedIn() {
+    final override = widget.signedInOverride;
+    if (override != null) return override;
+    try {
+      return Supabase.instance.client.auth.currentUser != null;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _openAccount(BuildContext context, Widget page) async {
     if (!_signedIn()) {
       await Navigator.push<void>(
         context,
@@ -54,7 +111,7 @@ class HomeScreen extends StatelessWidget {
       context: context,
       builder: (dialogContext) => AlertDialog(
         backgroundColor: AppColors.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         content: Text(
           'This opens the website skin check. That photo is sent to build a routine and is not a diagnosis. The try-on camera photo stays on this phone and is not uploaded.',
           style: TextStyle(
@@ -86,30 +143,139 @@ class HomeScreen extends StatelessWidget {
     }
   }
 
-  void _backToCamera(BuildContext context) {
-    Navigator.of(context).popUntil((route) => route.isFirst);
+  /// Granted: return to the try-on already under this screen, or open it
+  /// the same way startup does when this screen is the root.
+  /// Denied: ask for the camera. Never starts DeepAR from here.
+  Future<void> _openTryOn(BuildContext context) async {
+    final granted = await _cameraGranted();
+    if (!context.mounted) return;
+    if (!granted) {
+      final allowed = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) =>
+              const CameraPermissionScreen(returnGrantedToCaller: true),
+        ),
+      );
+      if (allowed != true || !context.mounted) return;
+    }
+    if (!context.mounted) return;
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) {
+      navigator.popUntil((route) => route.isFirst);
+      return;
+    }
+    navigator.pushReplacement(
+      MaterialPageRoute(builder: (_) => const TryOnScreen()),
+    );
+  }
+
+  Future<bool> _cameraGranted() async {
+    final override = widget.cameraGrantedOverride;
+    if (override != null) return override;
+    try {
+      final status = await Permission.camera.status;
+      return status.isGranted;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _openProfile(BuildContext context) async {
+    if (!_signedIn()) {
+      await Navigator.push<void>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => const AuthScreen(isLoginMode: true),
+        ),
+      );
+      return;
+    }
+    if (!context.mounted) return;
+    final result = await Navigator.push<Object?>(
+      context,
+      MaterialPageRoute(builder: (_) => const ProfileScreen()),
+    );
+    if (context.mounted) _forwardToCamera(context, result);
+  }
+
+  String _greeting() {
+    final override = widget.greetingNameOverride;
+    if (override != null) {
+      final trimmed = override.trim();
+      return trimmed.isEmpty ? 'Welcome' : 'Hi, $trimmed';
+    }
+    final first = _firstNameFromSession();
+    if (first == null || first.isEmpty) return 'Welcome';
+    return 'Hi, $first';
+  }
+
+  String? _firstNameFromSession() {
+    try {
+      final user = Supabase.instance.client.auth.currentUser;
+      if (user == null) return null;
+      final meta = user.userMetadata;
+      final rawName = _metaString(meta, 'full_name') ?? _metaString(meta, 'name');
+      if (rawName != null) {
+        final token = rawName.trim().split(RegExp(r'\s+')).first;
+        final word = token.replaceAll(RegExp(r'[^A-Za-z]'), '');
+        if (word.isNotEmpty) return _capitalize(word);
+      }
+      final email = user.email ?? '';
+      final at = email.indexOf('@');
+      if (at > 0) {
+        final prefix = email.substring(0, at).split(RegExp(r'[._+\d]')).first;
+        final word = prefix.replaceAll(RegExp(r'[^A-Za-z]'), '');
+        if (word.isNotEmpty) return _capitalize(word);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  String? _avatarUrl() {
+    try {
+      final meta = Supabase.instance.client.auth.currentUser?.userMetadata;
+      final url = _metaString(meta, 'avatar_url');
+      if (url == null || url.isEmpty) return null;
+      return upgradeImageUrl(url);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String? _metaString(Map<String, dynamic>? meta, String key) {
+    final value = meta?[key];
+    if (value == null) return null;
+    final text = value.toString().trim();
+    return text.isEmpty ? null : text;
+  }
+
+  String _capitalize(String word) {
+    if (word.isEmpty) return word;
+    return word[0].toUpperCase() + word.substring(1).toLowerCase();
+  }
+
+  List<Map<String, dynamic>> _recentLooks() {
+    final source = widget.looksOverride ??
+        (_signedIn()
+            ? LooksCache.instance.looks
+            : const <Map<String, dynamic>>[]);
+    if (source.length <= 3) {
+      return List<Map<String, dynamic>>.from(source);
+    }
+    return source.sublist(0, 3);
   }
 
   @override
   Widget build(BuildContext context) {
     AppColors.watch(context);
     final signedIn = _signedIn();
+    final heroHeight =
+        (MediaQuery.sizeOf(context).height * 0.42).clamp(240.0, 340.0);
     final tiles = <_HomeTile>[
       _HomeTile(
-        icon: Icons.face_retouching_natural_outlined,
-        label: 'Beauty profile',
-        onTap: () => _openAccount(context, const BeautyProfileQuestionnaireScreen()),
-      ),
-      _HomeTile(
-        icon: Icons.colorize_rounded,
-        label: 'Find my shade',
-        onTap: () async {
-          final result = await Navigator.push<Object?>(
-            context,
-            MaterialPageRoute(builder: (_) => const FoundationMatchScreen()),
-          );
-          if (context.mounted) _forwardToCamera(context, result);
-        },
+        icon: Icons.photo_library_outlined,
+        label: 'Saved looks',
+        onTap: () => _openAccount(context, const SavedLooksScreen()),
       ),
       _HomeTile(
         icon: Icons.favorite_border_rounded,
@@ -122,130 +288,378 @@ class HomeScreen extends StatelessWidget {
         onTap: () => _openAccount(context, const MakeupBagScreen()),
       ),
       _HomeTile(
-        icon: Icons.photo_library_outlined,
-        label: 'Saved looks',
-        onTap: () => _openAccount(context, const SavedLooksScreen()),
-      ),
-      _HomeTile(
         icon: Icons.spa_outlined,
-        label: 'Skin check',
+        label: 'Skin analysis',
         onTap: () => _openSkinCheck(context),
       ),
       _HomeTile(
         icon: Icons.storefront_outlined,
-        label: 'Shop',
-        onTap: () => WebBridge.openAuthenticated(context, AppConfig.productsPath),
-      ),
-      _HomeTile(
-        icon: Icons.receipt_long_outlined,
-        label: 'My orders',
-        onTap: () => _openAccountPage(context, AppConfig.myOrdersPath),
-      ),
-      _HomeTile(
-        icon: Icons.notifications_none_rounded,
-        label: 'Notifications',
-        onTap: () => _openAccount(context, const NotificationsInboxScreen()),
+        label: 'Products',
+        onTap: () =>
+            WebBridge.openAuthenticated(context, AppConfig.productsPath),
       ),
     ];
 
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(8, 8, 20, 4),
-              child: Row(
-                children: [
-                  IconButton(
-                    onPressed: () => Navigator.maybePop(context),
-                    icon: Icon(Icons.chevron_left, color: AppColors.textMain, size: 28),
-                  ),
-                  Expanded(
+        child: SingleChildScrollView(
+          physics: const BouncingScrollPhysics(),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _RiseIn(
+                delay: Duration.zero,
+                child: _Hero(
+                  height: heroHeight,
+                  greeting: _greeting(),
+                  avatarUrl: _avatarUrl(),
+                  onProfile: () => _openProfile(context),
+                  onTryOn: () => _openTryOn(context),
+                  onFindShade: () async {
+                    final result = await Navigator.push<Object?>(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const FoundationMatchScreen(),
+                      ),
+                    );
+                    if (context.mounted) _forwardToCamera(context, result);
+                  },
+                ),
+              ),
+              if (!signedIn)
+                _RiseIn(
+                  delay: const Duration(milliseconds: 40),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
                     child: Text(
-                      'Home',
+                      'Sign in to keep looks, orders, and your bag.',
                       style: TextStyle(
-                        color: AppColors.textMain,
-                        fontSize: 22,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: -0.4,
+                        color: AppColors.textMuted,
+                        fontSize: 14,
+                        height: 1.4,
                       ),
                     ),
                   ),
-                ],
+                ),
+              _RiseIn(
+                delay: const Duration(milliseconds: 40),
+                child: const _SectionTitle('Explore'),
               ),
-            ),
-            Expanded(
-              child: ListView(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-                physics: const BouncingScrollPhysics(),
-                children: [
-                  if (!signedIn)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 16),
-                      child: Text(
-                        'Sign in to keep looks, orders, and your bag.',
-                        style: TextStyle(
-                          color: AppColors.textMuted,
-                          fontSize: 15,
-                          height: 1.4,
-                        ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: GridView.builder(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  itemCount: tiles.length,
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    mainAxisSpacing: 10,
+                    crossAxisSpacing: 10,
+                    mainAxisExtent: 118,
+                  ),
+                  itemBuilder: (context, index) {
+                    return _RiseIn(
+                      delay: Duration(milliseconds: 40 * (index + 1)),
+                      child: _ExploreTile(tile: tiles[index]),
+                    );
+                  },
+                ),
+              ),
+              _RiseIn(
+                delay: const Duration(milliseconds: 80),
+                child: _SectionTitle(
+                  'Your looks',
+                  trailing: Semantics(
+                    button: true,
+                    label: 'See all saved looks',
+                    child: TextButton(
+                      onPressed: () =>
+                          _openAccount(context, const SavedLooksScreen()),
+                      style: TextButton.styleFrom(
+                        foregroundColor: AppColors.accentPink,
+                        minimumSize: const Size(48, 48),
+                      ),
+                      child: const Text(
+                        'See all',
+                        style: TextStyle(fontWeight: FontWeight.w600),
                       ),
                     ),
-                  GridView.count(
-                    crossAxisCount: 2,
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    mainAxisSpacing: 14,
-                    crossAxisSpacing: 14,
-                    childAspectRatio: 1.2,
-                    children: [
-                      for (final tile in tiles) _HomeTileButton(tile: tile),
-                    ],
                   ),
-                ],
+                ),
               ),
-            ),
-            _HomeBottomBar(
-              homeActive: true,
-              onTryOn: () => _backToCamera(context),
-              onHome: () {},
-              onProfile: () async {
-                if (!_signedIn()) {
-                  await Navigator.push<void>(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => const AuthScreen(isLoginMode: true),
-                    ),
-                  );
-                  return;
-                }
-                if (!context.mounted) return;
-                final result = await Navigator.push<Object?>(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => const ProfileScreen(openedOverHome: true),
-                  ),
-                );
-                if (context.mounted) _forwardToCamera(context, result);
-              },
-            ),
-          ],
+              _RiseIn(
+                delay: const Duration(milliseconds: 120),
+                child: _LooksStrip(
+                  looks: _recentLooks(),
+                  onTryOn: () => _openTryOn(context),
+                  onOpen: () => _openAccount(context, const SavedLooksScreen()),
+                ),
+              ),
+              const SizedBox(height: 24),
+            ],
+          ),
         ),
       ),
     );
   }
+}
 
-  Future<void> _openAccountPage(BuildContext context, String path) async {
-    if (!_signedIn()) {
-      await Navigator.push<void>(
-        context,
-        MaterialPageRoute(builder: (_) => const AuthScreen(isLoginMode: true)),
-      );
-      return;
+class _Hero extends StatelessWidget {
+  const _Hero({
+    required this.height,
+    required this.greeting,
+    required this.avatarUrl,
+    required this.onProfile,
+    required this.onTryOn,
+    required this.onFindShade,
+  });
+
+  final double height;
+  final String greeting;
+  final String? avatarUrl;
+  final VoidCallback onProfile;
+  final VoidCallback onTryOn;
+  final VoidCallback onFindShade;
+
+  @override
+  Widget build(BuildContext context) {
+    final secondary = AppColors.accentPink;
+    return Column(
+      children: [
+        ClipRRect(
+                borderRadius: const BorderRadius.vertical(
+                  bottom: Radius.circular(28),
+                ),
+                child: SizedBox(
+                  height: height,
+                  width: double.infinity,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Image.asset(
+                        'assets/images/hero_model.webp',
+                        fit: BoxFit.cover,
+                        alignment: Alignment.topCenter,
+                        errorBuilder: (_, _, _) =>
+                            const ColoredBox(color: AppColors.primaryDark),
+                      ),
+                      DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Colors.black.withValues(alpha: 0.72),
+                              Colors.black.withValues(alpha: 0.2),
+                              Colors.black.withValues(alpha: 0.78),
+                            ],
+                            stops: const [0.0, 0.42, 1.0],
+                          ),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 8, 16, 40),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    greeting,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Semantics(
+                                  button: true,
+                                  label: 'Profile',
+                                  child: Material(
+                                    color: AppColors.primary,
+                                    shape: const CircleBorder(),
+                                    clipBehavior: Clip.antiAlias,
+                                    child: InkWell(
+                                      customBorder: const CircleBorder(),
+                                      onTap: onProfile,
+                                      child: SizedBox(
+                                        width: 48,
+                                        height: 48,
+                                        child: _AvatarFace(url: avatarUrl),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const Spacer(),
+                            const Text(
+                              'Find your perfect look',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 26,
+                                fontWeight: FontWeight.w800,
+                                height: 1.12,
+                                letterSpacing: -0.4,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            const Text(
+                              'Try a look on camera, or match a foundation shade.',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                height: 1.3,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+        Transform.translate(
+          offset: const Offset(0, -28),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+                  children: [
+                    Expanded(
+                      child: Semantics(
+                        button: true,
+                        label: 'Try on',
+                        child: SizedBox(
+                          height: 56,
+                          child: ElevatedButton.icon(
+                            onPressed: onTryOn,
+                            icon: const Icon(Icons.photo_camera_outlined, size: 20),
+                            label: const Text(
+                              'Try on',
+                              maxLines: 1,
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppColors.primary,
+                              foregroundColor: Colors.white,
+                              disabledForegroundColor: Colors.white,
+                              elevation: 1,
+                              shadowColor: Colors.black.withValues(alpha: 0.12),
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Semantics(
+                        button: true,
+                        label: 'Find my shade',
+                        child: SizedBox(
+                          height: 56,
+                          child: OutlinedButton.icon(
+                            onPressed: onFindShade,
+                            icon: Icon(Icons.colorize_rounded, size: 20, color: secondary),
+                            label: Text(
+                              'Find my shade',
+                              maxLines: 2,
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                                height: 1.1,
+                                color: secondary,
+                              ),
+                            ),
+                            style: OutlinedButton.styleFrom(
+                              backgroundColor: AppColors.surface,
+                              foregroundColor: secondary,
+                              side: BorderSide(color: secondary),
+                              elevation: 1,
+                              shadowColor: Colors.black.withValues(alpha: 0.08),
+                              padding: const EdgeInsets.symmetric(horizontal: 8),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+      ],
+    );
+  }
+}
+
+class _AvatarFace extends StatelessWidget {
+  const _AvatarFace({required this.url});
+
+  final String? url;
+
+  @override
+  Widget build(BuildContext context) {
+    if (url == null || url!.isEmpty) {
+      return const Icon(Icons.person_outline, color: Colors.white, size: 24);
     }
-    if (!context.mounted) return;
-    await WebBridge.openAuthenticated(context, path);
+    final pixelWidth = (48 * MediaQuery.devicePixelRatioOf(context))
+        .round()
+        .clamp(48, 192);
+    return CachedNetworkImage(
+      imageUrl: upgradeImageUrl(url!),
+      cacheManager: AppImageCache.manager,
+      fit: BoxFit.cover,
+      memCacheWidth: pixelWidth,
+      fadeInDuration: Duration.zero,
+      errorWidget: (_, _, _) =>
+          const Icon(Icons.person_outline, color: Colors.white, size: 24),
+    );
+  }
+}
+
+class _SectionTitle extends StatelessWidget {
+  const _SectionTitle(this.title, {this.trailing});
+
+  final String title;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 8, 12, 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              style: TextStyle(
+                color: AppColors.textMain,
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                letterSpacing: -0.2,
+              ),
+            ),
+          ),
+          ?trailing,
+        ],
+      ),
+    );
   }
 }
 
@@ -261,51 +675,67 @@ class _HomeTile {
   final VoidCallback onTap;
 }
 
-class _HomeTileButton extends StatelessWidget {
-  const _HomeTileButton({required this.tile});
+class _ExploreTile extends StatelessWidget {
+  const _ExploreTile({required this.tile});
 
   final _HomeTile tile;
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: AppColors.surface,
-      borderRadius: BorderRadius.circular(20),
-      child: InkWell(
-        onTap: tile.onTap,
-        borderRadius: BorderRadius.circular(20),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: AppColors.border),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: AppColors.primary.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(14),
+    return Semantics(
+      button: true,
+      label: tile.label,
+      child: Material(
+        color: AppColors.surface,
+        elevation: 0,
+        shadowColor: const Color(0x14000000),
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          onTap: tile.onTap,
+          borderRadius: BorderRadius.circular(16),
+          child: Ink(
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: AppColors.border),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(
+                    alpha: AppColors.isDark ? 0.28 : 0.05,
+                  ),
+                  blurRadius: 2,
+                  offset: const Offset(0, 1),
                 ),
-                child: Icon(tile.icon, color: AppColors.primary, size: 22),
+              ],
+            ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 8),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(tile.icon, color: AppColors.accentPink, size: 20),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    tile.label,
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    style: TextStyle(
+                      color: AppColors.textMain,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      height: 1.15,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 12),
-              Text(
-                tile.label,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  color: AppColors.textMain,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                  height: 1.2,
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       ),
@@ -313,61 +743,225 @@ class _HomeTileButton extends StatelessWidget {
   }
 }
 
-class _HomeBottomBar extends StatelessWidget {
-  const _HomeBottomBar({
-    required this.homeActive,
+class _LooksStrip extends StatelessWidget {
+  const _LooksStrip({
+    required this.looks,
     required this.onTryOn,
-    required this.onHome,
-    required this.onProfile,
+    required this.onOpen,
   });
 
-  final bool homeActive;
+  final List<Map<String, dynamic>> looks;
   final VoidCallback onTryOn;
-  final VoidCallback onHome;
-  final VoidCallback onProfile;
+  final VoidCallback onOpen;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 12),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        border: Border(top: BorderSide(color: AppColors.border)),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          _item(Icons.camera_alt_outlined, 'Try-On', false, onTryOn),
-          _item(Icons.home_outlined, 'Home', homeActive, onHome),
-          _item(Icons.person_outline, 'Profile', false, onProfile),
-        ],
+    if (looks.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.border),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(
+                  alpha: AppColors.isDark ? 0.28 : 0.05,
+                ),
+                blurRadius: 2,
+                offset: const Offset(0, 1),
+              ),
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Save your first look from try-on',
+                  style: TextStyle(
+                    color: AppColors.textMain,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    height: 1.3,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton(
+                    onPressed: onTryOn,
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.accentPink,
+                      minimumSize: const Size(48, 48),
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                    ),
+                    child: const Text(
+                      'Try on',
+                      style: TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    final cacheWidth = (132 * MediaQuery.devicePixelRatioOf(context))
+        .round()
+        .clamp(64, 480);
+
+    return SizedBox(
+      height: 188,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        physics: const BouncingScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+        itemCount: looks.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 12),
+        itemBuilder: (context, index) {
+          final look = looks[index];
+          final name = (look['look_name'] as String?)?.trim();
+          final label = (name == null || name.isEmpty) ? 'Saved look' : name;
+          final rawUrl = look['preview_image_url'] as String?;
+          final url = (rawUrl == null || rawUrl.trim().isEmpty)
+              ? null
+              : upgradeImageUrl(rawUrl);
+          return Semantics(
+            button: true,
+            label: label,
+            child: SizedBox(
+              width: 132,
+              child: Material(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(16),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: onOpen,
+                  child: Ink(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: AppColors.border),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(
+                          child: url == null
+                              ? ColoredBox(
+                                  color: AppColors.primary.withValues(alpha: 0.1),
+                                  child: Icon(
+                                    Icons.photo_outlined,
+                                    color: AppColors.accentPink,
+                                  ),
+                                )
+                              : CachedNetworkImage(
+                                  imageUrl: url,
+                                  fit: BoxFit.cover,
+                                  memCacheWidth: cacheWidth,
+                                  fadeInDuration: Duration.zero,
+                                  placeholder: (_, _) => ColoredBox(
+                                    color: AppColors.neutral200,
+                                  ),
+                                  errorWidget: (_, _, _) => ColoredBox(
+                                    color: AppColors.primary.withValues(alpha: 0.1),
+                                    child: Icon(
+                                      Icons.photo_outlined,
+                                      color: AppColors.accentPink,
+                                    ),
+                                  ),
+                                ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+                          child: Text(
+                            label,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: AppColors.textMain,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              height: 1.2,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }
+}
 
-  Widget _item(IconData icon, String label, bool active, VoidCallback onTap) {
-    final color = active ? AppColors.primary : AppColors.textMuted;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, color: color, size: 24),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              style: TextStyle(
-                color: color,
-                fontSize: 12,
-                fontWeight: active ? FontWeight.w600 : FontWeight.w500,
-              ),
-            ),
-          ],
-        ),
-      ),
+class _RiseIn extends StatefulWidget {
+  const _RiseIn({required this.delay, required this.child});
+
+  final Duration delay;
+  final Widget child;
+
+  @override
+  State<_RiseIn> createState() => _RiseInState();
+}
+
+class _RiseInState extends State<_RiseIn> with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  var _scheduled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 250),
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) return;
+    if (_scheduled || _controller.isCompleted) return;
+    _scheduled = true;
+    final delay = widget.delay;
+    Future<void>.delayed(delay, () {
+      if (!mounted) return;
+      if (MediaQuery.disableAnimationsOf(context)) return;
+      _controller.forward();
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (MediaQuery.disableAnimationsOf(context)) return widget.child;
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        final t = Curves.easeOut.transform(_controller.value);
+        return Opacity(
+          opacity: t,
+          child: Transform.translate(
+            offset: Offset(0, (1 - t) * 12),
+            child: child,
+          ),
+        );
+      },
+      child: widget.child,
     );
   }
 }

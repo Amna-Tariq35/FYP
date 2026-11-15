@@ -8,7 +8,10 @@ import 'package:path_provider/path_provider.dart';
 import '../config/app_config.dart';
 import '../services/web_bridge.dart';
 import '../utils/app_colors.dart';
+import '../widgets/app_loader.dart';
+import '../utils/image_url.dart';
 import '../cache/looks_cache.dart';
+import '../utils/app_image_cache.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
 // ── TAB ENUM ──────────────────────────────────────────────────────────────────
@@ -105,7 +108,7 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
     if (userId == null) return;
 
     if (_cache.isLoaded) {
-      // Data already hai — seedha show karo
+      // Data already hai — seedha show karo. A stale copy refreshes behind it.
       if (mounted) {
         _favouriteIds.clear();
         for (final look in _cache.looks) {
@@ -122,6 +125,7 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
         }
         _precacheImages();
       }
+      _cache.prefetch(userId);
       return;
     }
 
@@ -152,7 +156,11 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
       final url = look['preview_image_url'] as String?;
       if (url != null && url.isNotEmpty) {
         // CachedNetworkImage ka apna cache manager use karo
-        CachedNetworkImageProvider(url).resolve(const ImageConfiguration());
+        CachedNetworkImageProvider(
+          upgradeImageUrl(url),
+          maxWidth: 400,
+          cacheManager: AppImageCache.manager,
+        ).resolve(const ImageConfiguration());
       }
     }
   }
@@ -276,10 +284,7 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
             border: Border.all(color: AppColors.border, width: 1),
           ),
           child: const Center(
-            child: CircularProgressIndicator(
-              color: AppColors.primary,
-              strokeWidth: 2,
-            ),
+            child: AppLoader(size: 32, strokeWidth: 2),
           ),
         ),
       ),
@@ -467,7 +472,9 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
           context,
         ).showSnackBar(const SnackBar(content: Text('Preparing image…')));
       }
-      final response = await http.get(Uri.parse(imageUrl));
+      final response = await http
+          .get(Uri.parse(upgradeImageUrl(imageUrl)))
+          .timeout(const Duration(seconds: 10));
       final dir = await getTemporaryDirectory();
       final safeName = lookName.replaceAll(RegExp(r'[^\w\-]'), '_');
       tempFile = File('${dir.path}/$safeName.jpg');
@@ -879,7 +886,9 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
                       ),
                       child: imageUrl != null && imageUrl.isNotEmpty
                           ? CachedNetworkImage(
-                              imageUrl: imageUrl,
+                              imageUrl: upgradeImageUrl(imageUrl),
+                              cacheManager: AppImageCache.manager,
+                              memCacheWidth: 400,
                               fit: BoxFit.cover,
                               // Pehli baar load hone pr shimmer dikhao
                               placeholder: (context, url) => _buildShimmer(),
@@ -1246,7 +1255,7 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
             ),
             const SizedBox(height: 24),
             Text(
-              'No Looks Saved Yet',
+              'No looks saved yet',
               style: TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.w800,
@@ -1300,7 +1309,7 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
                 ),
                 const SizedBox(height: 24),
                 Text(
-                  'No Favourites Yet',
+                  'No favourites yet',
                   style: TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.w800,
@@ -1350,9 +1359,10 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
             SizedBox(
               width: 22,
               height: 22,
-              child: CircularProgressIndicator(
-                color: AppColors.primary.withValues(alpha: 0.5),
+              child: AppLoader(
+                size: 22,
                 strokeWidth: 1.5,
+                color: AppColors.primary.withValues(alpha: 0.5),
               ),
             ),
             const SizedBox(height: 8),
@@ -1513,11 +1523,13 @@ class _LookViewer extends StatelessWidget {
             Expanded(
               child: hasImage
                   ? CachedNetworkImage(
-                      imageUrl: imageUrl!,
+                      imageUrl: upgradeImageUrl(imageUrl!),
+                      cacheManager: AppImageCache.manager,
+                      memCacheWidth: 1080,
                       fit: BoxFit.contain,
                       width: double.infinity,
                       placeholder: (_, _) => const Center(
-                        child: CircularProgressIndicator(color: Colors.white),
+                        child: AppLoader(size: 36, color: Colors.white),
                       ),
                       errorWidget: (_, _, _) => const Icon(
                         Icons.image_not_supported_outlined,

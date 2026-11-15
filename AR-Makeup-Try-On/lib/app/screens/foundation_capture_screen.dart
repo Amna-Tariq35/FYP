@@ -21,6 +21,7 @@ import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 
 import '../services/skin_sampler.dart';
 import '../utils/app_colors.dart';
+import '../widgets/app_loader.dart';
 
 class FoundationCaptureResult {
   const FoundationCaptureResult({
@@ -422,7 +423,7 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
   /// One instruction. Count, then size, then angle, then the oval.
   _FaceGate _interpretFaces(List<Face> faces, _PreparedFace prepared) {
     if (faces.length > 1) {
-      return const _FaceGate('One face at a time.', false);
+      return const _FaceGate('One face at a time. Please retake.', false);
     }
     if (faces.isEmpty) {
       return const _FaceGate('Move your face into the oval.', false);
@@ -722,7 +723,9 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
               onGallery: () => _close(const FoundationCaptureResult(chooseGallery: true)),
             )
           : controller == null || !controller.value.isInitialized
-              ? const Center(child: CircularProgressIndicator(color: Colors.white))
+              ? const Center(
+                  child: AppLoader(size: 36, color: Colors.white),
+                )
               : LayoutBuilder(
                   builder: (context, constraints) {
                     _viewSize = constraints.biggest;
@@ -739,13 +742,32 @@ class _FoundationCaptureScreenState extends State<FoundationCaptureScreen> {
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Text(
-                                _busy ? 'Photo $_taken of 3' : _status,
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w600,
+                              Semantics(
+                                liveRegion: true,
+                                label: _busy ? 'Photo $_taken of 3' : _status,
+                                child: ExcludeSemantics(
+                                  child: DecoratedBox(
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xEB1A1020),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 14,
+                                        vertical: 8,
+                                      ),
+                                      child: Text(
+                                        _busy ? 'Photo $_taken of 3' : _status,
+                                        textAlign: TextAlign.center,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.w600,
+                                          height: 1.35,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               ),
                               if (_gateFallback && !_busy) ...[

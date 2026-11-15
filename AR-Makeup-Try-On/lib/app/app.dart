@@ -62,12 +62,19 @@ class _AppRootState extends State<AppRoot> {
 /// Material widgets follow the same light/dark switch as [AppColors].
 /// Screens that paint with [AppColors] keep their own surfaces.
 ThemeData _materialTheme(Brightness brightness) {
+  // Seed stays the previous rose so fromSeed roles other than primary do not shift.
+  final scheme = ColorScheme.fromSeed(
+    seedColor: AppColors.primaryDark,
+    brightness: brightness,
+  );
   return ThemeData(
     useMaterial3: true,
     brightness: brightness,
-    colorScheme: ColorScheme.fromSeed(
-      seedColor: AppColors.primary,
-      brightness: brightness,
-    ),
+    colorScheme: brightness == Brightness.light
+        ? scheme.copyWith(
+            primary: AppColors.primaryLight,
+            onPrimary: Colors.white,
+          )
+        : scheme,
   );
 }

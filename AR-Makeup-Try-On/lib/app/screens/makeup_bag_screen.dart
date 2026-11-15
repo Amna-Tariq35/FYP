@@ -1,10 +1,14 @@
-import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../config/app_config.dart';
 import '../services/web_bridge.dart';
 import '../utils/app_colors.dart';
+import '../widgets/app_loader.dart';
+import '../utils/image_url.dart';
 import '../cache/makeup_bag_cache.dart';
 import '../cache/products_cache.dart';
+import '../utils/app_image_cache.dart';
 
 class MakeupBagScreen extends StatefulWidget {
   const MakeupBagScreen({super.key});
@@ -14,6 +18,17 @@ class MakeupBagScreen extends StatefulWidget {
 }
 
 class _MakeupBagScreenState extends State<MakeupBagScreen> {
+  @override
+  void initState() {
+    super.initState();
+    final userId = Supabase.instance.client.auth.currentUser?.id;
+    if (userId != null) {
+      MakeupBagCache.instance.prefetch(userId);
+    }
+    MakeupBagCache.instance.ensureDefaultBagForSignedInUser();
+    ProductsCache.instance.prefetch();
+  }
+
   void _openAddProducts() {
     WebBridge.openAuthenticated(context, AppConfig.makeupBagAddPath());
   }
@@ -130,7 +145,7 @@ class _MakeupBagScreenState extends State<MakeupBagScreen> {
           final isLoading = MakeupBagCache.instance.isLoading;
 
           if (isLoading && items.isEmpty) {
-            return Center(child: CircularProgressIndicator(color: AppColors.primary));
+            return const AppLoader.centered();
           }
 
           if (items.isEmpty) {
@@ -242,7 +257,9 @@ class _MakeupBagScreenState extends State<MakeupBagScreen> {
                           ? ClipRRect(
                               borderRadius: const BorderRadius.vertical(top: Radius.circular(15)),
                               child: CachedNetworkImage(
-                                imageUrl: imageUrl,
+                                imageUrl: upgradeImageUrl(imageUrl),
+                                cacheManager: AppImageCache.manager,
+                                memCacheWidth: 400,
                                 fit: BoxFit.cover,
                                 fadeInDuration: const Duration(milliseconds: 120),
                                 placeholder: (context, url) => Container(

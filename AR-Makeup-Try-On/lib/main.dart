@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'app/app.dart';
@@ -79,7 +78,7 @@ Future<void> main() async {
   // Remove splash as soon as possible
   FlutterNativeSplash.remove();
 
-  runApp(ProviderScope(child: MyApp(initialScreen: initialScreen)));
+  runApp(MyApp(initialScreen: initialScreen));
 }
 
 void _syncSystemUiOverlay() {
