@@ -170,7 +170,7 @@ class BeautyProfileService {
           .limit(1);
       final rows = List<Map<String, dynamic>>.from(prior as List);
       final old = rows.isEmpty ? null : rows.first['source'];
-      if (old is String && old != incoming && old != 'both') {
+      if (old == 'both' || incoming == 'both' || (old is String && old != incoming)) {
         row['source'] = 'both';
       }
     } on PostgrestException catch (e) {

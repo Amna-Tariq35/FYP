@@ -9,6 +9,8 @@
  */
 
 import { NextResponse, type NextRequest } from "next/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { mergeBeautyProfileSource, type BeautyProfileSource } from "@/src/lib/beauty-profile/source";
 import { resolveRequestAuth } from "@/src/lib/supabase/request-auth";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -88,7 +90,7 @@ function honestProfileError(): string {
  * Skin type, undertone, depth, and concerns stay in the write.
  */
 async function writeBeautyProfile(
-  supabase: { from: (table: string) => any },
+  supabase: SupabaseClient,
   row: Record<string, unknown>,
 ): Promise<{ data: unknown; error: { message?: string; code?: string } | null }> {
   let payload = { ...row };
@@ -318,10 +320,16 @@ export async function POST(request: NextRequest) {
       !priorRead.error && priorRow && typeof priorRow.source === "string"
         ? priorRow.source
         : null;
-    const incoming = payload.source || "manual";
-    if (!(priorRead.error && missingColumnName(priorRead.error) === "source")) {
-      update.source =
-        prior && prior !== incoming && prior !== "both" ? "both" : incoming;
+    const incoming: BeautyProfileSource =
+      payload.source === "analysis" || payload.source === "both"
+        ? payload.source
+        : "manual";
+    if (priorRead.error) {
+      if (missingColumnName(priorRead.error) !== "source") {
+        console.error("[beauty-profile POST source read]", priorRead.error.message);
+      }
+    } else {
+      update.source = mergeBeautyProfileSource(prior, incoming);
     }
     update.updated_at = new Date().toISOString();
 

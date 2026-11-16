@@ -1,30 +1,34 @@
 import { Product, ConcernScores, ExactCategory, RecommendedProduct } from "./recommend";
 import { calculateMatchScore } from "./scoring";
+import { isProductSafe, type SafetyContext } from "./deterministic-routine";
 
 export interface ShortlistedCandidates {
   amCandidates: Record<ExactCategory, RecommendedProduct[]>;
   pmCandidates: Record<ExactCategory, RecommendedProduct[]>;
 }
 
+type RankedProduct = RecommendedProduct & {
+  matchedTagsCount: number;
+  isExactSkinMatch: boolean;
+};
+
 export function getTopCandidates(
   products: Product[],
   userSkinType: string,
   concernScores: ConcernScores | string[],
-  maxCandidates = 3 // AI ko 3 best options dete hain har slot ke liye
+  maxCandidates = 3,
+  safety: SafetyContext = {},
 ): ShortlistedCandidates {
-  
-  // 1. Scoring Run Karein (Ab hum matchedTags aur skinTypeMatched dono nikal rahe hain)
-  const scoredProducts: RecommendedProduct[] = products.map((p) => {
+  const scoredProducts: RankedProduct[] = products.map((p) => {
     const { matchScore, matchedTags, skinTypeMatched } = calculateMatchScore(p, userSkinType, concernScores);
     
     return { 
       ...p, 
       matchScore, 
       matchReason: "", 
-      // Temporary fields for advanced sorting (AI engine ya UI ke liye bhi kaam ayenge)
       matchedTagsCount: matchedTags.length,
-      isExactSkinMatch: skinTypeMatched
-    } as RecommendedProduct & { matchedTagsCount: number, isExactSkinMatch: boolean };
+      isExactSkinMatch: skinTypeMatched,
+    };
   });
 
   const categories: ExactCategory[] = [
@@ -39,7 +43,7 @@ export function getTopCandidates(
   const pmCandidates = {} as Record<ExactCategory, RecommendedProduct[]>;
 
   // 2. Multi-Level Sorting Function (The Tie-Breaker)
-  const smartSort = (a: any, b: any) => {
+  const smartSort = (a: RankedProduct, b: RankedProduct) => {
     // Primary: Highest Score
     if (b.matchScore !== a.matchScore) {
       return b.matchScore - a.matchScore;
@@ -61,6 +65,7 @@ export function getTopCandidates(
     // AM Candidates (Filtering using am_safe)
     amCandidates[category] = scoredProducts
       .filter((p) => p.category === category && p.am_safe !== false)
+      .filter((p) => isProductSafe(p, safety))
       .sort(smartSort)
       .slice(0, maxCandidates);
 
@@ -68,6 +73,7 @@ export function getTopCandidates(
     if (category !== "sunscreen") {
       pmCandidates[category] = scoredProducts
         .filter((p) => p.category === category && p.pm_safe !== false)
+        .filter((p) => isProductSafe(p, safety))
         .sort(smartSort)
         .slice(0, maxCandidates);
     }

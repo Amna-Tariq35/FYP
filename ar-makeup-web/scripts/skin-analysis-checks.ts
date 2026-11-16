@@ -7,6 +7,7 @@ import { buildDeterministicRoutine, isProductSafe } from "../src/lib/skin-analys
 import { buildGroqRoutineMessages, estimateGroqTokens } from "../src/lib/skin-analysis/groq-payload";
 import { normalizeCatalogProduct } from "../src/lib/skin-analysis/product-shape";
 import { generateFinalRoutine } from "../src/lib/skin-analysis/ai-engine";
+import { mergeBeautyProfileSource } from "../src/lib/beauty-profile/source";
 import { CHAT_FAILURE_MESSAGE, friendlyChatError } from "../src/lib/chat/public-error";
 import type { ExactCategory, Product } from "../src/lib/skin-analysis/recommend";
 
@@ -92,6 +93,10 @@ const retinoid = product({
 });
 assert.equal(isProductSafe(retinoid, { pregnant: true }), false);
 assert.equal(isProductSafe(retinoid, { allergies: ["fragrance"] }), true);
+assert.equal(mergeBeautyProfileSource(null, "analysis"), "analysis");
+assert.equal(mergeBeautyProfileSource("manual", "analysis"), "both");
+assert.equal(mergeBeautyProfileSource("both", "manual"), "both");
+assert.equal(mergeBeautyProfileSource("analysis", "analysis"), "analysis");
 
 const routine = buildDeterministicRoutine(
   [
@@ -172,11 +177,38 @@ const packed = JSON.parse(groq.user.slice("JSON: ".length)) as {
 assert.equal(packed.pm.sunscreen, undefined);
 assert.equal(Object.keys(packed.pm).length, 4);
 for (const step of steps) {
-  assert.equal(packed.am[step].length, 1);
+  assert.equal(packed.am[step].length, 3);
   assert.deepEqual(Object.keys(packed.am[step][0]).sort(), ["category", "key", "name", "reason"]);
-  assert.equal(packed.am[step][0].key, `${step}-0`);
+  assert.deepEqual(
+    packed.am[step].map((candidate) => candidate.key),
+    [`${step}-0`, `${step}-1`, `${step}-2`],
+  );
 }
 assert.ok(packed.am.Cleanser[0].reason.length <= 72);
+
+const allergyCandidates = getTopCandidates(
+  [
+    product({ id: "fragrance", category: "Moisturizer", ingredients: "parfum, glycerin" }),
+    product({ id: "retinol", category: "Treatment", ingredients: "retinol" }),
+    product({ id: "safe", category: "Moisturizer", ingredients: "glycerin" }),
+  ],
+  "Oily",
+  { dryness: 0.8 },
+  3,
+  { allergies: ["fragrance"], pregnant: true, skinType: "Oily" },
+);
+assert.equal(
+  Object.values(allergyCandidates.amCandidates)
+    .flat()
+    .some((candidate) => candidate.id === "fragrance" || candidate.id === "retinol"),
+  false,
+);
+assert.equal(
+  Object.values(allergyCandidates.amCandidates)
+    .flat()
+    .some((candidate) => candidate.id === "safe"),
+  true,
+);
 
 void (async () => {
   const catalog = [
@@ -252,6 +284,80 @@ void (async () => {
   assert.equal(hangAborted, true);
   assert.equal(hedged.source === "rules", false);
   assert.equal(hedged.amRoutine.some((item) => item.id === "c"), true);
+
+  const safeCatalog = [
+    product({ id: "safe-cleanser", category: "Cleanser", ingredients: "water" }),
+    product({ id: "unsafe-treatment", category: "Treatment", ingredients: "parfum, retinol" }),
+    product({ id: "safe-treatment", category: "Treatment", ingredients: "niacinamide" }),
+    product({ id: "safe-moisturizer", category: "Moisturizer", ingredients: "glycerin" }),
+  ];
+  const unsafePick = await generateFinalRoutine(
+    safeCatalog,
+    "Oily",
+    { acne: 0.8 },
+    { allergies: ["fragrance"], pregnant: true, skinType: "Oily" },
+    {
+      gemini: async () => ({
+        aiSummary: "Mock routine.",
+        amRoutine: [
+          { id: "unsafe-treatment", matchReason: "unsafe pick", matchScore: 90 },
+          { id: "safe-cleanser", matchReason: "safe pick", matchScore: 80 },
+        ],
+        pmRoutine: [{ id: "safe-cleanser", matchReason: "safe pick", matchScore: 80 }],
+      }),
+      groq: async () => ({}),
+    },
+  );
+  assert.equal(unsafePick.source, "rules");
+  assert.equal(unsafePick.amRoutine.some((item) => item.id === "unsafe-treatment"), false);
+  assert.equal(unsafePick.amRoutine.some((item) => item.id === "safe-treatment"), true);
+
+  const conflictCatalog = [
+    product({ id: "conflict-cleanser", category: "Cleanser", ingredients: "water" }),
+    product({ id: "conflict-retinol", category: "Treatment", ingredients: "retinol" }),
+    product({ id: "conflict-acid", category: "Moisturizer", ingredients: "glycolic acid" }),
+  ];
+  const conflictingPick = await generateFinalRoutine(
+    conflictCatalog,
+    "Oily",
+    { acne: 0.8 },
+    { skinType: "Oily" },
+    {
+      gemini: async () => ({
+        aiSummary: "Mock routine.",
+        amRoutine: [
+          { id: "conflict-retinol", matchReason: "treatment", matchScore: 90 },
+          { id: "conflict-acid", matchReason: "moisturizer", matchScore: 90 },
+        ],
+        pmRoutine: [],
+      }),
+      groq: async () => ({}),
+    },
+  );
+  assert.equal(conflictingPick.source, "rules");
+  for (const items of [conflictingPick.amRoutine, conflictingPick.pmRoutine]) {
+    assert.equal(items.some((item) => item.id === "conflict-retinol") && items.some((item) => item.id === "conflict-acid"), false);
+  }
+
+  const choiceCatalog = ["choice-1", "choice-2", "choice-3"].map((id) =>
+    product({ id, category: "Cleanser", ingredients: "water" }),
+  );
+  const chosenCandidate = getTopCandidates(choiceCatalog, "Oily", [], 3).amCandidates.Cleanser[2];
+  const selectedThirdOption = await generateFinalRoutine(
+    choiceCatalog,
+    "Oily",
+    [],
+    { skinType: "Oily" },
+    {
+      gemini: async () => ({
+        aiSummary: "Mock routine.",
+        amRoutine: [{ id: chosenCandidate.id, matchReason: "selected option", matchScore: chosenCandidate.matchScore }],
+        pmRoutine: [],
+      }),
+      groq: async () => ({}),
+    },
+  );
+  assert.equal(selectedThirdOption.amRoutine[0]?.id, chosenCandidate.id);
 
   let retryAfterAccept = 0;
   const firstWins = await generateFinalRoutine(catalog, "Oily", { acne: 0.9 }, { skinType: "Oily" }, {

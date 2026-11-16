@@ -4,6 +4,7 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { z } from "zod";
 import { createSupabaseAdminClient } from "@/src/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/src/lib/supabase/server";
+import { mergeBeautyProfileSource } from "@/src/lib/beauty-profile/source";
 import {
   CANONICAL_CONCERNS,
   MAX_IMAGE_BASE64_CHARS,
@@ -52,16 +53,29 @@ async function saveProfile(
   concerns: string[],
   allergies?: string[],
 ) {
-  await supabase.from("user_skin_profiles").upsert(
-    {
-      user_id: userId,
-      skin_type: skinType,
-      concerns,
-      ...(allergies ? { allergies } : {}),
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "user_id" },
-  );
+  const { data: existing, error: sourceError } = await supabase
+    .from("user_skin_profiles")
+    .select("source")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  const profile: Record<string, unknown> = {
+    user_id: userId,
+    skin_type: skinType,
+    concerns,
+    ...(allergies ? { allergies } : {}),
+    updated_at: new Date().toISOString(),
+  };
+  if (sourceError) {
+    console.error("skin profile source read failed:", sourceError.message);
+  } else {
+    profile.source = mergeBeautyProfileSource(existing?.source, "analysis");
+  }
+
+  const { error } = await supabase
+    .from("user_skin_profiles")
+    .upsert(profile, { onConflict: "user_id" });
+  if (error) console.error("skin profile save failed:", error.message);
 }
 
 export async function POST(req: Request) {

@@ -59,20 +59,22 @@ function slots(
 ) {
   const out: Record<string, { key: string; name: string; category: string; reason?: string }[]> = {};
   for (const step of steps) {
-    const product = lists[step]?.[0];
-    if (!product?.id) {
-      out[step] = [];
-      continue;
-    }
-    const tags = asStringList(product.tags).slice(0, 2);
-    const why = tags.length > 0 ? tags.join(", ") : "top score for this step";
-    const row: { key: string; name: string; category: string; reason?: string } = {
-      key: product.id,
-      name: clip(product.name, nameMax),
-      category: clip(product.category, 24),
-    };
-    if (includeReason) row.reason = clip(`Fits ${skinType}; ${why}`, 72);
-    out[step] = [row];
+    out[step] = (lists[step] ?? [])
+      .slice(0, 3)
+      .filter((product): product is Slot & { id: string } =>
+        typeof product.id === "string" && product.id.length > 0,
+      )
+      .map((product) => {
+        const tags = asStringList(product.tags).slice(0, 2);
+        const why = tags.length > 0 ? tags.join(", ") : "top score for this step";
+        const row: { key: string; name: string; category: string; reason?: string } = {
+          key: product.id,
+          name: clip(product.name, nameMax),
+          category: clip(product.category, 24),
+        };
+        if (includeReason) row.reason = clip(`Fits ${skinType}; ${why}`, 72);
+        return row;
+      });
   }
   return out;
 }

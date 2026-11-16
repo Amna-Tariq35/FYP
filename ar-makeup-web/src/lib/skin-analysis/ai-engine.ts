@@ -6,9 +6,20 @@ import {
   runGeminiModelChain,
   usesGeminiThinkingLevel,
 } from "../llm/gemini-models";
-import { Product, ConcernScores, RecommendedProduct, SkincareRoutine } from "./recommend";
+import {
+  Product,
+  ConcernScores,
+  ExactCategory,
+  RecommendedProduct,
+  SkincareRoutine,
+} from "./recommend";
 import { getTopCandidates } from "./candidate-selector";
-import { buildDeterministicRoutine, type SafetyContext } from "./deterministic-routine";
+import {
+  buildDeterministicRoutine,
+  isProductSafe,
+  productsConflict,
+  type SafetyContext,
+} from "./deterministic-routine";
 import { buildGroqRoutineMessages } from "./groq-payload";
 
 /** Worst healthy baseline was well above this, so the cap in the task applies. */
@@ -54,7 +65,7 @@ const routineResponseSchema = {
 };
 
 const SYSTEM_PROMPT =
-  "Pick one product id per step from the JSON only. AM: Cleanser, Treatment, Eye cream, Moisturizer, sunscreen. PM: Cleanser, Treatment, Eye cream, Moisturizer. Use only listed ids. matchReason is one short sentence using the skin type and tags. matchScore copies score. aiSummary is two plain sentences and is not a medical diagnosis. Do not mention concerns missing from the profile.";
+  "Pick one product id per step from the JSON only. The listed products have already passed server-side safety filters. AM: Cleanser, Treatment, Eye cream, Moisturizer, sunscreen. PM: Cleanser, Treatment, Eye cream, Moisturizer. Choose only from that step's listed options. Use only listed ids. matchReason is one short sentence using the skin type and tags. matchScore copies score. aiSummary is two plain sentences and is not a medical diagnosis. Do not mention concerns missing from the profile.";
 
 function providerFailure(error: unknown) {
   const record = error as { status?: unknown; statusCode?: unknown };
@@ -86,8 +97,8 @@ function isAbortError(error: unknown) {
 
 type ModelRoutine = {
   aiSummary?: string;
-  amRoutine?: { id: string; matchReason: string; matchScore?: number }[];
-  pmRoutine?: { id: string; matchReason: string; matchScore?: number }[];
+  amRoutine?: { id: string; matchReason: string; matchScore: number }[];
+  pmRoutine?: { id: string; matchReason: string; matchScore: number }[];
 };
 
 type ProviderCall = (signal: AbortSignal) => Promise<unknown>;
@@ -139,11 +150,9 @@ function readRoutinePayload(value: unknown): ModelRoutine | null {
     }
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  if (!routineTextMatchesSchema(parsed)) return null;
   const record = parsed as ModelRoutine;
-  const hasSteps =
-    (Array.isArray(record.amRoutine) && record.amRoutine.length > 0) ||
-    (Array.isArray(record.pmRoutine) && record.pmRoutine.length > 0);
-  return hasSteps ? record : null;
+  return record;
 }
 
 function clip(value: string, max: number) {
@@ -156,7 +165,7 @@ function compactSteps(
 ) {
   const out: Record<string, { id: string; name: string; category: string; score: number; tags: string[] }[]> = {};
   for (const step of steps) {
-    out[step] = (lists[step] ?? []).slice(0, 1).map((product) => ({
+    out[step] = (lists[step] ?? []).slice(0, 3).map((product) => ({
       id: product.id,
       name: clip(product.name, 48),
       category: product.category,
@@ -307,10 +316,24 @@ export async function generateFinalRoutine(
     hedgeMs?: number;
   },
 ): Promise<SkincareRoutine & { summary: string; source: "ai" | "rules" | "mixed"; provider: string }> {
-  const candidates = getTopCandidates(allDbProducts, userSkinType, concernScores, 3);
-  const productMap = new Map<string, RecommendedProduct>();
-  for (const product of Object.values(candidates.amCandidates).flat()) productMap.set(product.id, product);
-  for (const product of Object.values(candidates.pmCandidates).flat()) productMap.set(product.id, product);
+  const resolvedSafety = { ...safety, skinType: userSkinType };
+  const candidates = getTopCandidates(
+    allDbProducts,
+    userSkinType,
+    concernScores,
+    3,
+    resolvedSafety,
+  );
+  const amProductMap = new Map(
+    Object.values(candidates.amCandidates)
+      .flat()
+      .map((product) => [product.id, product]),
+  );
+  const pmProductMap = new Map(
+    Object.values(candidates.pmCandidates)
+      .flat()
+      .map((product) => [product.id, product]),
+  );
 
   const amCandidates = compactSteps(candidates.amCandidates, AM_STEPS);
   const pmCandidates = compactSteps(candidates.pmCandidates, PM_STEPS);
@@ -321,10 +344,7 @@ export async function generateFinalRoutine(
     pm: pmCandidates,
   };
 
-  const rules = buildDeterministicRoutine(allDbProducts, userSkinType, concernScores, {
-    ...safety,
-    skinType: userSkinType,
-  });
+  const rules = buildDeterministicRoutine(allDbProducts, userSkinType, concernScores, resolvedSafety);
 
   let geminiModel = "";
   const callGemini: ProviderCall = async (signal) => {
@@ -411,40 +431,84 @@ export async function generateFinalRoutine(
 
   const assemble = (
     items: { id: string; matchReason: string; matchScore?: number }[] | undefined,
+    allowedProducts: Map<string, RecommendedProduct>,
     fallback: typeof rules.amRoutine,
-  ) => {
-    const used = new Set<string>();
-    const chosen = (items || [])
-      .map((item) => {
-        const picked = item as { id?: string; key?: string };
-        const candidateProduct = productMap.get(picked.id || picked.key || "");
-        if (!candidateProduct || used.has(candidateProduct.category)) return null;
-        used.add(candidateProduct.category);
-        return {
-          ...candidateProduct,
-          matchScore: candidateProduct.matchScore || item.matchScore || 80,
-          matchReason: item.matchReason || candidateProduct.matchReason,
-        };
-      })
-      .filter((product): product is NonNullable<typeof product> => product !== null);
-
-    for (const item of fallback) {
-      if (!used.has(item.category)) {
-        chosen.push(item);
-        used.add(item.category);
+    candidateLists: Record<ExactCategory, RecommendedProduct[]>,
+    steps: readonly ExactCategory[],
+  ): { products: RecommendedProduct[]; aiCount: number } | null => {
+    const selected = new Map<string, RecommendedProduct>();
+    for (const item of items ?? []) {
+      const id = typeof item?.id === "string" ? item.id : "";
+      const candidate = allowedProducts.get(id);
+      if (!id || !candidate || !steps.includes(candidate.category)) return null;
+      if (!isProductSafe(candidate, resolvedSafety)) return null;
+      if (!selected.has(candidate.category)) {
+        selected.set(candidate.category, {
+          ...candidate,
+          matchReason: item.matchReason || candidate.matchReason,
+        });
       }
     }
-    return chosen;
+
+    const used = new Set<string>();
+    const chosen: RecommendedProduct[] = [];
+    let aiCount = 0;
+    for (const step of steps) {
+      const product = selected.get(step);
+      if (!product) continue;
+      if (chosen.some((existing) => productsConflict(existing, product))) return null;
+      used.add(product.category);
+      chosen.push(product);
+      aiCount++;
+    }
+
+    const fallbackByCategory = new Map(fallback.map((product) => [product.category, product]));
+    for (const step of steps) {
+      if (used.has(step)) continue;
+      const fallbackProduct = fallbackByCategory.get(step);
+      const options = [
+        ...(candidateLists[step] ?? []),
+        ...(fallbackProduct ? [fallbackProduct] : []),
+      ];
+      const replacement = options.find(
+        (product) =>
+          isProductSafe(product, resolvedSafety) &&
+          !chosen.some((existing) => productsConflict(existing, product)),
+      );
+      if (!replacement) {
+        if (fallbackProduct) return null;
+        continue;
+      }
+      chosen.push(replacement);
+      used.add(replacement.category);
+    }
+    return { products: chosen, aiCount };
   };
 
-  const amRoutine = assemble(aiResult.amRoutine, rules.amRoutine);
-  const pmRoutine = assemble(aiResult.pmRoutine, rules.pmRoutine);
-  const aiFilledBoth = (aiResult.amRoutine || []).length > 0 && (aiResult.pmRoutine || []).length > 0;
-  const source = aiFilledBoth && amRoutine.length >= rules.amRoutine.length ? "ai" : "mixed";
+  const am = assemble(
+    aiResult.amRoutine,
+    amProductMap,
+    rules.amRoutine,
+    candidates.amCandidates,
+    AM_STEPS,
+  );
+  const pm = assemble(
+    aiResult.pmRoutine,
+    pmProductMap,
+    rules.pmRoutine,
+    candidates.pmCandidates,
+    PM_STEPS,
+  );
+  if (!am || !pm) return { ...rules, provider: "rules" };
+
+  const aiPickedCount = am.aiCount + pm.aiCount;
+  if (aiPickedCount === 0) return { ...rules, provider: "rules" };
+  const source =
+    aiPickedCount >= rules.amRoutine.length + rules.pmRoutine.length ? "ai" : "mixed";
 
   return {
-    amRoutine,
-    pmRoutine,
+    amRoutine: am.products,
+    pmRoutine: pm.products,
     summary: aiResult.aiSummary || rules.summary,
     source,
     provider: picked.provider,

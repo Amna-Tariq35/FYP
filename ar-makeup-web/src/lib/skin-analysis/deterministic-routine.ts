@@ -51,7 +51,7 @@ export function isProductSafe(product: Product, safety: SafetyContext) {
   return true;
 }
 
-function conflicts(a: Product, b: Product) {
+export function productsConflict(a: Product, b: Product) {
   const left = ingredientText(a);
   const right = ingredientText(b);
   const leftRetinoid = RETINOID_WORDS.some((w) => left.includes(w));
@@ -74,7 +74,7 @@ function pick(
     .filter((p) => p.category === category)
     .filter((p) => (am ? p.am_safe !== false : p.pm_safe !== false))
     .filter((p) => isProductSafe(p, safety))
-    .filter((p) => !already.some((chosen) => conflicts(chosen, p)))
+    .filter((p) => !already.some((chosen) => productsConflict(chosen, p)))
     .map((p) => {
       const scored = calculateMatchScore(p, skinType, concerns);
       return { ...p, matchScore: scored.matchScore, matchReason: "" };
