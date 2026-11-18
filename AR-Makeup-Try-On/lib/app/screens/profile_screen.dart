@@ -1,5 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import '../cache/beauty_profile_model.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../cache/favourites_cache.dart';
@@ -30,10 +32,10 @@ class ProfilePreview {
   });
 
   const ProfilePreview.signedOut()
-      : signedIn = false,
-        name = '',
-        email = '',
-        avatarUrl = '';
+    : signedIn = false,
+      name = '',
+      email = '',
+      avatarUrl = '';
 
   final bool signedIn;
   final String name;
@@ -52,6 +54,7 @@ class ProfileScreen extends StatefulWidget {
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
+  Future<UserBeautyProfile>? _beauty;
   bool _isLoading = true;
   bool _profileFetchFailed = false;
 
@@ -82,7 +85,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
       return;
     }
     _userName = preview.name.trim().isEmpty ? 'User' : preview.name.trim();
-    _userEmail = preview.email.trim().isEmpty ? 'No email' : preview.email.trim();
+    _userEmail = preview.email.trim().isEmpty
+        ? 'No email'
+        : preview.email.trim();
     _avatarUrl = preview.avatarUrl.trim();
     _initial = _userName.isNotEmpty ? _userName[0].toUpperCase() : 'U';
   }
@@ -101,6 +106,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         }
         return;
       }
+      _beauty = BeautyProfileService.fetchProfile();
       String resolvedName = 'User';
       String resolvedAvatar = '';
 
@@ -112,9 +118,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
       } else if (metadata != null && metadata['name'] != null) {
         resolvedName = metadata['name'].toString();
       } else if (email.contains('@')) {
-        final namePart = email.split('@')[0].replaceAll(RegExp(r'[^a-zA-Z]'), '');
+        final namePart = email
+            .split('@')[0]
+            .replaceAll(RegExp(r'[^a-zA-Z]'), '');
         if (namePart.isNotEmpty) {
-          resolvedName = namePart[0].toUpperCase() + namePart.substring(1).toLowerCase();
+          resolvedName =
+              namePart[0].toUpperCase() + namePart.substring(1).toLowerCase();
         }
       }
 
@@ -150,7 +159,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   void _forwardToCamera(Object? result) {
     if (!mounted || result == null) return;
-    final backToCamera = result is List ||
+    final backToCamera =
+        result is List ||
         result is FoundationTryOnRequest ||
         result is FoundationLookRequest ||
         result == 'tryOnWithMyBag' ||
@@ -216,10 +226,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       builder: (dialogContext) => AlertDialog(
         backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text(
-          'AR Makeup',
-          style: TextStyle(color: AppColors.textMain),
-        ),
+        title: Text('AR Makeup', style: TextStyle(color: AppColors.textMain)),
         content: Text(
           'Live makeup try-on, foundation shade match, saved looks, and the shop on the website.',
           style: TextStyle(color: AppColors.textMuted, height: 1.4),
@@ -257,10 +264,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       builder: (dialogContext) => AlertDialog(
         backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Text(
-          'Sign out?',
-          style: TextStyle(color: AppColors.textMain),
-        ),
+        title: Text('Sign out?', style: TextStyle(color: AppColors.textMain)),
         content: Text(
           'You can sign in again on this phone whenever you want.',
           style: TextStyle(color: AppColors.textMuted, height: 1.4),
@@ -275,7 +279,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             child: Text(
               'Sign out',
               style: TextStyle(
-                color: AppColors.error,
+                color: AppColors.accentPink,
                 fontWeight: FontWeight.w700,
               ),
             ),
@@ -335,150 +339,213 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Widget build(BuildContext context) {
     AppColors.watch(context);
     final signedOut = _signedOut;
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: SafeArea(
-        child: _isLoading
-            ? const AppLoader.centered()
-            : SingleChildScrollView(
-                physics: const BouncingScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Semantics(
-                        button: true,
-                        label: 'Back',
-                        child: IconButton(
-                          onPressed: () => Navigator.maybePop(context),
-                          icon: Icon(Icons.chevron_left, color: AppColors.textMain),
-                          iconSize: 28,
-                          constraints: const BoxConstraints(
-                            minWidth: 48,
-                            minHeight: 48,
-                          ),
-                        ),
-                      ),
-                    ),
-                    if (signedOut)
-                      _SignedOutCard(onSignIn: _openSignIn)
-                    else
-                      _HeaderCard(
-                        name: _userName,
-                        email: _userEmail,
-                        avatarUrl: _avatarUrl,
-                        initial: _initial,
-                        failed: _profileFetchFailed,
-                        onRetry: _fetchUserData,
-                        onEdit: _navigateToEditProfile,
-                      ),
-                    const SizedBox(height: 20),
-                    if (!signedOut) ...[
-                      const _GroupLabel('My beauty'),
-                      _GroupCard(
-                        tiles: [
-                          _ProfileTile(
-                            icon: Icons.face_retouching_natural_outlined,
-                            title: 'Beauty profile',
-                            subtitle: 'View your skin details and preferences',
-                            onTap: () => _openSignedInPage(
-                              const BeautyProfileOverviewScreen(),
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value:
+          (AppColors.isDark
+                  ? SystemUiOverlayStyle.light
+                  : SystemUiOverlayStyle.dark)
+              .copyWith(statusBarColor: Colors.transparent),
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        body: SafeArea(
+          child: _isLoading
+              ? const AppLoader.centered()
+              : SingleChildScrollView(
+                  physics: const BouncingScrollPhysics(),
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          IconButton.filledTonal(
+                            onPressed: () => Navigator.maybePop(context),
+                            tooltip: 'Back',
+                            style: IconButton.styleFrom(
+                              backgroundColor: AppColors.surface,
+                            ),
+                            icon: Icon(
+                              Icons.chevron_left,
+                              color: AppColors.textMain,
                             ),
                           ),
+                          Expanded(
+                            child: Center(
+                              child: Text(
+                                'Profile',
+                                style: TextStyle(
+                                  color: AppColors.textMain,
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 48),
                         ],
                       ),
                       const SizedBox(height: 18),
-                      const _GroupLabel('Orders and updates'),
+                      if (signedOut)
+                        _SignedOutCard(onSignIn: _openSignIn)
+                      else
+                        _HeaderCard(
+                          name: _userName,
+                          email: _userEmail,
+                          avatarUrl: _avatarUrl,
+                          initial: _initial,
+                          failed: _profileFetchFailed,
+                          onRetry: _fetchUserData,
+                          onEdit: _navigateToEditProfile,
+                        ),
+                      const SizedBox(height: 20),
+                      if (!signedOut) ...[
+                        FutureBuilder<UserBeautyProfile>(
+                          future: _beauty,
+                          builder: (context, snapshot) {
+                            final profile = snapshot.data;
+                            final type = profile?.skinType?.trim() ?? '';
+                            final tone = profile?.undertone?.trim() ?? '';
+                            final summary = [
+                              if (type.isNotEmpty)
+                                '${type[0].toUpperCase()}${type.substring(1)} skin',
+                              if (tone.isNotEmpty)
+                                '${tone[0].toUpperCase()}${tone.substring(1)} undertone',
+                            ].join(' · ');
+                            return _BeautyCard(
+                              summary: summary.isEmpty
+                                  ? 'View your skin details and preferences'
+                                  : summary,
+                              onTap: () async {
+                                await _openSignedInPage(
+                                  const BeautyProfileOverviewScreen(),
+                                );
+                                if (mounted &&
+                                    !_signedOut &&
+                                    widget.preview == null) {
+                                  setState(
+                                    () => _beauty =
+                                        BeautyProfileService.fetchProfile(),
+                                  );
+                                }
+                              },
+                            );
+                          },
+                        ),
+                        const SizedBox(height: 18),
+                        const _GroupLabel('Orders and updates'),
+                        _GroupCard(
+                          tiles: [
+                            _ProfileTile(
+                              icon: Icons.receipt_long_outlined,
+                              title: 'My orders',
+                              subtitle: 'Track on the website',
+                              external: true,
+                              onTap: _openOrders,
+                            ),
+                            _ProfileTile(
+                              icon: Icons.notifications_none_rounded,
+                              title: 'Notifications',
+                              subtitle: 'Alerts on this phone',
+                              onTap: () => _openSignedInPage(
+                                const NotificationsInboxScreen(),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 18),
+                      ],
+                      const _GroupLabel('App'),
                       _GroupCard(
                         tiles: [
                           _ProfileTile(
-                            icon: Icons.receipt_long_outlined,
-                            title: 'My orders',
-                            subtitle: 'Track on the website',
-                            onTap: _openOrders,
+                            icon: Icons.settings_outlined,
+                            title: 'Settings',
+                            subtitle: 'Theme and camera',
+                            onTap: _openSettings,
                           ),
                           _ProfileTile(
-                            icon: Icons.notifications_none_rounded,
-                            title: 'Notifications',
-                            subtitle: 'Alerts on this phone',
-                            onTap: () => _openSignedInPage(
-                              const NotificationsInboxScreen(),
-                            ),
+                            icon: Icons.shield_outlined,
+                            title: 'Privacy and security',
+                            subtitle: 'Password and data',
+                            onTap: _openPrivacySecurity,
+                          ),
+                          _ProfileTile(
+                            icon: Icons.help_outline,
+                            title: 'Help',
+                            subtitle: 'Support on the website',
+                            external: true,
+                            onTap: _openHelp,
+                          ),
+                          _ProfileTile(
+                            icon: Icons.info_outline,
+                            title: 'About',
+                            subtitle: 'What this app does',
+                            onTap: _showAbout,
                           ),
                         ],
                       ),
-                      const SizedBox(height: 18),
-                    ],
-                    const _GroupLabel('App'),
-                    _GroupCard(
-                      tiles: [
-                        _ProfileTile(
-                          icon: Icons.settings_outlined,
-                          title: 'Settings',
-                          subtitle: 'Theme and camera',
-                          onTap: _openSettings,
-                        ),
-                        _ProfileTile(
-                          icon: Icons.shield_outlined,
-                          title: 'Privacy and security',
-                          subtitle: 'Password and data',
-                          onTap: _openPrivacySecurity,
-                        ),
-                        _ProfileTile(
-                          icon: Icons.help_outline,
-                          title: 'Help',
-                          subtitle: 'Support on the website',
-                          onTap: _openHelp,
-                        ),
-                        _ProfileTile(
-                          icon: Icons.info_outline,
-                          title: 'About',
-                          subtitle: 'What this app does',
-                          onTap: _showAbout,
+                      if (!signedOut) ...[
+                        const SizedBox(height: 20),
+                        Semantics(
+                          button: true,
+                          label: 'Sign out',
+                          child: OutlinedButton.icon(
+                            onPressed: _confirmSignOut,
+                            icon: Icon(
+                              Icons.logout,
+                              size: 20,
+                              color: AppColors.accentPink,
+                            ),
+                            label: Text(
+                              'Sign out',
+                              style: TextStyle(
+                                color: AppColors.accentPink,
+                                fontWeight: FontWeight.w700,
+                                fontSize: 16,
+                              ),
+                            ),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppColors.accentPink,
+                              minimumSize: const Size.fromHeight(56),
+                              backgroundColor: AppColors.surface,
+                              side: BorderSide(color: AppColors.border),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                          ),
                         ),
                       ],
-                    ),
-                    if (!signedOut) ...[
                       const SizedBox(height: 20),
-                      Semantics(
-                        button: true,
-                        label: 'Sign out',
-                        child: OutlinedButton.icon(
-                          onPressed: _confirmSignOut,
-                          icon: Icon(Icons.logout, size: 18, color: AppColors.error),
-                          label: Text(
-                            'Sign out',
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Flexible(child: SizedBox(width: 42, child: Divider())),
+                          const SizedBox(width: 12),
+                          Image.asset(
+                            'assets/images/oval_face_ivory.png',
+                            width: 15,
+                            height: 22,
+                            color: AppColors.textMuted,
+                            excludeFromSemantics: true,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            'AR Makeup',
+                            textAlign: TextAlign.center,
                             style: TextStyle(
-                              color: AppColors.error,
-                              fontWeight: FontWeight.w700,
-                              fontSize: 15,
+                              color: AppColors.textMuted,
+                              fontSize: 13,
                             ),
                           ),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: AppColors.error,
-                            minimumSize: const Size.fromHeight(48),
-                            side: BorderSide(color: AppColors.error),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                        ),
+                          const SizedBox(width: 12),
+                          const Flexible(child: SizedBox(width: 42, child: Divider())),
+                        ],
                       ),
                     ],
-                    const SizedBox(height: 20),
-                    Text(
-                      'AR Makeup',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: AppColors.textMuted,
-                        fontSize: 13,
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
-              ),
+        ),
       ),
     );
   }
@@ -565,90 +632,129 @@ class _HeaderCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final cacheWidth =
-        (72 * MediaQuery.devicePixelRatioOf(context)).round().clamp(72, 288);
+    final cacheWidth = (72 * MediaQuery.devicePixelRatioOf(context))
+        .round()
+        .clamp(72, 288);
     final photo = avatarUrl.trim().isEmpty ? null : upgradeImageUrl(avatarUrl);
-    return DecoratedBox(
-      decoration: _cardDecoration(),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
+    final avatar = photo == null
+        ? _Initials(initial: initial, size: 56)
+        : ClipOval(
+            child: CachedNetworkImage(
+              imageUrl: photo,
+              width: 56,
+              height: 56,
+              fit: BoxFit.cover,
+              memCacheWidth: cacheWidth,
+              errorWidget: (_, _, _) => _Initials(initial: initial, size: 56),
+            ),
+          );
+    final edit = TextButton.icon(
+      onPressed: onEdit,
+      icon: const Icon(Icons.edit_outlined, size: 16),
+      label: const Text('Edit profile'),
+      style: TextButton.styleFrom(foregroundColor: AppColors.accentPink),
+    );
+    return LayoutBuilder(
+      builder: (context, box) {
+        final stacked =
+            box.maxWidth / MediaQuery.textScalerOf(context).scale(1) < 305;
+        return Row(
           children: [
-            photo == null
-                ? _Initials(initial: initial, size: 72)
-                : ClipOval(
-                    child: CachedNetworkImage(
-                      imageUrl: photo,
-                      width: 72,
-                      height: 72,
-                      fit: BoxFit.cover,
-                      memCacheWidth: cacheWidth,
-                      fadeInDuration: Duration.zero,
-                      errorWidget: (_, _, _) =>
-                          _Initials(initial: initial, size: 72),
+            avatar,
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    name,
+                    style: TextStyle(
+                      color: AppColors.textMain,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
-            const SizedBox(height: 12),
-            Text(
-              name,
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: AppColors.textMain,
-                fontSize: 22,
-                fontWeight: FontWeight.w700,
-                height: 1.2,
+                  Text(
+                    failed ? 'Could not load your profile.' : email,
+                    style: TextStyle(color: AppColors.textMuted, fontSize: 13),
+                  ),
+                  if (failed)
+                    TextButton(onPressed: onRetry, child: const Text('Retry')),
+                  if (stacked) edit,
+                ],
               ),
             ),
-            const SizedBox(height: 4),
-            if (failed)
-              Text(
-                'Could not load your profile.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: AppColors.textMuted, fontSize: 14),
-              )
-            else
-              Text(
-                email,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: AppColors.textMuted,
-                  fontSize: 14,
-                  height: 1.3,
+            if (!stacked) edit,
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _BeautyCard extends StatelessWidget {
+  const _BeautyCard({required this.summary, required this.onTap});
+  final String summary;
+  final VoidCallback onTap;
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      elevation: 3,
+      shadowColor: const Color(0x555c2440),
+      borderRadius: BorderRadius.circular(18),
+      clipBehavior: Clip.antiAlias,
+      child: Ink(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xffcb8399), Color(0xff984762)],
+          ),
+        ),
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 20),
+            child: Row(
+              children: [
+                Image.asset(
+                  'assets/images/beauty_profile_pearls.png',
+                  width: 62,
+                  height: 68,
+                  fit: BoxFit.contain,
+                  excludeFromSemantics: true,
                 ),
-              ),
-            if (failed)
-              TextButton(
-                onPressed: onRetry,
-                style: TextButton.styleFrom(
-                  minimumSize: const Size(48, 48),
-                  foregroundColor: AppColors.primary,
+                Container(
+                  height: 48,
+                  width: 1,
+                  color: Colors.white54,
+                  margin: const EdgeInsets.symmetric(horizontal: 12),
                 ),
-                child: const Text(
-                  'Retry',
-                  style: TextStyle(fontWeight: FontWeight.w600),
-                ),
-              ),
-            const SizedBox(height: 8),
-            Semantics(
-              button: true,
-              label: 'Edit profile',
-              child: OutlinedButton(
-                onPressed: onEdit,
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppColors.accentPink,
-                  minimumSize: const Size.fromHeight(48),
-                  side: BorderSide(color: AppColors.accentPink),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Beauty Profile',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        summary,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                child: const Text(
-                  'Edit profile',
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
-                ),
-              ),
+                const Icon(Icons.chevron_right, color: Colors.white),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -669,12 +775,12 @@ class _Initials extends StatelessWidget {
       alignment: Alignment.center,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: AppColors.primary,
+        color: const Color(0xfff3d9e1),
       ),
       child: Text(
         initial,
         style: TextStyle(
-          color: Colors.white,
+          color: const Color(0xff873c59),
           fontSize: size * 0.38,
           fontWeight: FontWeight.w700,
         ),
@@ -722,7 +828,8 @@ class _GroupCard extends StatelessWidget {
         child: Column(
           children: [
             for (var i = 0; i < tiles.length; i++) ...[
-              if (i > 0) Divider(height: 1, thickness: 1, color: AppColors.border),
+              if (i > 0)
+                Divider(height: 1, thickness: 1, color: AppColors.border),
               tiles[i],
             ],
           ],
@@ -738,11 +845,13 @@ class _ProfileTile extends StatelessWidget {
     required this.title,
     required this.onTap,
     this.subtitle,
+    this.external = false,
   });
 
   final IconData icon;
   final String title;
   final String? subtitle;
+  final bool external;
   final VoidCallback onTap;
 
   @override
@@ -796,7 +905,11 @@ class _ProfileTile extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 8),
-                Icon(Icons.chevron_right, color: AppColors.textMuted, size: 20),
+                Icon(
+                  external ? Icons.open_in_new : Icons.chevron_right,
+                  color: AppColors.textMuted,
+                  size: 20,
+                ),
               ],
             ),
           ),

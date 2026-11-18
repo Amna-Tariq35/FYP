@@ -1,3 +1,5 @@
+import 'package:permission_handler/permission_handler.dart';
+import 'camera_permission_screen.dart';
 // lib/app/screens/foundation_match_screen.dart
 //
 // Foundation Shade Match — the screen the user actually sees.
@@ -252,8 +254,22 @@ class _FoundationMatchScreenState extends State<FoundationMatchScreen> {
     await _matchPaths([picked.path], fromGallery: true);
   }
 
+  bool _openingCapture = false;
+
   Future<void> _runCamera() async {
-    if (_busy) return;
+    if (_busy || _openingCapture) return;
+    _openingCapture = true;
+    try {
+      final status = await Permission.camera.status;
+      if (!mounted) return;
+      if (!await CameraPermissionScreen.allowFeature(context, deviceGranted: status.isGranted)) return;
+      if (mounted) await _captureFoundationPhoto();
+    } finally {
+      _openingCapture = false;
+    }
+  }
+
+  Future<void> _captureFoundationPhoto() async {
     final captured = await Navigator.of(context).push<FoundationCaptureResult>(
       MaterialPageRoute(builder: (_) => const FoundationCaptureScreen()),
     );

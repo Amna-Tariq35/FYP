@@ -4,23 +4,16 @@ import '../config/app_config.dart';
 import '../services/web_bridge.dart';
 import '../utils/app_colors.dart';
 import '../widgets/app_loader.dart';
-import 'camera_permission_screen.dart';
+import 'home_screen.dart';
 import 'dart:async';
 import '../cache/looks_cache.dart';
-import '../screens/try_on_screen.dart'; // Apna sahi path check kar lein
-import 'package:permission_handler/permission_handler.dart';
 import '../cache/favourites_cache.dart';
 import '../cache/makeup_bag_cache.dart';
 
 class AuthScreen extends StatefulWidget {
   final bool isLoginMode;
-  final bool continueToCameraAfterSignIn;
-
-  const AuthScreen({
-    super.key,
-    this.isLoginMode = true,
-    this.continueToCameraAfterSignIn = false,
-  });
+  final bool openHomeOnSuccess;
+  const AuthScreen({super.key, this.isLoginMode = true, this.openHomeOnSuccess = false});
 
   @override
   State<AuthScreen> createState() => _AuthScreenState();
@@ -31,6 +24,7 @@ class _AuthScreenState extends State<AuthScreen>
   late bool isSignIn;
   bool isLoading = false;
   bool isGoogleLoading = false;
+  bool _finishingSignIn = false;
   int _googleAttempt = 0;
   bool _obscurePassword = true;
 
@@ -76,63 +70,17 @@ class _AuthScreenState extends State<AuthScreen>
           }
           if (!mounted) return;
 
-          // 🆕 FIX (real root cause of the DeepAR "disconnected/abandoned
-          // window" / EGL_BAD_NATIVE_WINDOW crash loop after sign-in):
-          //
-          // AuthScreen can be reached two ways:
-          //   1) Pushed as an OVERLAY on top of an already-running
-          //      TryOnScreen (its "Sign in to save/favourite/..." prompts
-          //      push AuthScreen onto a nested overlay Navigator that sits
-          //      inside TryOnScreen's own widget tree).
-          //   2) As the app's own entry/root screen, with no TryOnScreen
-          //      underneath at all.
-          //
-          // The old code always did `Navigator.pushReplacement(...,
-          // TryOnScreen())` here. In case (1), `context` resolves to that
-          // NESTED overlay Navigator, so pushReplacement created a BRAND
-          // NEW TryOnScreen (a second DeepAR SurfaceView / camera session)
-          // stacked on top of the ORIGINAL TryOnScreen, which was still
-          // alive underneath. Two SurfaceViews fighting over the same
-          // camera hardware / GL context is exactly what produced the
-          // "abandoned window" errors — no amount of fixing TryOnScreen's
-          // own navigation could prevent that, since the duplicate
-          // instance was being created here.
-          //
-          // Try On calls leave this false so successful sign-in pops the
-          // overlay and reveals the original live camera. Welcome explicitly
-          // sets it true: its AuthScreen also has a route beneath it, but must
-          // continue into camera permission / Try On instead of returning to
-          // Welcome.
+          if (_finishingSignIn || ModalRoute.of(context)?.isCurrent != true) return;
+          _finishingSignIn = true;
           final navigator = Navigator.of(context);
-          if (!widget.continueToCameraAfterSignIn && navigator.canPop()) {
+          if (!widget.openHomeOnSuccess && navigator.canPop()) {
             navigator.pop();
             return;
           }
-
-          if (mounted) setState(() => isLoading = true);
-
-          final cameraStatus = await Permission.camera.status;
-          if (!mounted) return;
-
-          // 🆕 CRITICAL FIX: Zero duration ki jagah normal transition do
-          // Zero duration mein Android surface attach hone ka waqt nahi milta
-          final destination = cameraStatus.isGranted
-              ? const TryOnScreen()
-              : const CameraPermissionScreen();
-          final route = PageRouteBuilder<void>(
-            pageBuilder: (_, __, ___) => destination,
-              // 🆕 300ms transition — surface ko settle hone ka waqt milta hai
-            transitionDuration: const Duration(milliseconds: 300),
-            reverseTransitionDuration: const Duration(milliseconds: 300),
-            transitionsBuilder: (_, animation, __, child) {
-              return FadeTransition(opacity: animation, child: child);
-            },
+          navigator.pushAndRemoveUntil(
+            MaterialPageRoute(builder: (_) => const HomeScreen()),
+            (_) => false,
           );
-          if (widget.continueToCameraAfterSignIn) {
-            navigator.pushAndRemoveUntil(route, (_) => false);
-          } else {
-            navigator.pushReplacement(route);
-          }
         }
       });
 }

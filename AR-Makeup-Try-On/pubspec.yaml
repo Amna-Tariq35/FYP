@@ -113,9 +113,15 @@ flutter:
 # ... (baaki file ke bilkul niche)
 
 flutter_native_splash:
-  color: "#FFF0F5"
+  ios: false
+  web: false
+  image: branding/splash/plum.png
+  image_dark: branding/splash/ivory.png
+  color: "#FBF7F2"
   color_dark: "#1A0A0F"
   android_12:
-    color: "#FFF0F5"
+    image: branding/splash/plum_12.png
+    image_dark: branding/splash/ivory_12.png
+    color: "#FBF7F2"
     color_dark: "#1A0A0F"
   fullscreen: true

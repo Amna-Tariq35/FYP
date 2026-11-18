@@ -4,10 +4,11 @@ import 'deep_ar_controller.dart';
 
 /// Displays live preview with desired effects.
 class DeepArPreview extends StatefulWidget {
-  const DeepArPreview(this.deepArController, {Key? key, this.onViewCreated})
+  const DeepArPreview(this.deepArController, {Key? key, this.onViewCreated, this.alignment = Alignment.center})
       : super(key: key);
   final DeepArController deepArController;
   final Function? onViewCreated;
+  final Alignment alignment;
 
   @override
   State<DeepArPreview> createState() => _DeepArPreviewState();
@@ -16,7 +17,8 @@ class DeepArPreview extends StatefulWidget {
 class _DeepArPreviewState extends State<DeepArPreview> {
   @override
   Widget build(BuildContext context) {
-    return Center(
+    return Align(
+      alignment: widget.alignment,
       child: AspectRatio(
           aspectRatio: (1 / widget.deepArController.aspectRatio),
           child: Platform.isAndroid ? _androidView() : _iOSView()),

@@ -1,5 +1,6 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
@@ -22,11 +23,14 @@ import 'try_on_screen.dart';
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
     super.key,
+    this.overCamera = false,
     this.signedInOverride,
     this.greetingNameOverride,
     this.looksOverride,
     this.cameraGrantedOverride,
   });
+
+  final bool overCamera;
 
   /// Widget tests pass this so the screen can render without Supabase.
   @visibleForTesting
@@ -98,12 +102,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _forwardToCamera(BuildContext context, Object? result) {
     if (!context.mounted || result == null) return;
-    final backToCamera = result is List ||
+    final backToCamera =
+        result is List ||
         result is FoundationTryOnRequest ||
         result is FoundationLookRequest ||
         result == 'tryOnWithMyBag' ||
         (result is String && result.startsWith('tryOn:'));
-    if (backToCamera) Navigator.pop(context, result);
+    if (backToCamera) _openTryOn(context, result);
   }
 
   Future<void> _openSkinCheck(BuildContext context) async {
@@ -143,30 +148,29 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  /// Granted: return to the try-on already under this screen, or open it
-  /// the same way startup does when this screen is the root.
-  /// Denied: ask for the camera. Never starts DeepAR from here.
-  Future<void> _openTryOn(BuildContext context) async {
-    final granted = await _cameraGranted();
-    if (!context.mounted) return;
-    if (!granted) {
-      final allowed = await Navigator.of(context).push<bool>(
-        MaterialPageRoute(
-          builder: (_) =>
-              const CameraPermissionScreen(returnGrantedToCaller: true),
-        ),
-      );
-      if (allowed != true || !context.mounted) return;
+  bool _openingCamera = false;
+
+  Future<void> _openTryOn(BuildContext context, [Object? request]) async {
+    if (_openingCamera) return;
+    _openingCamera = true;
+    try {
+      final granted = await _cameraGranted();
+      if (!context.mounted) return;
+      if (!await CameraPermissionScreen.allowFeature(context,
+        deviceGranted: granted, guestForTest: widget.signedInOverride != null,
+      )) return;
+      if (!context.mounted) return;
+      final navigator = Navigator.of(context);
+      if (widget.overCamera) {
+        navigator.pop(request);
+      } else {
+        await navigator.push(MaterialPageRoute(
+          builder: (_) => TryOnScreen(initialRequest: request),
+        ));
+      }
+    } finally {
+      _openingCamera = false;
     }
-    if (!context.mounted) return;
-    final navigator = Navigator.of(context);
-    if (navigator.canPop()) {
-      navigator.popUntil((route) => route.isFirst);
-      return;
-    }
-    navigator.pushReplacement(
-      MaterialPageRoute(builder: (_) => const TryOnScreen()),
-    );
   }
 
   Future<bool> _cameraGranted() async {
@@ -184,9 +188,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!_signedIn()) {
       await Navigator.push<void>(
         context,
-        MaterialPageRoute(
-          builder: (_) => const AuthScreen(isLoginMode: true),
-        ),
+        MaterialPageRoute(builder: (_) => const AuthScreen(isLoginMode: true)),
       );
       return;
     }
@@ -214,7 +216,8 @@ class _HomeScreenState extends State<HomeScreen> {
       final user = Supabase.instance.client.auth.currentUser;
       if (user == null) return null;
       final meta = user.userMetadata;
-      final rawName = _metaString(meta, 'full_name') ?? _metaString(meta, 'name');
+      final rawName =
+          _metaString(meta, 'full_name') ?? _metaString(meta, 'name');
       if (rawName != null) {
         final token = rawName.trim().split(RegExp(r'\s+')).first;
         final word = token.replaceAll(RegExp(r'[^A-Za-z]'), '');
@@ -255,7 +258,8 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   List<Map<String, dynamic>> _recentLooks() {
-    final source = widget.looksOverride ??
+    final source =
+        widget.looksOverride ??
         (_signedIn()
             ? LooksCache.instance.looks
             : const <Map<String, dynamic>>[]);
@@ -269,8 +273,10 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     AppColors.watch(context);
     final signedIn = _signedIn();
-    final heroHeight =
-        (MediaQuery.sizeOf(context).height * 0.42).clamp(240.0, 340.0);
+    final heroHeight = (MediaQuery.sizeOf(context).height * 0.42).clamp(
+      240.0,
+      340.0,
+    );
     final tiles = <_HomeTile>[
       _HomeTile(
         icon: Icons.photo_library_outlined,
@@ -281,11 +287,6 @@ class _HomeScreenState extends State<HomeScreen> {
         icon: Icons.favorite_border_rounded,
         label: 'Favourites',
         onTap: () => _openAccount(context, const FavouritesScreen()),
-      ),
-      _HomeTile(
-        icon: Icons.shopping_bag_outlined,
-        label: 'Makeup bag',
-        onTap: () => _openAccount(context, const MakeupBagScreen()),
       ),
       _HomeTile(
         icon: Icons.spa_outlined,
@@ -300,105 +301,237 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     ];
 
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: SafeArea(
-        child: SingleChildScrollView(
-          physics: const BouncingScrollPhysics(),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _RiseIn(
-                delay: Duration.zero,
-                child: _Hero(
-                  height: heroHeight,
-                  greeting: _greeting(),
-                  avatarUrl: _avatarUrl(),
-                  onProfile: () => _openProfile(context),
-                  onTryOn: () => _openTryOn(context),
-                  onFindShade: () async {
-                    final result = await Navigator.push<Object?>(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => const FoundationMatchScreen(),
-                      ),
-                    );
-                    if (context.mounted) _forwardToCamera(context, result);
-                  },
-                ),
-              ),
-              if (!signedIn)
-                _RiseIn(
-                  delay: const Duration(milliseconds: 40),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-                    child: Text(
-                      'Sign in to keep looks, orders, and your bag.',
-                      style: TextStyle(
-                        color: AppColors.textMuted,
-                        fontSize: 14,
-                        height: 1.4,
-                      ),
-                    ),
-                  ),
-                ),
-              _RiseIn(
-                delay: const Duration(milliseconds: 40),
-                child: const _SectionTitle('Explore'),
-              ),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: GridView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: tiles.length,
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 3,
-                    mainAxisSpacing: 10,
-                    crossAxisSpacing: 10,
-                    mainAxisExtent: 118,
-                  ),
-                  itemBuilder: (context, index) {
-                    return _RiseIn(
-                      delay: Duration(milliseconds: 40 * (index + 1)),
-                      child: _ExploreTile(tile: tiles[index]),
-                    );
-                  },
-                ),
-              ),
-              _RiseIn(
-                delay: const Duration(milliseconds: 80),
-                child: _SectionTitle(
-                  'Your looks',
-                  trailing: Semantics(
-                    button: true,
-                    label: 'See all saved looks',
-                    child: TextButton(
-                      onPressed: () =>
-                          _openAccount(context, const SavedLooksScreen()),
-                      style: TextButton.styleFrom(
-                        foregroundColor: AppColors.accentPink,
-                        minimumSize: const Size(48, 48),
-                      ),
-                      child: const Text(
-                        'See all',
-                        style: TextStyle(fontWeight: FontWeight.w600),
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.light.copyWith(
+        statusBarColor: Colors.transparent,
+        systemStatusBarContrastEnforced: false,
+      ),
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        body: Stack(
+          children: [
+            SafeArea(
+              top: false,
+              child: SingleChildScrollView(
+                physics: const BouncingScrollPhysics(),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _RiseIn(
+                      delay: Duration.zero,
+                      child: _Hero(
+                        height:
+                            heroHeight +
+                            MediaQuery.paddingOf(context).top +
+                            (MediaQuery.textScalerOf(context).scale(1) - 1)
+                                    .clamp(0.0, 3.0) *
+                                250,
+                        greeting: _greeting(),
+                        avatarUrl: _avatarUrl(),
+                        onProfile: () => _openProfile(context),
+                        onTryOn: () => _openTryOn(context),
+                        onFindShade: () async {
+                          final result = await Navigator.push<Object?>(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const FoundationMatchScreen(),
+                            ),
+                          );
+                          if (context.mounted)
+                            _forwardToCamera(context, result);
+                        },
                       ),
                     ),
-                  ),
+                    if (!signedIn)
+                      _RiseIn(
+                        delay: const Duration(milliseconds: 40),
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                          child: Text(
+                            'Sign in to keep looks, orders, and your bag.',
+                            style: TextStyle(
+                              color: AppColors.textMuted,
+                              fontSize: 14,
+                              height: 1.4,
+                            ),
+                          ),
+                        ),
+                      ),
+                    _RiseIn(
+                      delay: const Duration(milliseconds: 40),
+                      child: const _SectionTitle('Explore', accent: true),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
+                      child: Material(
+                        color: AppColors.isDark
+                            ? const Color(0xff392731)
+                            : const Color(0xfff3e5e7),
+                        elevation: 2,
+                        shadowColor: const Color(0x44572c41),
+                        borderRadius: BorderRadius.circular(18),
+                        clipBehavior: Clip.antiAlias,
+                        child: InkWell(
+                          onTap: () =>
+                              _openAccount(context, const MakeupBagScreen()),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 14,
+                              vertical: 17,
+                            ),
+                            child: Row(
+                              children: [
+                                for (final shades in const [
+                                  [
+                                    Color(0xfff7d7c7),
+                                    Color(0xffdfb59f),
+                                    Color(0xffb88c79),
+                                  ],
+                                  [
+                                    Color(0xffdfb5b7),
+                                    Color(0xffbd898d),
+                                    Color(0xff9c686e),
+                                  ],
+                                  [
+                                    Color(0xffbb7e91),
+                                    Color(0xff935264),
+                                    Color(0xff68384c),
+                                  ],
+                                ])
+                                  Padding(
+                                    padding: const EdgeInsets.only(right: 4),
+                                    child: DecoratedBox(
+                                      decoration: BoxDecoration(
+                                        shape: BoxShape.circle,
+                                        gradient: RadialGradient(
+                                          center: const Alignment(-.48, -.55),
+                                          radius: 1.25,
+                                          colors: shades,
+                                        ),
+                                      ),
+                                      child: const SizedBox.square(
+                                        dimension: 25,
+                                      ),
+                                    ),
+                                  ),
+                                Container(
+                                  width: 1,
+                                  height: 38,
+                                  margin: const EdgeInsets.only(
+                                    left: 9,
+                                    right: 13,
+                                  ),
+                                  color: AppColors.isDark
+                                      ? Colors.white30
+                                      : const Color(0xffcab6bd),
+                                ),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'My Makeup Bag',
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 16,
+                                          color: AppColors.isDark
+                                              ? AppColors.textMain
+                                              : const Color(0xff57243e),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        'Try your saved products',
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          color: AppColors.textMuted,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                Icon(
+                                  Icons.chevron_right,
+                                  color: AppColors.isDark
+                                      ? AppColors.textMain
+                                      : const Color(0xff57243e),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: GridView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: tiles.length,
+                        padding: EdgeInsets.zero,
+                        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount:
+                              MediaQuery.sizeOf(context).width /
+                                      MediaQuery.textScalerOf(
+                                        context,
+                                      ).scale(1) >=
+                                  350
+                              ? 4
+                              : 2,
+                          mainAxisSpacing: 10,
+                          crossAxisSpacing: 10,
+                          mainAxisExtent:
+                              96 +
+                              (MediaQuery.textScalerOf(context).scale(1) - 1)
+                                      .clamp(0.0, 3.0) *
+                                  55,
+                        ),
+                        itemBuilder: (context, index) {
+                          return _RiseIn(
+                            delay: Duration(milliseconds: 40 * (index + 1)),
+                            child: _ExploreTile(tile: tiles[index]),
+                          );
+                        },
+                      ),
+                    ),
+                    _RiseIn(
+                      delay: const Duration(milliseconds: 80),
+                      child: _SectionTitle(
+                        'Your looks',
+                        trailing: Semantics(
+                          button: true,
+                          label: 'See all saved looks',
+                          child: TextButton(
+                            onPressed: () =>
+                                _openAccount(context, const SavedLooksScreen()),
+                            style: TextButton.styleFrom(
+                              foregroundColor: AppColors.accentPink,
+                              minimumSize: const Size(48, 48),
+                            ),
+                            child: const Text(
+                              'See all',
+                              style: TextStyle(fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    _RiseIn(
+                      delay: const Duration(milliseconds: 120),
+                      child: _LooksStrip(
+                        looks: _recentLooks(),
+                        onTryOn: () => _openTryOn(context),
+                        onOpen: () =>
+                            _openAccount(context, const SavedLooksScreen()),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                  ],
                 ),
               ),
-              _RiseIn(
-                delay: const Duration(milliseconds: 120),
-                child: _LooksStrip(
-                  looks: _recentLooks(),
-                  onTryOn: () => _openTryOn(context),
-                  onOpen: () => _openAccount(context, const SavedLooksScreen()),
-                ),
-              ),
-              const SizedBox(height: 24),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -428,195 +561,242 @@ class _Hero extends StatelessWidget {
     return Column(
       children: [
         ClipRRect(
-                borderRadius: const BorderRadius.vertical(
-                  bottom: Radius.circular(28),
+          borderRadius: const BorderRadius.vertical(
+            bottom: Radius.circular(28),
+          ),
+          child: SizedBox(
+            height: height,
+            width: double.infinity,
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Image.asset(
+                  'assets/images/hero_model.webp',
+                  fit: BoxFit.cover,
+                  alignment: Alignment.topCenter,
+                  errorBuilder: (_, _, _) =>
+                      const ColoredBox(color: AppColors.primaryDark),
                 ),
-                child: SizedBox(
-                  height: height,
-                  width: double.infinity,
-                  child: Stack(
-                    fit: StackFit.expand,
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.black.withValues(alpha: 0.34),
+                        Colors.black.withValues(alpha: 0.0),
+                        Colors.black.withValues(alpha: 0.0),
+                        Colors.black.withValues(alpha: 0.62),
+                      ],
+                      stops: const [0.0, 0.28, 0.55, 1.0],
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    20,
+                    MediaQuery.paddingOf(context).top + 8,
+                    16,
+                    40,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Image.asset(
-                        'assets/images/hero_model.webp',
-                        fit: BoxFit.cover,
-                        alignment: Alignment.topCenter,
-                        errorBuilder: (_, _, _) =>
-                            const ColoredBox(color: AppColors.primaryDark),
-                      ),
-                      DecoratedBox(
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              Colors.black.withValues(alpha: 0.72),
-                              Colors.black.withValues(alpha: 0.2),
-                              Colors.black.withValues(alpha: 0.78),
-                            ],
-                            stops: const [0.0, 0.42, 1.0],
-                          ),
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(20, 8, 16, 40),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Expanded(
-                                  child: Text(
-                                    greeting,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w600,
+                                Row(
+                                  children: [
+                                    Image.asset(
+                                      'assets/images/oval_face_ivory.png',
+                                      width: 23,
+                                      height: 32,
                                     ),
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Semantics(
-                                  button: true,
-                                  label: 'Profile',
-                                  child: Material(
-                                    color: AppColors.primary,
-                                    shape: const CircleBorder(),
-                                    clipBehavior: Clip.antiAlias,
-                                    child: InkWell(
-                                      customBorder: const CircleBorder(),
-                                      onTap: onProfile,
-                                      child: SizedBox(
-                                        width: 48,
-                                        height: 48,
-                                        child: _AvatarFace(url: avatarUrl),
+                                    const SizedBox(width: 7),
+                                    const Flexible(
+                                      child: Text(
+                                        'AR Makeup',
+                                        style: TextStyle(
+                                          fontFamily: 'serif',
+                                          fontSize: 21,
+                                          color: Color(0xfffff5e7),
+                                        ),
                                       ),
                                     ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  greeting,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
                                   ),
                                 ),
                               ],
                             ),
-                            const Spacer(),
-                            const Text(
-                              'Find your perfect look',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 26,
-                                fontWeight: FontWeight.w800,
-                                height: 1.12,
-                                letterSpacing: -0.4,
+                          ),
+                          const SizedBox(width: 12),
+                          Semantics(
+                            button: true,
+                            label: 'Profile',
+                            child: Material(
+                              color: const Color(0xffefd6dd),
+                              shape: const CircleBorder(),
+                              clipBehavior: Clip.antiAlias,
+                              child: InkWell(
+                                customBorder: const CircleBorder(),
+                                onTap: onProfile,
+                                child: SizedBox(
+                                  width: 48,
+                                  height: 48,
+                                  child: _AvatarFace(
+                                    url: avatarUrl,
+                                    greeting: greeting,
+                                  ),
+                                ),
                               ),
                             ),
-                            const SizedBox(height: 4),
-                            const Text(
-                              'Try a look on camera, or match a foundation shade.',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 13,
-                                height: 1.3,
-                              ),
-                            ),
-                          ],
+                          ),
+                        ],
+                      ),
+                      const Spacer(),
+                      const Text(
+                        'Find your perfect look',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 26,
+                          fontWeight: FontWeight.w800,
+                          height: 1.12,
+                          letterSpacing: -0.4,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Try a look on camera, or match a foundation shade.',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          height: 1.3,
                         ),
                       ),
                     ],
                   ),
                 ),
-              ),
+              ],
+            ),
+          ),
+        ),
         Transform.translate(
           offset: const Offset(0, -28),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Row(
-                  children: [
-                    Expanded(
-                      child: Semantics(
-                        button: true,
-                        label: 'Try on',
-                        child: SizedBox(
-                          height: 56,
-                          child: ElevatedButton.icon(
-                            onPressed: onTryOn,
-                            icon: const Icon(Icons.photo_camera_outlined, size: 20),
-                            label: const Text(
-                              'Try on',
-                              maxLines: 1,
-                              style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: AppColors.primary,
-                              foregroundColor: Colors.white,
-                              disabledForegroundColor: Colors.white,
-                              elevation: 1,
-                              shadowColor: Colors.black.withValues(alpha: 0.12),
-                              padding: const EdgeInsets.symmetric(horizontal: 8),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(14),
-                              ),
-                            ),
+              children: [
+                Expanded(
+                  child: Semantics(
+                    button: true,
+                    label: 'Open camera',
+                    child: SizedBox(
+                      height: 56,
+                      child: ElevatedButton.icon(
+                        onPressed: onTryOn,
+                        icon: const Icon(Icons.photo_camera_outlined, size: 20),
+                        label: const Text(
+                          'Open camera',
+                          maxLines: 1,
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          foregroundColor: Colors.white,
+                          disabledForegroundColor: Colors.white,
+                          elevation: 1,
+                          shadowColor: Colors.black.withValues(alpha: 0.12),
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
                           ),
                         ),
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Semantics(
-                        button: true,
-                        label: 'Find my shade',
-                        child: SizedBox(
-                          height: 56,
-                          child: OutlinedButton.icon(
-                            onPressed: onFindShade,
-                            icon: Icon(Icons.colorize_rounded, size: 20, color: secondary),
-                            label: Text(
-                              'Find my shade',
-                              maxLines: 2,
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w700,
-                                height: 1.1,
-                                color: secondary,
-                              ),
-                            ),
-                            style: OutlinedButton.styleFrom(
-                              backgroundColor: AppColors.surface,
-                              foregroundColor: secondary,
-                              side: BorderSide(color: secondary),
-                              elevation: 1,
-                              shadowColor: Colors.black.withValues(alpha: 0.08),
-                              padding: const EdgeInsets.symmetric(horizontal: 8),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(14),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
-              ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Semantics(
+                    button: true,
+                    label: 'Find my shade',
+                    child: SizedBox(
+                      height: 56,
+                      child: OutlinedButton.icon(
+                        onPressed: onFindShade,
+                        icon: Icon(
+                          Icons.colorize_rounded,
+                          size: 20,
+                          color: secondary,
+                        ),
+                        label: Text(
+                          'Find my shade',
+                          maxLines: 2,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            height: 1.1,
+                            color: secondary,
+                          ),
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          backgroundColor: AppColors.surface,
+                          foregroundColor: secondary,
+                          side: BorderSide(color: secondary),
+                          elevation: 1,
+                          shadowColor: Colors.black.withValues(alpha: 0.08),
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
+          ),
+        ),
       ],
     );
   }
 }
 
 class _AvatarFace extends StatelessWidget {
-  const _AvatarFace({required this.url});
+  const _AvatarFace({required this.url, required this.greeting});
+  final String greeting;
 
   final String? url;
 
   @override
   Widget build(BuildContext context) {
     if (url == null || url!.isEmpty) {
-      return const Icon(Icons.person_outline, color: Colors.white, size: 24);
+      return Center(
+        child: greeting.startsWith('Hi, ') && greeting.length > 4
+            ? Text(
+                greeting.substring(4).characters.first,
+                style: const TextStyle(color: Color(0xff55253f), fontSize: 21),
+              )
+            : const Icon(Icons.person_outline, color: Color(0xff55253f)),
+      );
     }
     final pixelWidth = (48 * MediaQuery.devicePixelRatioOf(context))
         .round()
@@ -634,13 +814,16 @@ class _AvatarFace extends StatelessWidget {
 }
 
 class _SectionTitle extends StatelessWidget {
-  const _SectionTitle(this.title, {this.trailing});
+  const _SectionTitle(this.title, {this.trailing, this.accent = false});
+
+  final bool accent;
 
   final String title;
   final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
+    AppColors.watch(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 8, 12, 4),
       child: Row(
@@ -649,7 +832,7 @@ class _SectionTitle extends StatelessWidget {
             child: Text(
               title,
               style: TextStyle(
-                color: AppColors.textMain,
+                color: accent ? AppColors.accentPink : AppColors.textMain,
                 fontSize: 18,
                 fontWeight: FontWeight.w700,
                 letterSpacing: -0.2,
@@ -707,8 +890,8 @@ class _ExploreTile extends StatelessWidget {
                 ),
               ],
             ),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 8),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 8),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -719,7 +902,11 @@ class _ExploreTile extends StatelessWidget {
                       color: AppColors.primary.withValues(alpha: 0.12),
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: Icon(tile.icon, color: AppColors.accentPink, size: 20),
+                    child: Icon(
+                      tile.icon,
+                      color: AppColors.accentPink,
+                      size: 20,
+                    ),
                   ),
                   const SizedBox(height: 8),
                   Text(
@@ -853,7 +1040,9 @@ class _LooksStrip extends StatelessWidget {
                         Expanded(
                           child: url == null
                               ? ColoredBox(
-                                  color: AppColors.primary.withValues(alpha: 0.1),
+                                  color: AppColors.primary.withValues(
+                                    alpha: 0.1,
+                                  ),
                                   child: Icon(
                                     Icons.photo_outlined,
                                     color: AppColors.accentPink,
@@ -864,11 +1053,12 @@ class _LooksStrip extends StatelessWidget {
                                   fit: BoxFit.cover,
                                   memCacheWidth: cacheWidth,
                                   fadeInDuration: Duration.zero,
-                                  placeholder: (_, _) => ColoredBox(
-                                    color: AppColors.neutral200,
-                                  ),
+                                  placeholder: (_, _) =>
+                                      ColoredBox(color: AppColors.neutral200),
                                   errorWidget: (_, _, _) => ColoredBox(
-                                    color: AppColors.primary.withValues(alpha: 0.1),
+                                    color: AppColors.primary.withValues(
+                                      alpha: 0.1,
+                                    ),
                                     child: Icon(
                                       Icons.photo_outlined,
                                       color: AppColors.accentPink,
