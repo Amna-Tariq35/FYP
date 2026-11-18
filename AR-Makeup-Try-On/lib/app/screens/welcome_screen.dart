@@ -5,7 +5,7 @@ import '../config/app_config.dart';
 import '../services/web_bridge.dart';
 import '../utils/app_colors.dart';
 import 'auth_screen.dart';
-import 'camera_permission_screen.dart';
+import 'home_screen.dart';
 
 class WelcomeScreen extends StatefulWidget {
   const WelcomeScreen({super.key});
@@ -117,11 +117,11 @@ class _WelcomeScreenState extends State<WelcomeScreen>
             ),
           ),
 
-          // Sparkle accent
+          // Brand accent
           Positioned(
             top: size.height * 0.07,
             right: 28,
-            child: const _SparkleIcon(),
+            child: const _WelcomeBrandMark(),
           ),
 
           // Bottom content
@@ -176,9 +176,9 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                         label: 'Get Started',
                         icon: Icons.arrow_forward_rounded,
                         onPressed: () {
-                          Navigator.push(
+                          Navigator.pushReplacement(
                             context,
-                            _fadeRoute(const CameraPermissionScreen()),
+                            _fadeRoute(const HomeScreen()),
                           );
                         },
                       ),
@@ -192,11 +192,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                           Navigator.push(
                             context,
                             _fadeRoute(
-                              const AuthScreen(
-                                isLoginMode: true,
-                                continueToCameraAfterSignIn: true,
-                              ),
-                            ),
+                                const AuthScreen(openHomeOnSuccess: true)),
                           );
                         },
                       ),
@@ -407,16 +403,16 @@ class _SecondaryButtonState extends State<_SecondaryButton> {
   }
 }
 
-// ── Sparkle Icon ──────────────────────────────────────────────────────────
+// ── Welcome brand mark ──────────────────────────────────────────────────────────
 
-class _SparkleIcon extends StatefulWidget {
-  const _SparkleIcon();
+class _WelcomeBrandMark extends StatefulWidget {
+  const _WelcomeBrandMark();
 
   @override
-  State<_SparkleIcon> createState() => _SparkleIconState();
+  State<_WelcomeBrandMark> createState() => _WelcomeBrandMarkState();
 }
 
-class _SparkleIconState extends State<_SparkleIcon>
+class _WelcomeBrandMarkState extends State<_WelcomeBrandMark>
     with SingleTickerProviderStateMixin {
   late AnimationController _c;
   late Animation<double> _pulse;
@@ -443,16 +439,12 @@ class _SparkleIconState extends State<_SparkleIcon>
   Widget build(BuildContext context) {
     return FadeTransition(
       opacity: _pulse,
-      child: Icon(
-        Icons.auto_awesome_rounded,
-        color: Colors.white.withValues(alpha: 0.75),
-        size: 22,
-        shadows: [
-          Shadow(
-            color: AppColors.primary.withValues(alpha: 0.6),
-            blurRadius: 12,
-          ),
-        ],
+      child: Image.asset(
+        'assets/images/oval_face_ivory.png',
+        height: 22,
+        width: 22,
+        fit: BoxFit.contain,
+        semanticLabel: 'AR Makeup Try-On',
       ),
     );
   }

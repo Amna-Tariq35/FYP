@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -164,7 +165,9 @@ double _mapIntensityToBackend(TryOnCategory category, double userValue) {
 // ── SCREEN ───────────────────────────────────────────────────────────────────
 
 class TryOnScreen extends StatefulWidget {
-  const TryOnScreen({super.key});
+  const TryOnScreen({super.key, this.initialRequest});
+
+  final Object? initialRequest;
 
   @override
   State<TryOnScreen> createState() => _TryOnScreenState();
@@ -350,7 +353,7 @@ class _TryOnScreenState extends State<TryOnScreen>
       curve: Curves.easeOut,
     );
 
-    _loadDataFromDb();
+    _initialCatalog = _loadDataFromDb();
     _processPendingSavedLooks();
     _loadMeasuredSkinTone();
     _loadCoachMarks();
@@ -395,8 +398,19 @@ class _TryOnScreenState extends State<TryOnScreen>
     if (mounted) setState(() => _coachStep = null);
   }
 
+  late final Future<void> _initialCatalog;
+  bool _initialRequestConsumed = false;
+
+  Future<void> _applyInitialRequest() async {
+    if (widget.initialRequest == null || _initialRequestConsumed) return;
+    await _initialCatalog;
+    if (!mounted || !_isInitialized || _initialRequestConsumed) return;
+    _initialRequestConsumed = true;
+    await _handleOverlayResult(widget.initialRequest);
+  }
+
   Future<void> _openHome() async {
-    final result = await _pushOverlay<Object>(const HomeScreen());
+    final result = await _pushOverlay<Object>(const HomeScreen(overCamera: true));
     await _handleOverlayResult(result);
   }
 
@@ -1453,6 +1467,7 @@ class _TryOnScreenState extends State<TryOnScreen>
         _topBarController.forward();
         _initInProgress = false;
         _initWatchdog?.cancel();
+        unawaited(_applyInitialRequest());
         debugPrint('DeepAR: ready ✓');
         return;
       } catch (e) {
@@ -2938,8 +2953,13 @@ class _TryOnScreenState extends State<TryOnScreen>
             // 🔧 FIX: ALWAYS render DeepArPreview — never conditionally remove it
             // The black overlay on top will hide it while we're initializing.
             // This prevents SurfaceView destruction and EGL_BAD_NATIVE_WINDOW errors.
-            SizedBox.expand(
-              child: DeepArPreview(_deepArController, key: _deepArKey),
+            Positioned.fill(
+              top: topPad,
+              child: ClipRRect(
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+                child: DeepArPreview(_deepArController, key: _deepArKey,
+                    alignment: Alignment.topCenter),
+              ),
             ),
             if (_isSaveDialogOpen && _saveDialogFrameBytes != null)
               Positioned.fill(
@@ -2992,46 +3012,6 @@ class _TryOnScreenState extends State<TryOnScreen>
                     : const _LoadingView(),
               ),
 
-            if (_isInitialized && _faceGuidance.bannerMessage != null)
-              Positioned(
-                top: topPad + 72,
-                left: 24,
-                right: 24,
-                child: Semantics(
-                  liveRegion: true,
-                  label: _faceGuidance.bannerMessage,
-                  child: ExcludeSemantics(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        // Dark in both themes: the banner sits on the camera,
-                        // and white on this scrim stays above 4.5:1 even if
-                        // the preview behind it is white.
-                        color: AppColors.isDark
-                            ? const Color(0xEB000000)
-                            : const Color(0xEB1A1020),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 10,
-                        ),
-                        child: Text(
-                          _faceGuidance.bannerMessage!,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                            height: 1.35,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-
             // ── TOP GRADIENT ──────────────────────────────────────────────
             Positioned(
               top: 0,
@@ -3072,6 +3052,16 @@ class _TryOnScreenState extends State<TryOnScreen>
               ),
             ),
 
+            Positioned(
+              top: topPad + 72, left: 16, right: 16,
+              child: IgnorePointer(child: Center(child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                child: _isInitialized && _faceGuidance.bannerMessage != null
+                    ? _FaceHint(key: ValueKey(_faceGuidance.banner), kind: _faceGuidance.banner)
+                    : const SizedBox.shrink(),
+              ))),
+            ),
+
             // ── TOP BAR ───────────────────────────────────────────────────
             Positioned(
               top: topPad + 10,
@@ -3083,14 +3073,18 @@ class _TryOnScreenState extends State<TryOnScreen>
                   position: _topBarSlide,
                   child: Row(
                     children: [
-                      _TopBarPill(
-                        onTap: _openHome,
-                        icon: Icons.home_outlined,
-                        label: 'Home',
-                      ),
+                      _CameraPill(child: TextButton.icon(
+                        onPressed: _openHome,
+                        icon: const Icon(Icons.home_outlined, size: 20),
+                        label: const Text('Home'),
+                        style: TextButton.styleFrom(foregroundColor: const Color(0xfffff6eb),
+                          minimumSize: const Size(48, 48)),
+                      )),
                       const Spacer(),
-                      _TopBarPill(
-                        onTap: isLoggedIn
+                      _CameraPill(child: Row(mainAxisSize: MainAxisSize.min,children: [
+                      IconButton(
+                        tooltip: 'Saved looks',
+                        onPressed: isLoggedIn
                             ? () async {
                                 final items = await _pushOverlay<dynamic>(
                                   const SavedLooksScreen(),
@@ -3102,13 +3096,12 @@ class _TryOnScreenState extends State<TryOnScreen>
                             : () => _showLoginPrompt(
                                 'Sign in to view your saved looks!',
                               ),
-                        icon: Icons.photo_library_outlined,
-                        label: 'Looks',
+                        icon: const Icon(Icons.photo_library_outlined),
                       ),
-                      const SizedBox(width: 8),
-                      _TopBarButton(
-                        label: isLoggedIn ? 'Profile' : 'Sign in',
-                        onTap: () async {
+                      Container(width: 1, height: 18, color: Colors.white38),
+                      IconButton(
+                        tooltip: isLoggedIn ? 'Profile' : 'Sign in',
+                        onPressed: () async {
                           if (isLoggedIn) {
                             final result = await _pushOverlay<Object>(
                               const ProfileScreen(),
@@ -3120,14 +3113,14 @@ class _TryOnScreenState extends State<TryOnScreen>
                             );
                           }
                         },
-                        child: Icon(
+                        icon: Icon(
                           isLoggedIn
                               ? Icons.person_outline_rounded
                               : Icons.login_rounded,
-                          color: Colors.white,
-                          size: 18,
+                          size: 22,
                         ),
                       ),
+                      ])),
                     ],
                   ),
                 ),
@@ -4095,8 +4088,35 @@ class _TryOnScreenState extends State<TryOnScreen>
 
 // ── HELPER WIDGETS ────────────────────────────────────────────────────────────
 
-class _LoadingView extends StatelessWidget {
+class _LoadingView extends StatefulWidget {
   const _LoadingView();
+
+  @override
+  State<_LoadingView> createState() => _LoadingViewState();
+}
+
+class _LoadingViewState extends State<_LoadingView>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _turn = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  );
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _turn.reset();
+    } else if (!_turn.isAnimating) {
+      _turn.repeat();
+    }
+  }
+
+  @override
+  void dispose() {
+    _turn.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -4106,19 +4126,27 @@ class _LoadingView extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 64,
-              height: 64,
-              decoration: BoxDecoration(
-                color: AppColors.primary.withValues(alpha: 0.08),
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: AppColors.primary.withValues(alpha: 0.18),
-                  width: 1.5,
+            SizedBox.square(
+              dimension: 64,
+              child: Center(
+                child: AnimatedBuilder(
+                  animation: _turn,
+                  builder: (context, logo) => Transform(
+                    alignment: Alignment.center,
+                    transform: Matrix4.identity()
+                      ..setEntry(3, 2, 0.0015)
+                      ..rotateY(_turn.value * 2 * math.pi),
+                    child: logo,
+                  ),
+                  child: Image.asset(
+                    'assets/images/oval_face_ivory.png',
+                    width: 34,
+                    height: 50,
+                    fit: BoxFit.contain,
+                    color: AppColors.isDark ? null : const Color(0xff51243f),
+                    excludeFromSemantics: true,
+                  ),
                 ),
-              ),
-              child: const Center(
-                child: AppLoader(size: 32, strokeWidth: 1.5),
               ),
             ),
             const SizedBox(height: 20),
@@ -4515,97 +4543,60 @@ class _StillCompareOverlay extends StatelessWidget {
   }
 }
 
-class _TopBarButton extends StatelessWidget {
-  final VoidCallback onTap;
-  final String label;
+class _CameraPill extends StatelessWidget {
+  const _CameraPill({required this.child});
   final Widget child;
-  const _TopBarButton({
-    required this.onTap,
-    required this.label,
-    required this.child,
-  });
 
   @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      button: true,
-      label: label,
-      child: GestureDetector(
-      onTap: onTap,
-      child: ClipOval(
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-          child: Container(
-            width: 42,
-            height: 42,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.15),
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: Colors.white.withValues(alpha: 0.25),
-                width: 1,
-              ),
-            ),
-            child: Center(child: child),
-          ),
-        ),
-      ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Material(
+    color: const Color(0xd0393536),
+    shape: const StadiumBorder(),
+    clipBehavior: Clip.antiAlias,
+    child: IconButtonTheme(
+      data: IconButtonThemeData(style: IconButton.styleFrom(
+        foregroundColor: const Color(0xfffff6eb), minimumSize: const Size(48,48))),
+      child: child),
+  );
 }
 
-class _TopBarPill extends StatelessWidget {
-  final VoidCallback onTap;
-  final IconData icon;
-  final String label;
-  const _TopBarPill({
-    required this.onTap,
-    required this.icon,
-    required this.label,
-  });
+class _FaceHint extends StatefulWidget {
+  const _FaceHint({super.key, required this.kind});
+  final FaceGuidanceKind kind;
+  @override
+  State<_FaceHint> createState() => _FaceHintState();
+}
+
+class _FaceHintState extends State<_FaceHint> {
+  Timer? timer;
+  bool showLightingTip = false;
+  @override
+  void initState() {
+    super.initState();
+    if (widget.kind == FaceGuidanceKind.noFace) {
+      timer = Timer(const Duration(seconds: 5), () => setState(() => showLightingTip = true));
+    }
+  }
+
+  @override
+  void dispose() {
+    timer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Semantics(
-      button: true,
-      label: label,
-      child: GestureDetector(
-      onTap: onTap,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(50),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(50),
-              border: Border.all(
-                color: Colors.white.withValues(alpha: 0.25),
-                width: 1,
-              ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, color: Colors.white, size: 15),
-                const SizedBox(width: 5),
-                Text(
-                  label,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 12.5,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-      ),
-    );
+    final message = widget.kind == FaceGuidanceKind.severalFaces
+        ? FaceGuidance.severalFacesMessage
+        : showLightingTip ? 'Face the camera in good light' : 'Bring your face into view';
+    return Semantics(liveRegion: true, child: DecoratedBox(
+      decoration: const ShapeDecoration(color: Color(0xd0393536),shape: StadiumBorder()),
+      child: Padding(padding: const EdgeInsets.symmetric(horizontal: 14,vertical: 8),
+        child: Row(mainAxisSize: MainAxisSize.min,children: [
+          const Icon(Icons.info_outline_rounded,color: Color(0xfffff6eb),size: 18),
+          const SizedBox(width: 8),
+          Flexible(child: Text(message,style: const TextStyle(color: Color(0xfffff6eb),fontSize: 14))),
+        ])),
+    ));
   }
 }
 

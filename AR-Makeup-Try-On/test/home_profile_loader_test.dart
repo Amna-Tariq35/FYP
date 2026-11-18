@@ -96,6 +96,7 @@ void main() {
                     context,
                     MaterialPageRoute(
                       builder: (_) => const HomeScreen(
+                        overCamera: true,
                         signedInOverride: true,
                         greetingNameOverride: 'Amina',
                         looksOverride: <Map<String, dynamic>>[],
@@ -113,7 +114,7 @@ void main() {
 
       await tester.tap(find.text('Under the camera'));
       await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(ElevatedButton, 'Try on'));
+      await tester.tap(find.text('Open camera'));
       await tester.pumpAndSettle();
 
       expect(find.text('Under the camera'), findsOneWidget);
@@ -132,7 +133,7 @@ void main() {
         ),
       );
 
-      await tester.tap(find.widgetWithText(ElevatedButton, 'Try on'));
+      await tester.tap(find.text('Open camera'));
       await tester.pumpAndSettle();
 
       expect(find.byType(CameraPermissionScreen), findsOneWidget);
@@ -163,14 +164,14 @@ void main() {
 
         expect(find.text('Hi, Alexandria'), findsOneWidget);
         expect(find.text('Find your perfect look'), findsOneWidget);
-        expect(find.text('Try on'), findsOneWidget);
+        expect(find.text('Open camera'), findsOneWidget);
         expect(find.text('Find my shade'), findsOneWidget);
         expect(find.text('Saved looks'), findsOneWidget);
         expect(find.text('Favourites'), findsOneWidget);
-        expect(find.text('Makeup bag'), findsOneWidget);
+        expect(find.text('My Makeup Bag'), findsOneWidget);
         expect(find.text('Skin analysis'), findsOneWidget);
         expect(find.text('Products'), findsOneWidget);
-        expect(find.text('Beauty profile'), findsNothing);
+        expect(find.text('Beauty Profile'), findsNothing);
         expect(find.text('My orders'), findsNothing);
         expect(find.text('Notifications'), findsNothing);
         expect(tester.takeException(), isNull);
@@ -189,8 +190,8 @@ void main() {
         );
 
         expect(find.text('Alexandria Montgomery-Smith'), findsOneWidget);
-        expect(find.text('Beauty profile'), findsOneWidget);
-        expect(find.text('Skin type and preferences'), findsOneWidget);
+        expect(find.text('Beauty Profile'), findsOneWidget);
+        expect(find.text('View your skin details and preferences'), findsOneWidget);
         expect(find.text('My orders'), findsOneWidget);
         expect(find.text('Notifications'), findsOneWidget);
         expect(find.text('Privacy and security'), findsOneWidget);
@@ -214,7 +215,7 @@ void main() {
 
       expect(find.text('Sign in'), findsOneWidget);
       expect(find.text('Sign out'), findsNothing);
-      expect(find.text('Beauty profile'), findsNothing);
+      expect(find.text('Beauty Profile'), findsNothing);
       expect(find.text('AR Makeup'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });

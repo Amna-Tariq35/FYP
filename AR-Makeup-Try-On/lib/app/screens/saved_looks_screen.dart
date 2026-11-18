@@ -592,9 +592,6 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
     final favCount = _cache.looks
         .where((l) => _favouriteIds.contains(l['id']))
         .length;
-    final totalCount = _cache.looks.length;
-    final isLoading = !_cache.isLoaded;
-
     return Container(
       padding: EdgeInsets.fromLTRB(20, topPad + 14, 20, 0),
       decoration: BoxDecoration(
@@ -638,25 +635,6 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
             ],
           ),
 
-          if (!isLoading) ...[
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                _buildStatChip(
-                  icon: Icons.collections_bookmark_rounded,
-                  label: '$totalCount Saved',
-                  accent: false,
-                ),
-                const SizedBox(width: 8),
-                _buildStatChip(
-                  icon: Icons.favorite_rounded,
-                  label: '$favCount Favourited',
-                  accent: favCount > 0,
-                ),
-              ],
-            ),
-          ],
-
           const SizedBox(height: 14),
 
           Row(
@@ -672,47 +650,6 @@ class _SavedLooksScreenState extends State<SavedLooksScreen>
             ],
           ),
           const SizedBox(height: 2),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStatChip({
-    required IconData icon,
-    required String label,
-    required bool accent,
-  }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: accent
-            ? AppColors.primary.withValues(alpha: 0.10)
-            : AppColors.surface,
-        borderRadius: BorderRadius.circular(50),
-        border: Border.all(
-          color: accent
-              ? AppColors.primary.withValues(alpha: 0.25)
-              : AppColors.border,
-          width: 1,
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            icon,
-            size: 12,
-            color: accent ? AppColors.primary : AppColors.textMuted,
-          ),
-          const SizedBox(width: 5),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: accent ? AppColors.primary : AppColors.textMuted,
-            ),
-          ),
         ],
       ),
     );

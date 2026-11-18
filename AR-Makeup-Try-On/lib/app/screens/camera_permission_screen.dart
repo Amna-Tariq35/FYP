@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -13,6 +15,38 @@ class CameraPermissionScreen extends StatefulWidget {
     this.returnGrantedToCaller = false,
     this.isSignedIn,
   });
+
+  static const _confirmedSessionKey = 'camera_confirmed_auth_session';
+
+  static String? _sessionId() {
+    final token = Supabase.instance.client.auth.currentSession?.accessToken;
+    if (token == null) return null;
+    final payload = token.split('.')[1];
+    final claims = jsonDecode(utf8.decode(base64Url.decode(base64Url.normalize(payload))));
+    return claims['session_id'] as String?;
+  }
+
+  static Future<bool> allowFeature(BuildContext context, {
+    required bool deviceGranted,
+    bool guestForTest = false,
+  }) async {
+    final sessionId = guestForTest ? null : _sessionId();
+    final prefs = sessionId == null ? null : await SharedPreferences.getInstance();
+    if (!context.mounted) return false;
+    if (deviceGranted &&
+        (sessionId == null || prefs?.getString(_confirmedSessionKey) == sessionId)) {
+      return true;
+    }
+    final allowed = await Navigator.of(context).push<bool>(MaterialPageRoute(
+      builder: (_) => const CameraPermissionScreen(returnGrantedToCaller: true),
+    ));
+    if (allowed != true || !context.mounted) return false;
+    if (sessionId != null) {
+      if (_sessionId() != sessionId) return false;
+      await prefs!.setString(_confirmedSessionKey, sessionId);
+    }
+    return true;
+  }
 
   /// Home asks for the camera and then opens try-on itself, so a grant
   /// pops back instead of pushing a second camera onto the overlay.
@@ -63,7 +97,8 @@ class _CameraPermissionScreenState extends State<CameraPermissionScreen>
 
   Future<void> requestCameraPermission() async {
     setState(() => _isRequesting = true);
-    final status = await Permission.camera.request();
+    final current = await Permission.camera.status;
+    final status = current.isGranted ? current : await Permission.camera.request();
     if (!mounted) return;
     setState(() => _isRequesting = false);
 
@@ -150,7 +185,6 @@ class _CameraPermissionScreenState extends State<CameraPermissionScreen>
                   // ── Main content ─────────────────────────────────────
                   Expanded(
                     child: SingleChildScrollView(
-                      physics: const NeverScrollableScrollPhysics(),
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
@@ -222,7 +256,9 @@ class _CameraPermissionScreenState extends State<CameraPermissionScreen>
                     ),
                   ),
 
-                  // ── CTAs — always at bottom, never overflow ───────────
+                  const SizedBox(height: 16),
+
+                  // Keep the actions separated from the scrollable content.
                   Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -248,9 +284,9 @@ class _CameraPermissionScreenState extends State<CameraPermissionScreen>
                                   color: Colors.white,
                                   strokeWidth: 2.5,
                                 )
-                              : const Text(
+                              : Text(
                                   'Allow Camera',
-                                  style: TextStyle(
+                                  style: const TextStyle(
                                     fontSize: 16,
                                     fontWeight: FontWeight.w700,
                                     color: Colors.white,
