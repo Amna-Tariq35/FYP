@@ -1,4 +1,5 @@
 import Link from "next/link";
+import BrandMark from "../layout/BrandMark";
 
 export default function Footer() {
   return (
@@ -7,14 +8,7 @@ export default function Footer() {
         <div className="grid gap-10 md:grid-cols-3">
           {/* Brand */}
           <div>
-            <div className="flex items-center gap-2.5">
-              <div className="grid h-8 w-8 place-items-center rounded-full bg-white/80 ring-1 ring-black/8">
-                <div className="h-2 w-2 rounded-full bg-[#B65C7A]" />
-              </div>
-              <span className="text-[13.5px] font-medium text-[#1a0e13]">
-                AR Makeup
-              </span>
-            </div>
+            <BrandMark footer />
             <p className="mt-4 max-w-[280px] text-xs font-light leading-6 text-[var(--text-muted)]">
               A virtual makeup try-on web experience for product discovery,
               saved looks, and shareable results — built as a Final Year Project.

@@ -47,10 +47,10 @@ export default function FeatureCards() {
           <Link
             key={title}
             href={href}
-            className="group relative rounded-2xl border border-black/8 bg-white/70 p-5 backdrop-blur transition duration-200 hover:border-[#B65C7A]/25 hover:bg-white/90"
+            className="group relative rounded-2xl border border-[#51243F]/10 bg-[#FFFCFB]/85 p-5 shadow-[0_4px_16px_rgba(81,36,63,0.035)] backdrop-blur transition duration-200 hover:-translate-y-0.5 hover:border-[#B65C7A]/25 hover:bg-[#FFF8FA] hover:shadow-[0_9px_24px_rgba(81,36,63,0.09)]"
           >
             {/* Icon */}
-            <div className="mb-4 inline-flex h-9 w-9 items-center justify-center rounded-xl bg-[#F4EEE8]">
+            <div className="mb-4 inline-flex h-9 w-9 items-center justify-center rounded-xl bg-[#F7E8EB] transition-colors duration-200 group-hover:bg-[#F3DDE1]">
               <Icon size={16} className="text-[var(--rose-primary)]" strokeWidth={1.5} />
             </div>
 

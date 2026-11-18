@@ -89,11 +89,6 @@ async function persistRoutine(
 
 export async function POST(req: Request) {
   try {
-    const limit = rateLimit(`routine:${clientKey(req)}`, 8, 60_000);
-    if (!limit.ok) {
-      return NextResponse.json({ error: "Too many requests. Please wait a minute." }, { status: 429 });
-    }
-
     const body = await req.json().catch(() => null);
     const analysisId = typeof body?.analysisId === "string" ? body.analysisId : "";
     const quick = body?.quick === true;
@@ -173,6 +168,16 @@ export async function POST(req: Request) {
       if (cached) {
         await persistRoutine(logs, analysisId, cached);
         return NextResponse.json({ success: true, data: cached });
+      }
+
+      // Quick routines use local rules and must remain available even when
+      // the paid AI generation endpoint is rate-limited.
+      const limit = rateLimit(`routine:${clientKey(req)}`, 8, 60_000);
+      if (!limit.ok) {
+        return NextResponse.json(
+          { error: "AI routine requests are temporarily limited. Your quick routine is still available." },
+          { status: 429 },
+        );
       }
     }
 

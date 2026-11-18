@@ -19,6 +19,8 @@ export default function Hero() {
         <div className="absolute inset-0 bg-gradient-to-t from-[#FBF7F4]/60 via-transparent to-transparent" />
         {/* Subtle rose glow */}
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_70%_50%,rgba(231,166,180,0.15),transparent_65%)]" />
+        {/* A gentle AR scan highlight over the face mesh */}
+        <div aria-hidden="true" className="hero-face-scan" />
       </div>
 
       {/* Content */}
@@ -46,13 +48,13 @@ export default function Hero() {
           <div className="mt-8 flex flex-wrap gap-3">
             <Link
               href="/products"
-              className="inline-flex items-center justify-center rounded-2xl bg-[var(--rose-primary)] px-6 py-3 text-sm font-medium text-white transition hover:brightness-95"
+              className="inline-flex items-center justify-center hero-cta-primary rounded-2xl bg-[var(--rose-primary)] px-6 py-3 text-sm font-medium text-white transition-all duration-300"
             >
               Browse Products
             </Link>
             <Link
               href="/try-on"
-              className="inline-flex items-center justify-center rounded-2xl border border-[#B65C7A]/30 bg-white/70 px-6 py-3 text-sm font-medium text-[#7a4a5a] transition hover:bg-white"
+              className="inline-flex items-center justify-center hero-cta-secondary rounded-2xl border border-[#B65C7A]/30 bg-white/70 px-6 py-3 text-sm font-medium text-[#7a4a5a] transition-all duration-300"
             >
               Lipstick and blush preview
             </Link>

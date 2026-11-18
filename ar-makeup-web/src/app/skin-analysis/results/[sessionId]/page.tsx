@@ -226,20 +226,25 @@ function ResultsContent({
       })
       .catch(() => null);
 
+    let quick: Awaited<ReturnType<typeof requestRoutine>> = null;
     if (!options?.retry) {
       try {
-        const quick = await requestRoutine(analysisId, { quick: true }, 15_000);
-        if (!personalized && quick) {
-          storeRoutine(quick.amRoutine, quick.pmRoutine, quick.source ?? "rules", quick.summary);
-        } else if (!personalized && !quick) {
-          setRoutineError("The routine could not be built. You can try again.");
-        }
+        quick = await requestRoutine(analysisId, { quick: true }, 15_000);
       } catch {
-        if (!personalized) setRoutineError("The routine could not be built. You can try again.");
+        quick = null;
+      }
+      if (!personalized && quick) {
+        storeRoutine(quick.amRoutine, quick.pmRoutine, quick.source ?? "rules", quick.summary);
       }
     }
 
     const ai = await aiPromise;
+    if (!personalized && !quick && ai) {
+      storeRoutine(ai.amRoutine, ai.pmRoutine, ai.source ?? "rules", ai.summary);
+    }
+    if (!options?.retry && !quick && !ai) {
+      setRoutineError("The routine could not be built. You can try again.");
+    }
     const aiReady = Boolean(ai && ai.source !== "rules");
     if (!aiReady) setShowRoutineRetry(true);
     setIsUpgradingRoutine(false);

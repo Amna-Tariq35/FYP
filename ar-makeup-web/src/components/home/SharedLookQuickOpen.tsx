@@ -30,7 +30,7 @@ export default function SharedLookQuickOpen() {
   }
 
   return (
-    <section className="mt-10 rounded-[22px] border border-black/8 bg-white/65 p-6 backdrop-blur sm:p-8">
+    <section className="mt-10 rounded-[22px] border border-[#51243F]/10 bg-[#FBF3F4]/70 p-6 shadow-[0_5px_20px_rgba(81,36,63,0.045)] backdrop-blur sm:p-8">
       <h3 className="text-[15px] font-medium text-[#1a0e13]">
         Open a shared look
       </h3>

@@ -171,6 +171,7 @@ export default function TryOnPage() {
     let isActive = true;
     let instance: DeepAR | null = null;
     let released = false;
+    let canvasResizeObserver: ResizeObserver | null = null;
 
     const releaseOnce = () => {
       if (released) return;
@@ -187,6 +188,8 @@ export default function TryOnPage() {
     const showFailure = () => {
       if (!isActive) return;
       clearTimers();
+      canvasResizeObserver?.disconnect();
+      canvasResizeObserver = null;
       setDeepARInstance(null);
       setStillStarting(false);
       setAwaitingPermission(false);
@@ -241,6 +244,29 @@ export default function TryOnPage() {
       }, CAMERA_INIT_TIMEOUT_MS);
 
       try {
+        const syncCanvasResolution = () => {
+          if (!isActive) return;
+          const { width, height } = canvas.getBoundingClientRect();
+          if (width <= 0 || height <= 0) return;
+
+          // Keep the drawing buffer close to the displayed size. Without this,
+          // an HTML canvas defaults to 300x150 and gets visibly pixelated when
+          // stretched to fill the camera card.
+          const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+          const bufferWidth = Math.round(width * pixelRatio);
+          const bufferHeight = Math.round(height * pixelRatio);
+          if (canvas.width !== bufferWidth || canvas.height !== bufferHeight) {
+            canvas.width = bufferWidth;
+            canvas.height = bufferHeight;
+          }
+        };
+
+        syncCanvasResolution();
+        if (typeof ResizeObserver !== "undefined") {
+          canvasResizeObserver = new ResizeObserver(syncCanvasResolution);
+          canvasResizeObserver.observe(canvas.parentElement ?? canvas);
+        }
+
         instance = await deepARAcquire(canvas, licenseKey);
         clearTimers();
         if (!isActive || released) {
@@ -261,6 +287,8 @@ export default function TryOnPage() {
     return () => {
       isActive = false;
       clearTimers();
+      canvasResizeObserver?.disconnect();
+      canvasResizeObserver = null;
       releaseOnce();
       setDeepARInstance(null);
       setStillStarting(false);

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import BrandMark from "./BrandMark";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/src/lib/supabase/client";
@@ -78,17 +79,10 @@ export default function Navbar() {
   }
 
   return (
-    <header className="sticky top-0 z-50 border-b border-black/10 bg-[#FBF7F4]/55 backdrop-blur-md">
+    <header className="sticky top-0 z-50 border-b border-[#51243F]/10 bg-[#FBF3F4]/80 shadow-[0_3px_18px_rgba(81,36,63,0.045)] backdrop-blur-md">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
         {/* Logo */}
-        <Link href="/" className="flex items-center gap-2">
-          <div className="grid h-9 w-9 place-items-center rounded-full bg-white/60 ring-1 ring-black/10 backdrop-blur">
-            <div className="h-2 w-2 rounded-full bg-[#B65C7A]" />
-          </div>
-          <span className="text-sm font-semibold tracking-wide text-[#141414]">
-            AR Makeup
-          </span>
-        </Link>
+        <BrandMark />
 
         {/* Center nav (desktop) */}
         <nav className="hidden md:flex">
@@ -98,10 +92,10 @@ export default function Navbar() {
                 key={l.href}
                 href={l.href}
                 className={[
-                  "rounded-full px-4 py-2 text-sm transition",
+                  "rounded-full px-4 py-2 text-sm transition-colors duration-200",
                   isActive(l.href)
-                    ? "bg-white/75 text-black shadow-sm"
-                    : "text-black/60 hover:bg-white/65 hover:text-black",
+                    ? "bg-[#F3DDE1] text-[#51243F] shadow-sm"
+                    : "text-black/60 hover:bg-[#F7E8EB] hover:text-[#51243F]",
                 ].join(" ")}
               >
                 {l.label}
@@ -114,7 +108,7 @@ export default function Navbar() {
         <div className="flex items-center gap-2">
           <Link
             href="/makeup-bag"
-            className="relative rounded-full p-2 text-black/65 hover:bg-white/60 hover:text-black"
+            className="relative rounded-full p-2 text-[#69515E] transition-colors duration-200 hover:bg-[#F3DDE1] hover:text-[#51243F] focus-visible:bg-[#F3DDE1]"
             aria-label="Makeup Bag"
             title="Makeup Bag"
           >
@@ -136,7 +130,7 @@ export default function Navbar() {
           {/* 🆕 Favourites Icon */}
           <Link
             href="/account/favourites"
-            className="relative rounded-full p-2 text-black/65 hover:bg-white/60 hover:text-black"
+            className="relative rounded-full p-2 text-[#69515E] transition-colors duration-200 hover:bg-[#F3DDE1] hover:text-[#51243F] focus-visible:bg-[#F3DDE1]"
             aria-label="Favourites"
             title="Favourites"
           >
@@ -147,7 +141,7 @@ export default function Navbar() {
           {/* Cart */}
           <Link
             href="/cart"
-            className="relative rounded-full p-2 text-black/65 hover:bg-white/60 hover:text-black"
+            className="relative rounded-full p-2 text-[#69515E] transition-colors duration-200 hover:bg-[#F3DDE1] hover:text-[#51243F] focus-visible:bg-[#F3DDE1]"
             aria-label={cartCount > 0 ? `Cart ${cartCount}` : "Cart"}
             title="Cart"
           >
@@ -183,7 +177,7 @@ export default function Navbar() {
             <button
               type="button"
               onClick={handleAccountClick}
-              className="rounded-full p-2 text-black/65 hover:bg-white/60 hover:text-black"
+              className="rounded-full p-2 text-[#69515E] transition-colors duration-200 hover:bg-[#F3DDE1] hover:text-[#51243F] focus-visible:bg-[#F3DDE1]"
               aria-label="Account"
               title="Account"
             >
@@ -290,10 +284,10 @@ export default function Navbar() {
               key={l.href}
               href={l.href}
               className={[
-                "shrink-0 rounded-full border border-black/10 bg-white/55 px-3 py-2 text-xs transition backdrop-blur",
+                "shrink-0 rounded-full border border-black/10 px-3 py-2 text-xs transition-colors duration-200 backdrop-blur",
                 isActive(l.href)
-                  ? "bg-white/80 text-black shadow-sm"
-                  : "text-black/60 hover:bg-white/70 hover:text-black",
+                  ? "bg-[#F3DDE1] text-[#51243F] shadow-sm"
+                  : "bg-white/55 text-black/60 hover:bg-[#F7E8EB] hover:text-[#51243F]",
               ].join(" ")}
             >
               {l.label}

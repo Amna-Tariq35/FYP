@@ -17,6 +17,9 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "AR Makeup",
   description: "Try shades on a live camera, browse products, and open shared looks.",
+  icons: {
+    icon: [{ url: "/branding/favicon.svg?v=7", type: "image/svg+xml" }],
+  },
   openGraph: {
     title: "AR Makeup",
     description: "Try shades on a live camera, browse products, and open shared looks.",
