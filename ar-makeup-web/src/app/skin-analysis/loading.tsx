@@ -1,7 +1,9 @@
+import PageLoader from "@/src/components/layout/PageLoader";
+
 export default function SkinAnalysisLoading() {
   return (
-    <div className="flex min-h-[50vh] items-center justify-center text-sm text-[var(--text-muted)]">
-      Loading your skin profile...
-    </div>
+    <main className="min-h-[50vh]">
+      <PageLoader label="Loading your skin profile..." className="min-h-[50vh]" />
+    </main>
   );
 }

@@ -1,20 +1,16 @@
+import PageLoader from "@/src/components/layout/PageLoader";
+
 export default function Loading() {
   return (
     <main className="min-h-screen bg-[var(--bg-base)]">
       <div className="mx-auto max-w-6xl px-4 py-10">
-        {/* Header skeleton */}
-        <div className="h-8 w-44 rounded-lg bg-black/5" />
-        <div className="mt-3 h-5 w-80 rounded-lg bg-black/5" />
+        <PageLoader label="Loading the collection..." className="py-4" />
 
-        {/* Cards skeleton */}
-        <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-3" aria-hidden="true">
           {Array.from({ length: 9 }).map((_, i) => (
             <div
               key={i}
-              className="
-                rounded-2xl border bg-[var(--bg-section)] overflow-hidden
-                border-[var(--border-soft)]
-              "
+              className="animate-pulse overflow-hidden rounded-2xl border border-[var(--border-soft)] bg-[var(--bg-section)]"
             >
               <div className="aspect-[4/3] bg-black/5" />
               <div className="p-4 space-y-3">

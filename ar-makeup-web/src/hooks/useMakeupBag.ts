@@ -16,6 +16,11 @@ export type MakeupBagItem = {
   added_at?: string;
 };
 
+const bagDataCache = new Map<
+  string,
+  { bagId: string; items: MakeupBagItem[] }
+>();
+
 let pendingEnsureBag: Promise<string | null> | null = null;
 
 // Live bags are named "My Everyday Bag". Items include user_id and shade_key ''
@@ -101,10 +106,10 @@ export function useMakeupBag() {
 
   useEffect(() => {
     const local = readLocalKeys();
-    if (local.length) setKeys(local);
 
     const load = async () => {
-      if (status !== "signed_in") {
+      if (status === "loading") return;
+      if (status === "signed_out") {
         userIdRef.current = null;
         setBagId(null);
         setItems([]);
@@ -122,6 +127,15 @@ export function useMakeupBag() {
       }
       userIdRef.current = user.id;
 
+      const cached = bagDataCache.get(user.id);
+      if (cached) {
+        setBagId(cached.bagId);
+        applyItems(cached.items);
+        setLoading(false);
+        return;
+      }
+
+      setLoading(true);
       const id = await ensureDefaultBag(user.id);
       setBagId(id);
       if (!id) {
@@ -143,8 +157,7 @@ export function useMakeupBag() {
             .order("added_at", { ascending: false })
         : withSource;
 
-      applyItems(
-        ((loaded.data ?? []) as Array<{
+      const nextItems = ((loaded.data ?? []) as Array<{
           id: string;
           product_key: string;
           shade_key: string | null;
@@ -156,8 +169,9 @@ export function useMakeupBag() {
           shade_key: row.shade_key ?? "",
           source: readSource(row.source),
           added_at: row.added_at,
-        })),
-      );
+        }));
+      applyItems(nextItems);
+      if (!loaded.error) bagDataCache.set(user.id, { bagId: id, items: nextItems });
       setLoading(false);
     };
 
@@ -206,6 +220,10 @@ export function useMakeupBag() {
               } else {
                 next = [mapped, ...prev];
               }
+            }
+            if (userIdRef.current) {
+              const cached = bagDataCache.get(userIdRef.current);
+              if (cached) bagDataCache.set(userIdRef.current, { ...cached, items: next });
             }
             writeLocalKeys(next.map((i) => bagItemKey(i.product_key, i.shade_key)));
             setKeys(next.map((i) => bagItemKey(i.product_key, i.shade_key)));
@@ -258,6 +276,10 @@ export function useMakeupBag() {
         const nextKeys = next.map((i) => bagItemKey(i.product_key, i.shade_key));
         setKeys(nextKeys);
         writeLocalKeys(nextKeys);
+        if (userIdRef.current) {
+          const cached = bagDataCache.get(userIdRef.current);
+          if (cached) bagDataCache.set(userIdRef.current, { ...cached, items: next });
+        }
         return next;
       });
 
@@ -284,6 +306,10 @@ export function useMakeupBag() {
           const nextKeys = next.map((i) => bagItemKey(i.product_key, i.shade_key));
           setKeys(nextKeys);
           writeLocalKeys(nextKeys);
+          if (userIdRef.current) {
+            const cached = bagDataCache.get(userIdRef.current);
+            if (cached) bagDataCache.set(userIdRef.current, { ...cached, items: next });
+          }
           return next;
         });
         return { ok: false as const, reason: "db" as const };
@@ -308,6 +334,10 @@ export function useMakeupBag() {
         const nextKeys = next.map((i) => bagItemKey(i.product_key, i.shade_key));
         setKeys(nextKeys);
         writeLocalKeys(nextKeys);
+        if (userIdRef.current) {
+          const cached = bagDataCache.get(userIdRef.current);
+          if (cached) bagDataCache.set(userIdRef.current, { ...cached, items: next });
+        }
         return next;
       });
 

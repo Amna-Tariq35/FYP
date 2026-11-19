@@ -5,31 +5,30 @@ export default function Footer() {
   return (
     <footer className="mt-16 border-t border-black/8 bg-[#F4EEE8]">
       <div className="mx-auto max-w-6xl px-6 py-12">
-        <div className="grid gap-10 md:grid-cols-3">
-          {/* Brand */}
+        <div className="grid gap-10 sm:grid-cols-2 md:grid-cols-[1.4fr_1fr_1fr]">
           <div>
             <BrandMark footer />
-            <p className="mt-4 max-w-[280px] text-xs font-light leading-6 text-[var(--text-muted)]">
-              A virtual makeup try-on web experience for product discovery,
-              saved looks, and shareable results — built as a Final Year Project.
+            <p className="mt-4 max-w-sm text-sm leading-6 text-[var(--text-muted)]">
+              Discover your next favourite look with virtual try-on, thoughtful
+              product discovery, and personalised beauty tools.
             </p>
           </div>
 
-          {/* Explore */}
           <div>
-            <p className="text-[10.5px] font-medium tracking-widest text-[#3a1a25]">
+            <p className="text-[11px] font-semibold tracking-[0.14em] text-[#3a1a25]">
               EXPLORE
             </p>
             <div className="mt-4 flex flex-col gap-2.5">
               {[
                 { label: "Products", href: "/products" },
+                { label: "Virtual Try-On", href: "/try-on" },
                 { label: "Skin Analysis", href: "/skin-analysis" },
-                { label: "Saved Looks", href: "/my-looks" },
+                { label: "My Makeup Bag", href: "/makeup-bag" },
               ].map((x) => (
                 <Link
                   key={x.label}
                   href={x.href}
-                  className="text-xs font-light text-[var(--text-muted)] hover:text-[var(--rose-primary)]"
+                  className="text-sm text-[var(--text-muted)] transition-colors hover:text-[var(--rose-primary)]"
                 >
                   {x.label}
                 </Link>
@@ -37,39 +36,35 @@ export default function Footer() {
             </div>
           </div>
 
-          {/* Tech */}
           <div>
-            <p className="text-[10.5px] font-medium tracking-widest text-[#3a1a25]">
-              BUILT WITH
+            <p className="text-[11px] font-semibold tracking-[0.14em] text-[#3a1a25]">
+              HELP & INFORMATION
             </p>
             <div className="mt-4 flex flex-col gap-2.5">
               {[
-                "Next.js (App Router)",
-                "Supabase — Auth & Database",
-                "Stripe — Test Checkout",
-                "MediaPipe — Mobile AR",
+                { label: "Contact & Support", href: "/support" },
+                { label: "Privacy Policy", href: "/privacy" },
+                { label: "Terms of Service", href: "/terms" },
               ].map((t) => (
-                <p key={t} className="text-xs font-light text-[#6a4a55]">
-                  {t}
-                </p>
+                <Link
+                  key={t.label}
+                  href={t.href}
+                  className="text-sm text-[var(--text-muted)] transition-colors hover:text-[var(--rose-primary)]"
+                >
+                  {t.label}
+                </Link>
               ))}
             </div>
           </div>
         </div>
 
-        {/* Bottom bar */}
         <div className="mt-10 flex flex-col items-start justify-between gap-3 border-t border-black/8 pt-6 sm:flex-row sm:items-center">
-          <p className="text-[11px] text-[var(--text-muted)]">
+          <p className="text-xs text-[var(--text-muted)]">
             © {new Date().getFullYear()} AR Makeup. All rights reserved.
           </p>
-          <div className="flex gap-5">
-            <Link href="/privacy" className="text-[11px] text-[var(--text-muted)] hover:text-[var(--rose-primary)]">
-              Privacy
-            </Link>
-            <Link href="/terms" className="text-[11px] text-[var(--text-muted)] hover:text-[var(--rose-primary)]">
-              Terms
-            </Link>
-          </div>
+          <p className="text-xs text-[var(--text-muted)]">
+            Beauty, thoughtfully discovered.
+          </p>
         </div>
       </div>
     </footer>

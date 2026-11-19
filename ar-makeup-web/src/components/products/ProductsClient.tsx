@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
+import React, { useState, useMemo, useEffect, useCallback, useRef, useSyncExternalStore } from "react";
 import Link from "next/link";
 import {
   Search,
@@ -71,50 +71,142 @@ function FilterDisclosure({
 }
 
 const RECENTLY_VIEWED_KEY = "fyp_recently_viewed";
+const RECENTLY_VIEWED_PRODUCTS_KEY = "fyp_recently_viewed_products";
 const MAX_RECENT = 6;
+let recentlyViewedCache: MakeupProduct[] = [];
+const emptyRecentlyViewedState = { products: [] as MakeupProduct[], loading: false };
+let recentlyViewedState = emptyRecentlyViewedState;
+const recentlyViewedListeners = new Set<() => void>();
+
+function subscribeRecentlyViewed(listener: () => void) {
+  recentlyViewedListeners.add(listener);
+  return () => recentlyViewedListeners.delete(listener);
+}
+
+function getRecentlyViewedState() {
+  return recentlyViewedState;
+}
+
+function publishRecentlyViewedState(products: MakeupProduct[], loading: boolean) {
+  recentlyViewedCache = products;
+  recentlyViewedState = { products, loading };
+  recentlyViewedListeners.forEach((listener) => listener());
+}
+
+function isCachedProduct(value: unknown): value is MakeupProduct {
+  if (!value || typeof value !== "object") return false;
+  const product = value as Partial<MakeupProduct>;
+  return (
+    typeof product.id === "string" &&
+    typeof product.product_key === "string" &&
+    typeof product.name === "string" &&
+    (product.brand === null || typeof product.brand === "string") &&
+    (product.category === null || typeof product.category === "string") &&
+    (product.main_category === null || typeof product.main_category === "string") &&
+    (product.description === null || typeof product.description === "string") &&
+    (product.image_url === null || typeof product.image_url === "string") &&
+    (product.price === null || typeof product.price === "number") &&
+    (product.rating_average === null || typeof product.rating_average === "number") &&
+    (product.review_count === null || typeof product.review_count === "number")
+  );
+}
 
 export function useRecentlyViewed() {
-  const [keys, setKeys] = useState<string[]>([]);
-  const [recentProducts, setRecentProducts] = useState<MakeupProduct[]>([]);
+  const recentState = useSyncExternalStore(
+    subscribeRecentlyViewed,
+    getRecentlyViewedState,
+    () => emptyRecentlyViewedState,
+  );
 
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem(RECENTLY_VIEWED_KEY);
-      if (!stored) return;
-      const parsed = JSON.parse(stored);
-      if (Array.isArray(parsed)) {
-        setKeys(parsed.filter((key) => typeof key === "string").slice(0, MAX_RECENT));
-      }
-    } catch {}
-  }, []);
-
-  const addViewed = useCallback((productKey: string) => {
-    setKeys((prev) => {
-      const next = [productKey, ...prev.filter((key) => key !== productKey)].slice(0, MAX_RECENT);
-      try { localStorage.setItem(RECENTLY_VIEWED_KEY, JSON.stringify(next)); } catch {}
-      return next;
-    });
-  }, []);
-
-  useEffect(() => {
-    if (keys.length === 0) {
-      setRecentProducts([]);
-      return;
-    }
+    let active = true;
     const controller = new AbortController();
-    const params = new URLSearchParams({ keys: keys.join(",") });
+    let storedKeys: string[] = [];
+    let storedProducts: MakeupProduct[] = [];
+    try {
+      const savedKeys = localStorage.getItem(RECENTLY_VIEWED_KEY);
+      const savedProducts = localStorage.getItem(RECENTLY_VIEWED_PRODUCTS_KEY);
+      const parsedKeys: unknown = savedKeys ? JSON.parse(savedKeys) : [];
+      const parsedProducts: unknown = savedProducts ? JSON.parse(savedProducts) : [];
+      if (Array.isArray(parsedKeys)) {
+        storedKeys = parsedKeys.filter((key): key is string => typeof key === "string");
+      }
+      if (Array.isArray(parsedProducts)) {
+        storedProducts = parsedProducts.filter(isCachedProduct);
+      }
+    } catch {
+      storedKeys = [];
+      storedProducts = [];
+    }
+
+    const productMap = new Map<string, MakeupProduct>();
+    for (const product of [...storedProducts, ...recentlyViewedCache]) {
+      productMap.set(product.product_key, product);
+    }
+    const nextKeys = Array.from(new Set([
+      ...recentlyViewedCache.map((product) => product.product_key),
+      ...storedKeys,
+    ])).slice(0, MAX_RECENT);
+    const cachedProducts = nextKeys
+      .map((key) => productMap.get(key))
+      .filter((product): product is MakeupProduct => Boolean(product));
+    publishRecentlyViewedState(
+      cachedProducts,
+      nextKeys.length > cachedProducts.length,
+    );
+
+    if (nextKeys.length === 0) {
+      return () => controller.abort();
+    }
+
+    const params = new URLSearchParams({ keys: nextKeys.join(",") });
     fetch(`/api/catalog/lookup?${params}`, { signal: controller.signal })
       .then((response) => (response.ok ? response.json() : Promise.reject(new Error("lookup failed"))))
       .then((data: { products?: MakeupProduct[] }) => {
-        setRecentProducts(data.products ?? []);
+        if (!active) return;
+        const freshProducts = (data.products ?? []).filter(isCachedProduct);
+        const freshByKey = new Map(freshProducts.map((product) => [product.product_key, product]));
+        const nextProducts = nextKeys
+          .map((key) => freshByKey.get(key) ?? productMap.get(key))
+          .filter((product): product is MakeupProduct => Boolean(product));
+        publishRecentlyViewedState(nextProducts, false);
+        try {
+          localStorage.setItem(RECENTLY_VIEWED_PRODUCTS_KEY, JSON.stringify(nextProducts));
+        } catch {}
       })
       .catch((error: unknown) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
+      })
+      .finally(() => {
+        if (active && recentlyViewedState.loading) {
+          publishRecentlyViewedState(recentlyViewedCache, false);
+        }
       });
-    return () => controller.abort();
-  }, [keys]);
 
-  return { recentProducts, addViewed };
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, []);
+
+  const addViewed = useCallback((product: MakeupProduct) => {
+    const nextProducts = [
+      product,
+      ...recentlyViewedCache.filter((item) => item.product_key !== product.product_key),
+    ].slice(0, MAX_RECENT);
+    const nextKeys = nextProducts.map((item) => item.product_key);
+    publishRecentlyViewedState(nextProducts, false);
+    try {
+      localStorage.setItem(RECENTLY_VIEWED_KEY, JSON.stringify(nextKeys));
+      localStorage.setItem(RECENTLY_VIEWED_PRODUCTS_KEY, JSON.stringify(nextProducts));
+    } catch {}
+  }, []);
+
+  return {
+    recentProducts: recentState.products,
+    recentLoading: recentState.loading,
+    addViewed,
+  };
 }
 
 // ── FilterGroup ──────────────────────────────────────────────────────────────
@@ -176,16 +268,18 @@ function FilterGroup({
 // ── RecentlyViewedStrip ──────────────────────────────────────────────────────
 function RecentlyViewedStrip({
   products,
+  loading,
   wishlist,
   brandLabels,
   onWishlistToggle,
 }: {
   products: MakeupProduct[];
+  loading: boolean;
   wishlist: string[];
   brandLabels: readonly string[];
   onWishlistToggle: (k: string) => void;
 }) {
-  if (products.length === 0) return null;
+  if (products.length === 0 && !loading) return null;
 
   return (
     <div className="rv-section">
@@ -193,36 +287,44 @@ function RecentlyViewedStrip({
         <Clock className="w-4 h-4" style={{ color: "var(--rose-primary)" }} />
         <span className="rv-title">Recently Viewed</span>
       </div>
-      <div className="rv-strip">
-        {products.map((p) => {
-          const price = typeof p.price === "number" ? `$${p.price.toFixed(2)}` : "—";
-          const brand = foldedBrandLabel(p.brand, brandLabels) || "—";
-          const isWished = wishlist.includes(`${p.product_key}__`); // Match new format
-          return (
-            <a
-              key={p.product_key}
-              href={`/products/${p.product_key}`}
-              className="rv-card"
-            >
-              <div className="rv-card-body">
-                <button
-                  className={`rv-heart ${isWished ? "active" : ""}`}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    onWishlistToggle(p.product_key);
-                  }}
-                  aria-label="Toggle wishlist"
-                >
-                  <Heart className="w-3 h-3" />
-                </button>
-                <p className="rv-brand">{brand}</p>
-                <p className="rv-name">{p.name}</p>
-                <p className="rv-price">{price}</p>
-              </div>
-            </a>
-          );
-        })}
-      </div>
+      {products.length === 0 ? (
+        <div className="rv-strip" aria-hidden="true">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <div key={index} className="rv-skeleton-card" />
+          ))}
+        </div>
+      ) : (
+        <div className="rv-strip">
+          {products.map((p) => {
+            const price = typeof p.price === "number" ? `$${p.price.toFixed(2)}` : "—";
+            const brand = foldedBrandLabel(p.brand, brandLabels) || "—";
+            const isWished = wishlist.includes(`${p.product_key}__`);
+            return (
+              <a
+                key={p.product_key}
+                href={`/products/${encodeURIComponent(p.product_key)}`}
+                className="rv-card"
+              >
+                <div className="rv-card-body">
+                  <button
+                    className={`rv-heart ${isWished ? "active" : ""}`}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      onWishlistToggle(p.product_key);
+                    }}
+                    aria-label="Toggle wishlist"
+                  >
+                    <Heart className="w-3 h-3" />
+                  </button>
+                  <p className="rv-brand">{brand}</p>
+                  <p className="rv-name">{p.name}</p>
+                  <p className="rv-price">{price}</p>
+                </div>
+              </a>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -272,7 +374,7 @@ export default function ProductsClient({
   const [maxInput, setMaxInput] = useState(String(startingMax));
 
   const { wishlist, toggle: toggleWishlist, isWished, count: wishlistCount } = useWishlist();
-  const { recentProducts, addViewed } = useRecentlyViewed();
+  const { recentProducts, recentLoading, addViewed } = useRecentlyViewed();
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchQuery.trim()), 300);
@@ -1560,6 +1662,22 @@ export default function ProductsClient({
           scrollbar-width: none;
         }
         .rv-strip::-webkit-scrollbar { display: none; }
+        .rv-skeleton-card {
+          flex-shrink: 0;
+          width: 130px;
+          height: 92px;
+          border: 1px solid var(--border-soft);
+          border-radius: 14px;
+          background: linear-gradient(90deg, #f8f2ef 25%, #fff 50%, #f8f2ef 75%);
+          background-size: 200% 100%;
+          animation: rv-shimmer 1.4s ease-in-out infinite;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .rv-skeleton-card { animation: none; }
+        }
+        @keyframes rv-shimmer {
+          to { background-position: -200% 0; }
+        }
         .rv-card {
           flex-shrink: 0;
           width: 130px;
@@ -1624,6 +1742,7 @@ export default function ProductsClient({
       {/* ── Recently Viewed Strip (above main layout) ── */}
       <RecentlyViewedStrip
         products={recentProducts}
+        loading={recentLoading}
         wishlist={wishlist}
         brandLabels={catalogFacets.brands}
         onWishlistToggle={toggleWishlist}
@@ -1809,7 +1928,25 @@ export default function ProductsClient({
           )}
 
           {/* Grid or Empty State */}
-          {pageProducts.length === 0 ? (
+          {loading && pageProducts.length === 0 ? (
+            <div className="products-grid" role="status" aria-label="Loading products">
+              {Array.from({ length: 6 }).map((_, index) => (
+                <div
+                  key={index}
+                  className="animate-pulse overflow-hidden rounded-[18px] border border-[var(--border-soft)] bg-[var(--bg-section)]"
+                  aria-hidden="true"
+                >
+                  <div className="aspect-[4/3] bg-black/5" />
+                  <div className="space-y-3 p-4">
+                    <div className="h-3 w-1/3 rounded bg-black/5" />
+                    <div className="h-5 w-3/4 rounded bg-black/5" />
+                    <div className="h-4 w-1/2 rounded bg-black/5" />
+                    <div className="h-10 rounded-xl bg-black/5" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : pageProducts.length === 0 ? (
             <div className="empty-state">
               <div className="empty-icon-wrap">
                 <Search className="w-7 h-7" style={{ color: "var(--rose-primary)" }} />

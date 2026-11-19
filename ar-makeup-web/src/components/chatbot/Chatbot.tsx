@@ -315,8 +315,7 @@ export default function Chatbot() {
     <div className="fixed bottom-6 right-6 z-50">
       {isOpen && (
         <div
-          className="bg-white w-[min(360px,calc(100vw-2rem))] h-[560px] rounded-2xl shadow-2xl flex flex-col mb-4 overflow-hidden animate-in slide-in-from-bottom-5"
-          style={{ border: '1px solid var(--border-soft)' }}
+          className="mb-4 flex h-[min(500px,calc(100dvh-7rem))] max-h-[calc(100dvh-6rem)] w-[min(380px,calc(100vw-2rem))] flex-col overflow-hidden rounded-3xl border border-[var(--border-soft)] bg-white shadow-2xl animate-in slide-in-from-bottom-5"
         >
           {/* ── Header ── */}
           <div

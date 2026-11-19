@@ -3,13 +3,14 @@
 import React, { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Check, Loader2, Plus, Search, ShoppingBag, Trash2, X } from "lucide-react";
+import { Check, Loader2, Plus, Search, ShoppingBag, Trash2 } from "lucide-react";
 import { supabase } from "@/src/lib/supabase/client";
 import { useMakeupBag } from "@/src/hooks/useMakeupBag";
 import { useSession } from "@/src/hooks/useSession";
 import { addToCart } from "@/src/store/cart";
 import type { MakeupProduct, ProductShade } from "@/src/types/catalog";
 import { bagItemKey, type MakeupBagSource } from "@/src/lib/makeup-bag/keys";
+import PageLoader from "@/src/components/layout/PageLoader";
 
 function bagSourceLabel(source?: MakeupBagSource) {
   if (source === "purchase") return "Added after purchase";
@@ -45,6 +46,13 @@ type OwnedProductFields =
 
 type OwnedProductItem = Pick<MakeupProduct, OwnedProductFields>;
 
+let catalogCache: CatalogListItem[] | null = null;
+const ownedProductCache = new Map<string, OwnedProductItem>();
+const shadeCache = new Map<
+  string,
+  Array<{ product_key: string; shade_key: string; shade_name: string; shade_hex: string | null }>
+>();
+
 function MakeupBagContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -53,7 +61,8 @@ function MakeupBagContent() {
     useMakeupBag();
 
   const [products, setProducts] = useState<OwnedProductItem[]>([]);
-  const [catalog, setCatalog] = useState<CatalogListItem[]>([]);
+  const [productsLoading, setProductsLoading] = useState(false);
+  const [catalog, setCatalog] = useState<CatalogListItem[]>(catalogCache ?? []);
   const [shadeNames, setShadeNames] = useState<Map<string, string>>(new Map());
   const [shadeHex, setShadeHex] = useState<Map<string, string>>(new Map());
   const [addingOpen, setAddingOpen] = useState(searchParams.get("add") === "1");
@@ -71,8 +80,11 @@ function MakeupBagContent() {
   }, [status, router]);
 
   useEffect(() => {
+    if (catalogCache) return;
+
+    let active = true;
     async function loadCatalog() {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("makeup_products")
         .select(
           "product_key,name,brand,category,image_url,price,is_active,main_category",
@@ -80,28 +92,69 @@ function MakeupBagContent() {
         .eq("is_active", true)
         .eq("main_category", "makeup")
         .order("name");
-      if (data) setCatalog(data as CatalogListItem[]);
+      if (error) {
+        console.error("Could not load makeup catalog:", error.message);
+        return;
+      }
+      if (data && active) {
+        catalogCache = data as CatalogListItem[];
+        setCatalog(catalogCache);
+      }
     }
     if (isSignedIn) loadCatalog();
+    return () => {
+      active = false;
+    };
   }, [isSignedIn]);
 
   useEffect(() => {
+    let active = true;
     async function loadOwnedProducts() {
       if (items.length === 0) {
         setProducts([]);
+        setProductsLoading(false);
         return;
       }
       const keys = Array.from(new Set(items.map((i) => i.product_key)));
-      const { data } = await supabase
+      const cachedProducts = keys
+        .map((key) => ownedProductCache.get(key))
+        .filter((product): product is OwnedProductItem => Boolean(product));
+      setProducts(cachedProducts);
+      const missingKeys = keys.filter((key) => !ownedProductCache.has(key));
+      if (missingKeys.length === 0) {
+        setProductsLoading(false);
+        return;
+      }
+
+      setProductsLoading(true);
+      const { data, error } = await supabase
         .from("makeup_products")
         .select("product_key,name,brand,category,image_url,price,is_active")
-        .in("product_key", keys);
-      if (data) setProducts(data as OwnedProductItem[]);
+        .in("product_key", missingKeys);
+      if (!active) return;
+      if (error) {
+        console.error("Could not load makeup bag products:", error.message);
+        setProductsLoading(false);
+        return;
+      }
+      for (const product of (data ?? []) as OwnedProductItem[]) {
+        ownedProductCache.set(product.product_key, product);
+      }
+      setProducts(
+        keys
+          .map((key) => ownedProductCache.get(key))
+          .filter((product): product is OwnedProductItem => Boolean(product)),
+      );
+      setProductsLoading(false);
     }
     loadOwnedProducts();
+    return () => {
+      active = false;
+    };
   }, [items]);
 
   useEffect(() => {
+    let active = true;
     async function loadShades() {
       const pairs = items.filter((i) => i.shade_key);
       if (pairs.length === 0) {
@@ -109,24 +162,42 @@ function MakeupBagContent() {
         setShadeHex(new Map());
         return;
       }
-      const { data } = await supabase
-        .from("product_shades")
-        .select("product_key,shade_key,shade_name,shade_hex")
-        .in(
-          "product_key",
-          Array.from(new Set(pairs.map((i) => i.product_key))),
-        );
+      const productKeys = Array.from(new Set(pairs.map((i) => i.product_key)));
+      const missingKeys = productKeys.filter((key) => !shadeCache.has(key));
+      if (missingKeys.length > 0) {
+        const { data, error } = await supabase
+          .from("product_shades")
+          .select("product_key,shade_key,shade_name,shade_hex")
+          .in("product_key", missingKeys);
+        if (!active) return;
+        if (error) {
+          console.error("Could not load makeup bag shades:", error.message);
+        } else {
+          for (const key of missingKeys) {
+            shadeCache.set(
+              key,
+              (data ?? []).filter((row) => row.product_key === key),
+            );
+          }
+        }
+      }
+      const rows = productKeys.flatMap((key) => shadeCache.get(key) ?? []);
       const names = new Map<string, string>();
       const hex = new Map<string, string>();
-      for (const row of data ?? []) {
+      for (const row of rows) {
         const k = bagItemKey(row.product_key, row.shade_key);
         names.set(k, row.shade_name);
         if (row.shade_hex) hex.set(k, row.shade_hex);
       }
-      setShadeNames(names);
-      setShadeHex(hex);
+      if (active) {
+        setShadeNames(names);
+        setShadeHex(hex);
+      }
     }
     loadShades();
+    return () => {
+      active = false;
+    };
   }, [items]);
 
   const productMap = useMemo(() => {
@@ -195,11 +266,13 @@ function MakeupBagContent() {
     setShadesLoading(false);
   };
 
-  if (status === "loading" || (isSignedIn && loading && items.length === 0)) {
+  if (
+    status === "loading" ||
+    status === "signed_out" ||
+    (loading && items.length === 0)
+  ) {
     return (
-      <div className="flex min-h-[50vh] items-center justify-center">
-        <Loader2 className="animate-spin text-[var(--rose-primary)]" size={32} />
-      </div>
+      <PageLoader label="Loading your makeup bag..." className="min-h-[50vh]" />
     );
   }
 
@@ -210,13 +283,12 @@ function MakeupBagContent() {
           <p className="text-xs font-semibold tracking-[0.16em] text-[var(--rose-primary)]">
             OWNED, NOT WISHED
           </p>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight text-[#1F1F1F]">
-            My Makeup Bag
+          <h1 className="mt-1 max-w-3xl font-serif text-4xl font-normal leading-tight tracking-tight text-[#1F1F1F] sm:text-5xl">
+            My Makeup <span className="italic text-[var(--rose-primary)]">Bag</span>
           </h1>
-          <p className="mt-1 max-w-xl text-sm text-[#8A8A8A]">
-            Wishlist is what you want. Cart is what you are buying. This bag is
-            what you actually own — use it in try-on to build looks from your
-            real makeup.
+          <p className="mt-3 max-w-2xl text-sm leading-7 text-[#8A8A8A] sm:text-base">
+            Keep the products you own in one place, then use them in virtual
+            try-on to create looks with your real makeup.
           </p>
         </div>
         <button
@@ -358,6 +430,8 @@ function MakeupBagContent() {
             Add from catalog
           </button>
         </div>
+      ) : productsLoading ? (
+        <PageLoader label="Loading your products..." className="min-h-[30vh]" />
       ) : (
         <div className="space-y-3">
           {items.map((item) => {
@@ -435,7 +509,7 @@ function MakeupBagContent() {
 
 export default function MakeupBagPage() {
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<PageLoader label="Loading your makeup bag..." className="min-h-[50vh]" />}>
       <MakeupBagContent />
     </Suspense>
   );

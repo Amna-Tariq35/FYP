@@ -10,7 +10,7 @@ type ProductCardProps = {
   product: MakeupProduct;
   isWished?: boolean;
   onWishlistToggle?: (productKey: string) => void;
-  onView?: (productKey: string) => void;
+  onView?: (product: MakeupProduct) => void;
   brandLabel?: string;
   favShadeKey?: string;
   userFinishPreference?: string | null;
@@ -120,7 +120,7 @@ export default function ProductCard({
         }
         className="flex flex-col"
         style={{ height: "100%", textDecoration: "none", color: "inherit" }}
-        onClick={() => onView?.(product.product_key)}
+        onClick={() => onView?.(product)}
       >
         {/* ── Image ── */}
         <div
